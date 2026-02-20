@@ -5,7 +5,7 @@ import json
 from PIL import Image
 import pandas as pd
 
-# --- CONFIGURACIÓN DE PÁGINA ---
+# --- CONFIGURACIÓN ---
 st.set_page_config(page_title="Lab Aguilar Pro", page_icon="🔬", layout="wide")
 st.title("🔬 Gestión Inteligente Lab Aguilar")
 
@@ -14,30 +14,36 @@ GENAI_KEY = st.secrets["GENAI_KEY"]
 SUPABASE_URL = st.secrets["SUPABASE_URL"]
 SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 
-# CONFIGURACIÓN DE GOOGLE AI (FORZANDO API V1)
 genai.configure(api_key=GENAI_KEY)
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+# --- SOLUCIÓN AL ERROR 404: AUTO-DETECCIÓN DE MODELO ---
 @st.cache_resource
-def iniciar_modelo():
-    # Usamos el nombre del modelo sin prefijos de versión para que la librería decida la mejor ruta
+def obtener_modelo_seguro():
     try:
-        # Intentamos con el nombre corto
-        return genai.GenerativeModel('gemini-1.5-flash')
-    except:
-        # Si falla, buscamos manualmente el modelo que soporte generación
-        for m in genai.list_models():
-            if 'generateContent' in m.supported_generation_methods:
-                return genai.GenerativeModel(m.name)
-    return None
+        # Listamos los modelos y buscamos uno que soporte 'generateContent'
+        modelos_disponibles = [m.name for m in genai.list_models() 
+                               if 'generateContent' in m.supported_generation_methods]
+        
+        # Prioridad 1: Gemini 1.5 Flash (más rápido)
+        # Prioridad 2: Gemini 1.5 Pro
+        # Prioridad 3: El primero que aparezca en la lista
+        seleccionado = next((m for m in modelos_disponibles if 'flash' in m), 
+                            next((m for m in modelos_disponibles if 'pro' in m), 
+                            modelos_disponibles[0]))
+        
+        return genai.GenerativeModel(seleccionado)
+    except Exception as e:
+        st.error(f"Error crítico de conexión: {e}")
+        return None
 
-model = iniciar_modelo()
+model = obtener_modelo_seguro()
 
-# --- FUNCIÓN DE PROCESAMIENTO ---
+# --- PROCESAMIENTO ---
 def procesar_todo(texto, imagen=None):
     prompt = f"""
-    Eres un gestor de inventario. Instrucción: "{texto}"
-    Responde estrictamente un JSON:
+    Analiza esta instrucción de inventario: "{texto}"
+    Responde estrictamente un JSON válido:
     {{
       "producto": "nombre", 
       "valor": numero, 
@@ -48,59 +54,60 @@ def procesar_todo(texto, imagen=None):
     }}
     """
     try:
-        # IMPORTANTE: Forzamos la respuesta de texto limpio
+        # Llamada a la IA
         if imagen:
-            imagen.thumbnail((800, 800))
+            # Optimizamos la imagen para evitar errores de peso
+            imagen.thumbnail((1000, 1000))
             response = model.generate_content([prompt, imagen])
         else:
             response = model.generate_content(prompt)
             
-        # Limpieza de la respuesta para evitar el error de JSON
-        texto_sucio = response.text
-        # Buscamos el primer '{' y el último '}'
-        inicio = texto_sucio.find('{')
-        fin = texto_sucio.rfind('}') + 1
-        orden = json.loads(texto_sucio[inicio:fin])
+        # Limpieza quirúrgica de la respuesta JSON
+        raw_text = response.text
+        start = raw_text.find('{')
+        end = raw_text.rfind('}') + 1
+        orden = json.loads(raw_text[start:end])
         
-        # Búsqueda en Supabase
+        # Búsqueda en Supabase (Case-insensitive)
         res = supabase.table("items").select("*").ilike("nombre", f"%{orden['producto']}%").execute()
-        if not res.data: return f"❓ No encontré '{orden['producto']}'"
+        if not res.data: return f"❓ No encontré '{orden['producto']}' en el inventario."
         
         item = res.data[0]
         updates = {}
         
+        # Lógica de Cantidad
         if orden.get('valor') is not None:
             actual = item.get('cantidad_actual') or 0
             nueva_cant = actual + orden['valor'] if orden['accion'] == 'sumar' else orden['valor']
             updates['cantidad_actual'] = nueva_cant
             if orden.get('unidad'): updates['unidad'] = orden['unidad']
             
+        # Lógica de Umbral y Ubicación
         if orden.get('ubicacion'): updates['ubicacion_detallada'] = orden['ubicacion']
         if orden.get('umbral_minimo') is not None: updates['umbral_minimo'] = orden['umbral_minimo']
         
         if updates:
             supabase.table("items").update(updates).eq("id", item['id']).execute()
-            return f"✅ **{item['nombre']}** actualizado: {updates}"
-        return "⚠️ Sin cambios detectados."
+            return f"✅ **{item['nombre']}** actualizado correctamente."
+        return "⚠️ No se detectaron cambios."
 
     except Exception as e:
-        # Si el error persiste, lo mostramos detallado para debuggear
         return f"❌ Error: {str(e)}"
 
 # --- INTERFAZ ---
-tab1, tab2 = st.tabs(["🎙️ Registro Rápido", "📊 Inventario Completo"])
+tab1, tab2 = st.tabs(["🎙️ Registro Rápido", "📊 Inventario"])
 
 with tab1:
-    foto_archivo = st.camera_input("📷 Foto de etiqueta")
-    instruccion = st.text_area("Comando:", placeholder="Ej: 'Suma 20 preparaciones al kit PCR'")
-    
-    if st.button("🚀 Ejecutar", use_container_width=True):
-        if not instruccion and not foto_archivo:
-            st.warning("Escribe una instrucción o toma una foto.")
-        else:
-            img_pil = Image.open(foto_archivo) if foto_archivo else None
-            with st.spinner("Gemini analizando..."):
-                st.write(procesar_todo(instruccion, img_pil))
+    col1, col2 = st.columns(2)
+    with col1:
+        foto = st.camera_input("📷 Foto de etiqueta")
+    with col2:
+        st.info("💡 Usa el micrófono de tu teclado para dictar.")
+        instruccion = st.text_area("¿Qué deseas hacer?", placeholder="Ej: 'Fija el umbral mínimo en 10 para el kit PCR'")
+        if st.button("🚀 Ejecutar", use_container_width=True):
+            img_pil = Image.open(foto) if foto else None
+            with st.spinner("Analizando..."):
+                st.success(procesar_todo(instruccion, img_pil))
 
 with tab2:
     st.subheader("Estado actual")
@@ -109,12 +116,10 @@ with tab2:
         df = pd.DataFrame(res.data)
         
         def resaltar(row):
-            try:
-                # Comparamos cantidad_actual vs umbral_minimo
-                if pd.notnull(row['cantidad_actual']) and pd.notnull(row['umbral_minimo']):
-                    if row['cantidad_actual'] < row['umbral_minimo']:
-                        return ['background-color: #ffcccc'] * len(row)
-            except: pass
+            # Comparamos cantidad vs umbral_minimo (nombre de tu columna)
+            if pd.notnull(row.get('cantidad_actual')) and pd.notnull(row.get('umbral_minimo')):
+                if row['cantidad_actual'] < row['umbral_minimo']:
+                    return ['background-color: #ffcccc'] * len(row)
             return [''] * len(row)
 
         st.dataframe(df.style.apply(resaltar, axis=1), use_container_width=True, hide_index=True)
