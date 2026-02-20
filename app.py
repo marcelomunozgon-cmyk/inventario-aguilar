@@ -9,7 +9,6 @@ import pandas as pd
 st.set_page_config(page_title="Lab Aguilar Pro", page_icon="🔬", layout="wide")
 st.title("🔬 Gestión Inteligente Lab Aguilar")
 
-# Carga de Secrets
 GENAI_KEY = st.secrets["GENAI_KEY"]
 SUPABASE_URL = st.secrets["SUPABASE_URL"]
 SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
@@ -23,80 +22,85 @@ def cargar_modelo():
 
 model = cargar_modelo()
 
-# --- FUNCIÓN DE PROCESAMIENTO MULTIMODAL ---
+# --- PROCESAMIENTO ---
 def procesar_todo(texto, imagen=None):
     prompt = f"""
-    Instrucción: "{texto}"
-    Eres un gestor de inventario de laboratorio. Extrae los datos y sé preciso con las UNIDADES (litros, ml, gramos, kits, preparaciones, botellas).
-    
+    Eres un gestor de inventario. Instrucción: "{texto}"
     Responde estrictamente un JSON:
     {{
       "producto": "nombre", 
       "valor": numero, 
-      "unidad": "ml/g/unidades/preparaciones/etc",
+      "unidad": "ml/g/unidades/preparaciones",
       "accion": "sumar/reemplazar", 
       "ubicacion": "texto o null", 
       "stock_minimo": numero o null
     }}
     """
-    
     try:
         if imagen:
-            response = model.generate_content(["Identifica el producto y procesa esta instrucción: " + texto, imagen])
+            response = model.generate_content(["Identifica el producto y procesa: " + texto, imagen])
         else:
             response = model.generate_content(prompt)
             
         limpio = response.text.strip().replace('```json', '').replace('```', '')
         orden = json.loads(limpio)
         
-        # Búsqueda en DB
         res = supabase.table("items").select("*").ilike("nombre", f"%{orden['producto']}%").execute()
-        
-        if not res.data: return f"❓ No encontré '{orden['producto']}' en la base de datos."
+        if not res.data: return f"❓ No encontré '{orden['producto']}'"
         
         item = res.data[0]
         updates = {}
         
-        # Lógica de Cantidad y Unidades
         if orden.get('valor') is not None:
-            nueva_cant = (item['cantidad_actual'] or 0) + orden['valor'] if orden['accion'] == 'sumar' else orden['valor']
+            actual = item.get('cantidad_actual') or 0
+            nueva_cant = actual + orden['valor'] if orden['accion'] == 'sumar' else orden['valor']
             updates['cantidad_actual'] = nueva_cant
             if orden.get('unidad'): updates['unidad'] = orden['unidad']
             
         if orden.get('ubicacion'): updates['ubicacion_detallada'] = orden['ubicacion']
-        if orden.get('stock_minimo'): updates['stock_minimo'] = orden['stock_minimo']
+        if orden.get('stock_minimo') is not None: updates['stock_minimo'] = orden['stock_minimo']
         
-        supabase.table("items").update(updates).eq("id", item['id']).execute()
-        return f"✅ **{item['nombre']}** actualizado correctamente."
+        if updates:
+            supabase.table("items").update(updates).eq("id", item['id']).execute()
+            return f"✅ **{item['nombre']}** actualizado."
+        return "⚠️ No se detectaron cambios."
     except Exception as e:
         return f"❌ Error: {e}"
 
-# --- INTERFAZ DE USUARIO ---
-tab1, tab2 = st.tabs(["📸 Registro Rápido (Voz/Foto)", "📊 Inventario Completo"])
+# --- INTERFAZ ---
+tab1, tab2 = st.tabs(["📸 Registro (Voz/Foto)", "📊 Inventario"])
 
 with tab1:
     col1, col2 = st.columns(2)
     with col1:
-        foto = st.camera_input("📷 Foto de la etiqueta")
+        foto = st.camera_input("📷 Foto etiqueta")
     with col2:
-        st.info("💡 **Tip para Voz:** Toca el cuadro de abajo y usa el 🎙️ de tu teclado.")
-        instruccion = st.text_area("¿Qué quieres hacer?", placeholder="Ej: 'Agrega 500ml de Etanol' o 'Quedan 20 preparaciones del Kit PCR'")
-        
-        if st.button("🚀 Ejecutar Instrucción", use_container_width=True):
+        instruccion = st.text_area("Comando:", placeholder="Ej: 'Suma 20 preparaciones al kit PCR'")
+        if st.button("🚀 Ejecutar", use_container_width=True):
             img_pil = Image.open(foto) if foto else None
             with st.spinner("Procesando..."):
-                resultado = procesar_todo(instruccion, img_pil)
-                st.success(resultado)
+                st.success(procesar_todo(instruccion, img_pil))
 
 with tab2:
-    st.subheader("Estado actual del laboratorio")
+    st.subheader("Estado del laboratorio")
     res = supabase.table("items").select("*").order("nombre").execute()
+    
     if res.data:
         df = pd.DataFrame(res.data)
-        # Resaltar en rojo si falta stock
-        def resaltar_stock(row):
-            if row['stock_minimo'] and row['cantidad_actual'] < row['stock_minimo']:
-                return ['background-color: #ffcccc'] * len(row)
-            return [''] * len(row)
         
+        # Función de resaltado ultra-segura
+        def resaltar_stock(row):
+            # Verificamos que las columnas existan y no sean None
+            try:
+                actual = row.get('cantidad_actual')
+                minimo = row.get('stock_minimo')
+                if actual is not None and minimo is not None and actual < minimo:
+                    return ['background-color: #ffcccc'] * len(row)
+            except:
+                pass
+            return [''] * len(row)
+
+        # Si el DataFrame no está vacío, lo mostramos con estilo
         st.dataframe(df.style.apply(resaltar_stock, axis=1), use_container_width=True)
+    else:
+        st.info("No hay datos para mostrar.")
