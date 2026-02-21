@@ -1,9 +1,8 @@
 import streamlit as st
 import google.generativeai as genai
 from supabase import create_client
-import json
 import pandas as pd
-from datetime import datetime
+import json
 import time
 
 # --- CONFIGURACIÓN ---
@@ -27,68 +26,69 @@ def obtener_modelo():
 
 model = obtener_modelo()
 
-# --- CEREBRO DE CLASIFICACIÓN TÉCNICA ---
-def clasificar_cientifico(nombre):
+# --- MOTOR DE CLASIFICACIÓN MASIVA ---
+def clasificar_lote(lista_nombres):
+    nombres_string = "\n".join(lista_nombres)
     prompt = f"""
-    Eres un experto en suministros de laboratorio (Sigma-Aldrich, Thermo Fisher, Bio-Rad).
-    Analiza el producto: '{nombre}'
-    
-    Determina su categoría siguiendo esta lógica:
-    - Si es una sustancia química, buffer, enzima, anticuerpo o kit: 'REACTIVOS - [Tipo]'
-    - Si es plástico, descartable, guantes o puntas: 'CONSUMIBLES - [Tipo]'
-    - Si es de vidrio o cuarzo: 'VIDRIERÍA - [Tipo]'
-    - Si es un aparato eléctrico o mecánico: 'EQUIPOS - [Tipo]'
-    
-    Responde SOLAMENTE la categoría en formato: CATEGORIA - SUBCATEGORIA.
-    Si no estás seguro, usa tu conocimiento de catálogos científicos para adivinar.
-    Ejemplo: 'Opti-MEM' -> 'REACTIVOS - Medios de Cultivo'
+    Eres un experto en inventario científico. Clasifica estos productos de laboratorio:
+    {nombres_string}
+
+    Reglas:
+    1. Usa el formato: NOMBRE | CATEGORIA - SUBCATEGORIA
+    2. Categorías permitidas: REACTIVOS, CONSUMIBLES, VIDRIERÍA, EQUIPOS.
+    3. Responde SOLO con la lista clasificada, una por línea.
     """
     try:
         res = model.generate_content(prompt)
-        return res.text.strip().replace("'", "").replace('"', '').upper()
+        lineas = res.text.strip().split('\n')
+        resultado = {}
+        for linea in lineas:
+            if '|' in linea:
+                partes = linea.split('|')
+                resultado[partes[0].strip()] = partes[1].strip().upper()
+        return resultado
     except:
-        return "GENERAL - SIN CLASIFICAR"
+        return {}
 
 # --- INTERFAZ ---
-st.title("🔬 Inteligencia de Inventario Aguilar")
+st.title("🔬 Sistema Lab Aguilar")
 
-tab1, tab2 = st.tabs(["🎙️ Registro Multimodal", "📂 Explorador Jerárquico"])
+tab1, tab2 = st.tabs(["🎙️ Registro", "📂 Inventario Organizado"])
 
 with tab1:
-    col1, col2 = st.columns(2)
-    with col1: foto = st.camera_input("Capturar etiqueta")
-    with col2:
-        instruccion = st.text_area("Instrucción rápida:", placeholder="Ej: 'Suma 10 a los frascos de glucosa'")
-        if st.button("🚀 Ejecutar", use_container_width=True):
-            st.info("Procesando con lógica científica...")
+    st.write("Panel de registro activo.")
 
 with tab2:
-    st.subheader("📦 Organización del Almacén")
-    
-    if st.button("🤖 EJECUTAR CLASIFICACIÓN TÉCNICA (180 ítems)", use_container_width=True, type="primary"):
+    if st.button("🤖 CLASIFICACIÓN MASIVA (Modo Lote)", use_container_width=True, type="primary"):
         res_items = supabase.table("items").select("id", "nombre").execute()
-        items = res_items.data
+        items_db = res_items.data
         
+        # Procesamos en lotes de 10 para no saturar la API
+        lote_size = 10
+        total = len(items_db)
         progreso = st.progress(0)
         status = st.empty()
         
-        for i, item in enumerate(items):
-            # Aquí es donde ocurre la magia técnica
-            nueva_cat = clasificar_cientifico(item['nombre'])
+        for i in range(0, total, lote_size):
+            lote_actual = items_db[i:i+lote_size]
+            nombres_lote = [item['nombre'] for item in lote_actual]
             
-            try:
-                supabase.table("items").update({"categoria": nueva_cat}).eq("id", item['id']).execute()
-                status.write(f"🔬 Identificado: **{item['nombre']}** como **{nueva_cat}**")
-            except Exception as e:
-                status.write(f"⚠️ Error al guardar {item['nombre']}")
+            status.text(f"🧠 IA Analizando lote {i//lote_size + 1}...")
+            clasificaciones = clasificar_lote(nombres_lote)
             
-            progreso.progress((i + 1) / len(items))
-            time.sleep(0.5) # Pausa necesaria para que Google no bloquee la cuenta gratuita
+            for item in lote_actual:
+                nombre = item['nombre']
+                if nombre in clasificaciones:
+                    cat = clasificaciones[nombre]
+                    supabase.table("items").update({"categoria": cat}).eq("id", item['id']).execute()
             
-        st.success("✅ Clasificación masiva terminada.")
+            progreso.progress(min((i + lote_size) / total, 1.0))
+            time.sleep(2) # Pausa estratégica para evitar el baneo de Google
+            
+        st.success("✅ ¡Inventario organizado!")
         st.rerun()
 
-    # Visualización organizada
+    # Visualización
     res_db = supabase.table("items").select("*").execute()
     if res_db.data:
         df = pd.DataFrame(res_db.data)
@@ -96,6 +96,5 @@ with tab2:
         
         for cat in sorted(df['categoria'].unique()):
             with st.expander(f"📁 {cat}", expanded=False):
-                df_cat = df[df['categoria'] == cat]
-                st.dataframe(df_cat[['nombre', 'cantidad_actual', 'unidad', 'ubicacion_detallada']], 
+                st.dataframe(df[df['categoria'] == cat][['nombre', 'cantidad_actual', 'unidad']], 
                              use_container_width=True, hide_index=True)
