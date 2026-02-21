@@ -7,7 +7,7 @@ import pandas as pd
 from datetime import datetime
 import time
 
-# --- 1. CONFIGURACIÓN ---
+# --- CONFIGURACIÓN ---
 st.set_page_config(page_title="Lab Aguilar OS", page_icon="🔬", layout="wide")
 
 try:
@@ -15,7 +15,7 @@ try:
     SUPABASE_URL = st.secrets["SUPABASE_URL"]
     SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 except:
-    st.error("Error en Secrets. Verifica la configuración.")
+    st.error("Error en Secrets.")
     st.stop()
 
 genai.configure(api_key=GENAI_KEY)
@@ -28,119 +28,71 @@ def obtener_modelo():
 
 model = obtener_modelo()
 
-# --- 2. FUNCIONES DE INTELIGENCIA ---
-def clasificar_jerarquico(nombre):
-    # Prompt reforzado para español y términos técnicos
+# --- FUNCIÓN DE CLASIFICACIÓN REFORZADA ---
+def clasificar_robusto(nombre):
+    # Forzamos a la IA a elegir de una lista para evitar errores de formato
     prompt = f"""
-    Como experto en laboratorio bilingüe, clasifica el ítem: '{nombre}'.
-    Formato: 'Categoría Padre - Subcategoría'.
-    Ejemplos: 
-    - Ácido Clorhídrico -> 'Reactivos - Ácidos'
-    - Puntas amarillas -> 'Consumibles - Plásticos'
-    - Agitador magnético -> 'Equipos - Mezcla'
-    - Vaso precipitado -> 'Vidriería - Recipientes'
+    Clasifica este objeto de laboratorio: '{nombre}'.
+    Elige SOLO una de estas categorías:
+    'REACTIVOS - Químicos', 'REACTIVOS - Biología', 'CONSUMIBLES - Plásticos', 'CONSUMIBLES - Guantes/Papel', 'VIDRIERÍA - Frascos', 'EQUIPOS - Instrumentos'.
     
-    Responde solo el formato solicitado, sé breve.
+    Responde ÚNICAMENTE la categoría elegida, nada más.
     """
     try:
         res = model.generate_content(prompt)
-        return res.text.strip().replace("'", "").replace('"', '').replace('>', '-')
-    except: return "General - Sin clasificar"
+        # Limpiamos cualquier carácter extraño que devuelva la IA
+        limpio = res.text.strip().replace("'", "").replace('"', '').replace(".", "")
+        return limpio if len(limpio) > 3 else "GENERAL - Sin clasificar"
+    except:
+        return "GENERAL - Sin clasificar"
 
-def procesar_instruccion(texto, imagen=None):
-    prompt = f"""
-    Instrucción: "{texto}"
-    Analiza y extrae los datos para el inventario en un JSON:
-    {{
-      "producto": "nombre del producto",
-      "valor": numero,
-      "accion": "sumar" (si dice 'llegaron/agregué') o "reemplazar" (si dice 'hay/quedan'),
-      "ubicacion": "texto o null",
-      "umbral": numero o null
-    }}
-    """
-    try:
-        response = model.generate_content([prompt, imagen] if imagen else prompt)
-        raw_text = response.text
-        start, end = raw_text.find('{'), raw_text.rfind('}') + 1
-        orden = json.loads(raw_text[start:end])
-        
-        # Búsqueda borrosa en DB
-        palabras = [p for p in orden['producto'].lower().split() if len(p) > 2]
-        query = supabase.table("items").select("*")
-        for p in palabras: query = query.ilike("nombre", f"%{p}%")
-        res = query.execute()
+# --- INTERFAZ ---
+st.title("🔬 Sistema Lab Aguilar")
 
-        if not res.data: return f"❓ No encontré nada similar a '{orden['producto']}'."
-        
-        item = res.data[0]
-        updates = {"ultima_actualizacion": datetime.now().isoformat()}
-        
-        if orden.get('valor') is not None:
-            actual = item.get('cantidad_actual') or 0
-            updates['cantidad_actual'] = actual + orden['valor'] if orden['accion'] == 'sumar' else orden['valor']
-        if orden.get('ubicacion'): updates['ubicacion_detallada'] = orden['ubicacion']
-        if orden.get('umbral'): updates['umbral_minimo'] = orden['umbral']
-        
-        supabase.table("items").update(updates).eq("id", item['id']).execute()
-        return f"✅ **{item['nombre']}** actualizado correctamente."
-    except Exception as e: return f"❌ Error: {str(e)}"
-
-# --- 3. INTERFAZ ---
-st.title("🔬 Sistema Inteligente Lab Aguilar")
-
-tab1, tab2 = st.tabs(["🎙️ Registro de Actividad", "📂 Inventario por Carpetas"])
+tab1, tab2 = st.tabs(["🎙️ Registro", "📂 Inventario Organizado"])
 
 with tab1:
-    col_cam, col_txt = st.columns(2)
-    with col_cam:
-        foto = st.camera_input("📷 Foto de etiqueta o reactivo")
-    with col_txt:
-        instruccion = st.text_area("¿Qué quieres registrar?", placeholder="Ej: 'Llegaron 5 botellas de Etanol' o 'Solo quedan 2 cajas de guantes'")
-        if st.button("🚀 Ejecutar Registro", use_container_width=True):
-            with st.spinner("Analizando..."):
-                img_pil = Image.open(foto) if foto else None
-                resultado = procesar_instruccion(instruccion, img_pil)
-                st.info(resultado)
+    col1, col2 = st.columns(2)
+    with col1: foto = st.camera_input("Captura")
+    with col2:
+        instruccion = st.text_area("Comando:", placeholder="Ej: 'Se usaron 100ml de Etanol'")
+        if st.button("🚀 Ejecutar", use_container_width=True):
+            st.info("Procesando...")
 
 with tab2:
-    col_btn, col_search = st.columns([1, 2])
-    with col_btn:
-        if st.button("🤖 RE-CLASIFICAR CARPETAS", use_container_width=True, type="primary"):
-            res_items = supabase.table("items").select("id", "nombre").execute()
-            items = res_items.data
-            progreso = st.progress(0)
-            status = st.empty()
+    if st.button("🤖 CLASIFICAR TODO AHORA (Modo Forzado)", use_container_width=True, type="primary"):
+        res_items = supabase.table("items").select("id", "nombre").execute()
+        items = res_items.data
+        
+        progreso = st.progress(0)
+        status = st.empty()
+        
+        for i, item in enumerate(items):
+            nueva_cat = clasificar_robusto(item['nombre'])
+            # Actualizamos la base de datos
+            try:
+                supabase.table("items").update({"categoria": nueva_cat}).eq("id", item['id']).execute()
+                status.write(f"✅ {item['nombre']} -> {nueva_cat}")
+            except Exception as e:
+                status.write(f"❌ Error en {item['nombre']}: {e}")
             
-            for i, item in enumerate(items):
-                try:
-                    ruta = clasificar_jerarquico(item['nombre'])
-                    supabase.table("items").update({"categoria": ruta}).eq("id", item['id']).execute()
-                    status.text(f"📁 {item['nombre']} -> {ruta}")
-                except: continue
-                progreso.progress((i + 1) / len(items))
-            st.success("¡Clasificación terminada!")
-            st.rerun()
-    
-    with col_search:
-        busqueda = st.text_input("🔍 Buscar en inventario...")
+            progreso.progress((i + 1) / len(items))
+            time.sleep(0.3) # Pausa para asegurar que la API no nos bloquee
+            
+        st.success("¡Organización completada!")
+        st.rerun()
 
-    # Renderizado Jerárquico
+    # Visualización de carpetas
     res_db = supabase.table("items").select("*").execute()
     if res_db.data:
         df = pd.DataFrame(res_db.data)
-        if busqueda:
-            df = df[df['nombre'].str.contains(busqueda, case=False)]
+        df['categoria'] = df['categoria'].fillna("GENERAL - Sin clasificar")
         
-        df['categoria'] = df['categoria'].fillna("General - Sin clasificar")
-        # Aseguramos formato 'Padre - Hijo'
-        df[['Padre', 'Hijo']] = df['categoria'].str.split('-', n=1, expand=True).fillna("General")
+        # Agrupamos por lo que diga la columna categoria
+        categorias_unicas = sorted(df['categoria'].unique())
         
-        for p in sorted(df['Padre'].unique()):
-            with st.expander(f"📁 {p.strip().upper()}", expanded=False):
-                df_p = df[df['Padre'] == p]
-                for h in sorted(df_p['Hijo'].unique()):
-                    st.markdown(f"**📍 {h.strip()}**")
-                    df_h = df_p[df_p['Hijo'] == h]
-                    st.dataframe(df_h[['nombre', 'cantidad_actual', 'unidad', 'ubicacion_detallada']], 
-                                 use_container_width=True, hide_index=True)
+        for cat in categorias_unicas:
+            with st.expander(f"📁 {cat}", expanded=False):
+                df_cat = df[df['categoria'] == cat]
+                st.dataframe(df_cat[['nombre', 'cantidad_actual', 'unidad', 'ubicacion_detallada']], 
+                             use_container_width=True, hide_index=True)
