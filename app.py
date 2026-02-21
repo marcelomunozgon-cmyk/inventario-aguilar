@@ -12,89 +12,103 @@ try:
     GENAI_KEY = st.secrets["GENAI_KEY"]
     SUPABASE_URL = st.secrets["SUPABASE_URL"]
     SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
-except:
-    st.error("Error en Secrets.")
+    genai.configure(api_key=GENAI_KEY)
+    supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+except Exception as e:
+    st.error(f"Error de configuración: {e}")
     st.stop()
-
-genai.configure(api_key=GENAI_KEY)
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 @st.cache_resource
 def obtener_modelo():
-    modelos = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-    return genai.GenerativeModel(next((m for m in modelos if 'flash' in m), modelos[0]))
+    try:
+        modelos = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        return genai.GenerativeModel(next((m for m in modelos if 'flash' in m), modelos[0]))
+    except: return None
 
 model = obtener_modelo()
 
-# --- MOTOR DE CLASIFICACIÓN MASIVA ---
-def clasificar_lote(lista_nombres):
-    nombres_string = "\n".join(lista_nombres)
-    prompt = f"""
-    Eres un experto en inventario científico. Clasifica estos productos de laboratorio:
-    {nombres_string}
+# --- DICCIONARIO DE RESPALDO (Si la IA falla) ---
+DICCIONARIO_LAB = {
+    "etanol": "REACTIVOS - Solventes",
+    "puntas": "CONSUMIBLES - Plásticos",
+    "tips": "CONSUMIBLES - Plásticos",
+    "tubo": "CONSUMIBLES - Plásticos",
+    "vaso": "VIDRIERÍA - Recipientes",
+    "kit": "REACTIVOS - Kits",
+    "pcr": "REACTIVOS - Biología Molecular",
+    "guantes": "CONSUMIBLES - Protección",
+    "buffer": "REACTIVOS - Buffers"
+}
 
-    Reglas:
-    1. Usa el formato: NOMBRE | CATEGORIA - SUBCATEGORIA
-    2. Categorías permitidas: REACTIVOS, CONSUMIBLES, VIDRIERÍA, EQUIPOS.
-    3. Responde SOLO con la lista clasificada, una por línea.
-    """
-    try:
-        res = model.generate_content(prompt)
-        lineas = res.text.strip().split('\n')
-        resultado = {}
-        for linea in lineas:
-            if '|' in linea:
-                partes = linea.split('|')
-                resultado[partes[0].strip()] = partes[1].strip().upper()
-        return resultado
-    except:
-        return {}
+def clasificar_inteligente(nombre):
+    # Primero intentamos con el diccionario local (instantáneo)
+    nombre_min = nombre.lower()
+    for clave, valor in DICCIONARIO_LAB.items():
+        if clave in nombre_min:
+            return valor
+            
+    # Si no está en el diccionario, le pedimos a la IA
+    if model:
+        try:
+            prompt = f"Clasifica '{nombre}' en formato: CATEGORIA - SUBCATEGORIA. Solo 3 palabras máximo."
+            res = model.generate_content(prompt)
+            return res.text.strip().upper()
+        except: pass
+    return "GENERAL - OTROS"
 
 # --- INTERFAZ ---
-st.title("🔬 Sistema Lab Aguilar")
+st.title("🔬 Sistema de Control Aguilar")
 
 tab1, tab2 = st.tabs(["🎙️ Registro", "📂 Inventario Organizado"])
 
-with tab1:
-    st.write("Panel de registro activo.")
-
 with tab2:
-    if st.button("🤖 CLASIFICACIÓN MASIVA (Modo Lote)", use_container_width=True, type="primary"):
+    st.subheader("📦 Clasificación Masiva")
+    
+    if st.button("🚀 INICIAR CLASIFICACIÓN (Modo Seguro)", use_container_width=True, type="primary"):
+        # 1. Obtener datos
         res_items = supabase.table("items").select("id", "nombre").execute()
-        items_db = res_items.data
+        items = res_items.data
         
-        # Procesamos en lotes de 10 para no saturar la API
-        lote_size = 10
-        total = len(items_db)
-        progreso = st.progress(0)
-        status = st.empty()
-        
-        for i in range(0, total, lote_size):
-            lote_actual = items_db[i:i+lote_size]
-            nombres_lote = [item['nombre'] for item in lote_actual]
+        if not items:
+            st.warning("No se encontraron ítems en la base de datos.")
+        else:
+            progreso = st.progress(0)
+            status = st.empty()
+            contador_exito = 0
             
-            status.text(f"🧠 IA Analizando lote {i//lote_size + 1}...")
-            clasificaciones = clasificar_lote(nombres_lote)
+            for i, item in enumerate(items):
+                nombre_actual = item['nombre']
+                status.info(f"Procesando ({i+1}/{len(items)}): {nombre_actual}")
+                
+                # Clasificar
+                nueva_cat = clasificar_inteligente(nombre_actual)
+                
+                # Actualizar Supabase
+                try:
+                    update_res = supabase.table("items").update({"categoria": nueva_cat}).eq("id", item['id']).execute()
+                    if update_res.data:
+                        contador_exito += 1
+                except Exception as db_error:
+                    st.error(f"Error en base de datos para {nombre_actual}: {db_error}")
+                
+                progreso.progress((i + 1) / len(items))
+                time.sleep(0.4) # Pausa para estabilidad
             
-            for item in lote_actual:
-                nombre = item['nombre']
-                if nombre in clasificaciones:
-                    cat = clasificaciones[nombre]
-                    supabase.table("items").update({"categoria": cat}).eq("id", item['id']).execute()
-            
-            progreso.progress(min((i + lote_size) / total, 1.0))
-            time.sleep(2) # Pausa estratégica para evitar el baneo de Google
-            
-        st.success("✅ ¡Inventario organizado!")
-        st.rerun()
+            st.success(f"✅ Proceso terminado. {contador_exito} ítems clasificados correctamente.")
+            st.rerun()
 
-    # Visualización
-    res_db = supabase.table("items").select("*").execute()
-    if res_db.data:
-        df = pd.DataFrame(res_db.data)
-        df['categoria'] = df['categoria'].fillna("GENERAL - SIN CLASIFICAR")
-        
-        for cat in sorted(df['categoria'].unique()):
-            with st.expander(f"📁 {cat}", expanded=False):
-                st.dataframe(df[df['categoria'] == cat][['nombre', 'cantidad_actual', 'unidad']], 
-                             use_container_width=True, hide_index=True)
+    # --- RENDERIZADO DE TABLAS ---
+    try:
+        res_db = supabase.table("items").select("*").execute()
+        if res_db.data:
+            df = pd.DataFrame(res_db.data)
+            df['categoria'] = df['categoria'].fillna("GENERAL - SIN CLASIFICAR")
+            
+            for cat in sorted(df['categoria'].unique()):
+                with st.expander(f"📁 {cat}", expanded=False):
+                    st.dataframe(df[df['categoria'] == cat][['nombre', 'cantidad_actual', 'unidad', 'ubicacion_detallada']], 
+                                 use_container_width=True, hide_index=True)
+        else:
+            st.info("La tabla está vacía.")
+    except Exception as e:
+        st.error(f"Error al cargar la tabla: {e}")
