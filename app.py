@@ -14,7 +14,7 @@ try:
     SUPABASE_URL = st.secrets["SUPABASE_URL"]
     SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 except:
-    st.error("Error en Secrets.")
+    st.error("Error en Secrets. Verifica la configuración.")
     st.stop()
 
 genai.configure(api_key=GENAI_KEY)
@@ -27,79 +27,70 @@ def obtener_modelo():
 
 model = obtener_modelo()
 
-# --- FUNCIÓN DE CLASIFICACIÓN JERÁRQUICA ---
+# --- FUNCIÓN DE CLASIFICACIÓN ---
 def clasificar_jerarquico(nombre):
-    prompt = f"""
-    Clasifica este ítem de laboratorio en una estructura de Carpeta > Subcarpeta.
-    Ítem: '{nombre}'
-    Ejemplos:
-    - Etanol -> 'Reactivos > Solventes'
-    - Tips 200ul -> 'Consumibles > Plásticos'
-    - Vaso de precipitado -> 'Vidriería > Vasos y Frascos'
-    
-    Responde SOLAMENTE la ruta (Máximo 2 niveles).
-    """
+    # Usamos un separador más amigable: " - " en lugar de ">"
+    prompt = f"Clasifica para inventario: '{nombre}'. Responde en formato: Carpeta - Subcarpeta. Ejemplo: 'Reactivos - Solventes'. Máximo 30 caracteres."
     try:
         res = model.generate_content(prompt)
-        return res.text.strip().replace("'", "").replace('"', '')
-    except: return "Otros > Sin Clasificar"
+        return res.text.strip().replace("'", "").replace('"', '').replace('>', '-')
+    except: return "General - Sin clasificar"
 
 # --- INTERFAZ ---
-st.title("🔬 Sistema de Carpetas Lab Aguilar")
+st.title("🔬 Explorador Lab Aguilar")
 
-tab1, tab2 = st.tabs(["🎙️ Registro Rápido", "📂 Explorador de Inventario"])
+tab1, tab2 = st.tabs(["🎙️ Registro", "📂 Inventario Jerárquico"])
 
 with tab1:
-    instruccion = st.text_area("Comando:", placeholder="Ej: 'Usa 500ml de Etanol'")
-    if st.button("🚀 Procesar", use_container_width=True):
-        st.info("Procesando comando...")
+    st.info("El sistema de registro multimodal está activo.")
 
 with tab2:
-    col_btn, col_search = st.columns([1, 2])
-    
-    with col_btn:
-        if st.button("🤖 RE-CLASIFICAR TODO (Carpetas)", use_container_width=True, type="primary"):
-            res_items = supabase.table("items").select("id", "nombre").execute()
-            bar = st.progress(0)
-            status = st.empty()
-            
-            for i, item in enumerate(res_items.data):
+    # Botón de re-clasificación con manejo de errores por fila
+    if st.button("🤖 ORGANIZAR EN CARPETAS", use_container_width=True, type="primary"):
+        res_items = supabase.table("items").select("id", "nombre").execute()
+        items = res_items.data
+        
+        progreso = st.progress(0)
+        status = st.empty()
+        errores = 0
+        
+        for i, item in enumerate(items):
+            try:
                 nueva_ruta = clasificar_jerarquico(item['nombre'])
+                # Intentamos actualizar solo este registro
                 supabase.table("items").update({"categoria": nueva_ruta}).eq("id", item['id']).execute()
-                bar.progress((i + 1) / len(res_items.data))
-                status.text(f"Organizando: {item['nombre']} -> {nueva_ruta}")
+                status.text(f"✅ {item['nombre']} -> {nueva_ruta}")
+            except Exception as e:
+                errores += 1
+                status.warning(f"❌ Error en: {item['nombre']}")
             
-            st.success("✅ ¡Inventario organizado por carpetas!")
-            st.rerun()
+            progreso.progress((i + 1) / len(items))
+            time.sleep(0.1) # Breve pausa para no saturar la API
+            
+        st.success(f"Proceso completado. Errores: {errores}")
+        st.rerun()
 
-    with col_search:
-        busqueda = st.text_input("🔍 Buscar en carpetas...")
-
-    # --- LÓGICA DE CARPETAS ANIDADAS ---
+    # --- RENDERIZADO DE CARPETAS ---
     res_db = supabase.table("items").select("*").execute()
     if res_db.data:
         df = pd.DataFrame(res_db.data)
-        df['categoria'] = df['categoria'].fillna("Otros > Sin Clasificar")
+        df['categoria'] = df['categoria'].fillna("General - Sin clasificar")
         
-        # Filtrar si hay búsqueda
-        if busqueda:
-            df = df[df['nombre'].str.contains(busqueda, case=False)]
-
-        # Obtener carpetas principales (Nivel 1)
-        df['carpeta_padre'] = df['categoria'].apply(lambda x: x.split('>')[0].strip())
-        df['sub_carpeta'] = df['categoria'].apply(lambda x: x.split('>')[1].strip() if '>' in x else "General")
-
-        for padre in sorted(df['carpeta_padre'].unique()):
-            with st.expander(f"📁 {padre}", expanded=False):
-                df_padre = df[df['carpeta_padre'] == padre]
+        # Dividir la ruta en Padre e Hijo
+        df[['Padre', 'Hijo']] = df['categoria'].str.split('-', n=1, expand=True).fillna("General")
+        
+        padres = sorted(df['Padre'].unique())
+        
+        for p in padres:
+            with st.expander(f"📁 {p.strip().upper()}", expanded=False):
+                df_p = df[df['Padre'] == p]
+                hijos = sorted(df_p['Hijo'].unique())
                 
-                # Crear subcarpetas
-                for sub in sorted(df_padre['sub_carpeta'].unique()):
-                    st.markdown(f"**📂 {sub}**")
-                    df_sub = df_padre[df_padre['sub_carpeta'] == sub]
+                for h in hijos:
+                    st.markdown(f"**📍 {h.strip()}**")
+                    df_h = df_p[df_p['Hijo'] == h]
                     st.dataframe(
-                        df_sub[['nombre', 'cantidad_actual', 'unidad', 'ubicacion_detallada']], 
-                        use_container_width=True, 
+                        df_h[['nombre', 'cantidad_actual', 'unidad', 'ubicacion_detallada']],
+                        use_container_width=True,
                         hide_index=True
                     )
-                    st.divider()
