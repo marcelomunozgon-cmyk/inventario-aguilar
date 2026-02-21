@@ -3,112 +3,106 @@ import google.generativeai as genai
 from supabase import create_client
 import pandas as pd
 import json
-import time
+from PIL import Image
+from datetime import datetime
 
 # --- CONFIGURACIÓN ---
 st.set_page_config(page_title="Lab Aguilar OS", page_icon="🔬", layout="wide")
 
+# Conexiones (Secrets)
 try:
     GENAI_KEY = st.secrets["GENAI_KEY"]
     SUPABASE_URL = st.secrets["SUPABASE_URL"]
     SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
     genai.configure(api_key=GENAI_KEY)
     supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-except Exception as e:
-    st.error(f"Error de configuración: {e}")
+except:
+    st.error("Error de configuración.")
     st.stop()
 
 @st.cache_resource
 def obtener_modelo():
-    try:
-        modelos = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        return genai.GenerativeModel(next((m for m in modelos if 'flash' in m), modelos[0]))
-    except: return None
+    modelos = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+    return genai.GenerativeModel(next((m for m in modelos if 'flash' in m), modelos[0]))
 
 model = obtener_modelo()
 
-# --- DICCIONARIO DE RESPALDO (Si la IA falla) ---
-DICCIONARIO_LAB = {
-    "etanol": "REACTIVOS - Solventes",
-    "puntas": "CONSUMIBLES - Plásticos",
-    "tips": "CONSUMIBLES - Plásticos",
-    "tubo": "CONSUMIBLES - Plásticos",
-    "vaso": "VIDRIERÍA - Recipientes",
-    "kit": "REACTIVOS - Kits",
-    "pcr": "REACTIVOS - Biología Molecular",
-    "guantes": "CONSUMIBLES - Protección",
-    "buffer": "REACTIVOS - Buffers"
-}
-
-def clasificar_inteligente(nombre):
-    # Primero intentamos con el diccionario local (instantáneo)
-    nombre_min = nombre.lower()
-    for clave, valor in DICCIONARIO_LAB.items():
-        if clave in nombre_min:
-            return valor
-            
-    # Si no está en el diccionario, le pedimos a la IA
-    if model:
-        try:
-            prompt = f"Clasifica '{nombre}' en formato: CATEGORIA - SUBCATEGORIA. Solo 3 palabras máximo."
-            res = model.generate_content(prompt)
-            return res.text.strip().upper()
-        except: pass
-    return "GENERAL - OTROS"
-
-# --- INTERFAZ ---
-st.title("🔬 Sistema de Control Aguilar")
-
-tab1, tab2 = st.tabs(["🎙️ Registro", "📂 Inventario Organizado"])
-
-with tab2:
-    st.subheader("📦 Clasificación Masiva")
-    
-    if st.button("🚀 INICIAR CLASIFICACIÓN (Modo Seguro)", use_container_width=True, type="primary"):
-        # 1. Obtener datos
-        res_items = supabase.table("items").select("id", "nombre").execute()
-        items = res_items.data
-        
-        if not items:
-            st.warning("No se encontraron ítems en la base de datos.")
-        else:
-            progreso = st.progress(0)
-            status = st.empty()
-            contador_exito = 0
-            
-            for i, item in enumerate(items):
-                nombre_actual = item['nombre']
-                status.info(f"Procesando ({i+1}/{len(items)}): {nombre_actual}")
-                
-                # Clasificar
-                nueva_cat = clasificar_inteligente(nombre_actual)
-                
-                # Actualizar Supabase
-                try:
-                    update_res = supabase.table("items").update({"categoria": nueva_cat}).eq("id", item['id']).execute()
-                    if update_res.data:
-                        contador_exito += 1
-                except Exception as db_error:
-                    st.error(f"Error en base de datos para {nombre_actual}: {db_error}")
-                
-                progreso.progress((i + 1) / len(items))
-                time.sleep(0.4) # Pausa para estabilidad
-            
-            st.success(f"✅ Proceso terminado. {contador_exito} ítems clasificados correctamente.")
-            st.rerun()
-
-    # --- RENDERIZADO DE TABLAS ---
+# --- LÓGICA DE PROCESAMIENTO ---
+def procesar_comando(texto, imagen=None):
+    prompt = f"""
+    Eres el asistente del Lab Aguilar. Instrucción: "{texto}"
+    Extrae un JSON:
+    {{
+      "producto": "nombre",
+      "valor": numero,
+      "accion": "sumar/reemplazar",
+      "ubicacion": "texto o null"
+    }}
+    """
     try:
-        res_db = supabase.table("items").select("*").execute()
-        if res_db.data:
-            df = pd.DataFrame(res_db.data)
-            df['categoria'] = df['categoria'].fillna("GENERAL - SIN CLASIFICAR")
+        response = model.generate_content([prompt, imagen] if imagen else prompt)
+        orden = json.loads(response.text[response.text.find('{'):response.text.rfind('}')+1])
+        
+        # Búsqueda en DB
+        res = supabase.table("items").select("*").ilike("nombre", f"%{orden['producto']}%").execute()
+        if not res.data: return f"❓ No encontré '{orden['producto']}'."
+        
+        item = res.data[0]
+        actual = item.get('cantidad_actual') or 0
+        nueva_qty = actual + orden['valor'] if orden['accion'] == 'sumar' else orden['valor']
+        
+        updates = {"cantidad_actual": nueva_qty, "ultima_actualizacion": datetime.now().isoformat()}
+        if orden.get('ubicacion'): updates['ubicacion_detallada'] = orden['ubicacion']
+        
+        supabase.table("items").update(updates).eq("id", item['id']).execute()
+        return f"✅ **{item['nombre']}** actualizado a **{nueva_qty} {item['unidad']}**."
+    except Exception as e: return f"❌ Error: {str(e)}"
+
+# --- INTERFAZ DASHBOARD (DOS COLUMNAS) ---
+st.title("🔬 Monitor de Inventario en Vivo - Lab Aguilar")
+
+col_control, col_monitor = st.columns([1, 2], gap="large")
+
+# COLUMNA IZQUIERDA: ENTRADA DE DATOS
+with col_control:
+    st.subheader("🎮 Panel de Control")
+    with st.container(border=True):
+        foto = st.camera_input("📷 Cámara (Etiquetas)")
+        instruccion = st.text_area("🎙️ Comando de voz o texto:", 
+                                  placeholder="Ej: 'Se gastaron 2 kits de PCR' o 'Hay 5 de Etanol en el Estante B'",
+                                  height=100)
+        
+        if st.button("🚀 Ejecutar Cambio", use_container_width=True, type="primary"):
+            with st.spinner("Procesando..."):
+                img_pil = Image.open(foto) if foto else None
+                resultado = procesar_comando(instruccion, img_pil)
+                st.toast(resultado) # Notificación rápida en la esquina
+                st.info(resultado)
+
+# COLUMNA DERECHA: MONITOR EN VIVO
+with col_monitor:
+    st.subheader("📊 Vista del Inventario")
+    
+    # Buscador rápido arriba de la tabla
+    busqueda = st.text_input("🔍 Filtrar tabla al instante...", "")
+    
+    res_db = supabase.table("items").select("*").execute()
+    if res_db.data:
+        df = pd.DataFrame(res_db.data)
+        
+        # Aplicar filtro de búsqueda si existe
+        if busqueda:
+            df = df[df['nombre'].str.contains(busqueda, case=False, na=False)]
             
-            for cat in sorted(df['categoria'].unique()):
-                with st.expander(f"📁 {cat}", expanded=False):
-                    st.dataframe(df[df['categoria'] == cat][['nombre', 'cantidad_actual', 'unidad', 'ubicacion_detallada']], 
-                                 use_container_width=True, hide_index=True)
-        else:
-            st.info("La tabla está vacía.")
-    except Exception as e:
-        st.error(f"Error al cargar la tabla: {e}")
+        # Organizar por Carpetas (Expanders)
+        df['categoria'] = df['categoria'].fillna("GENERAL - SIN CLASIFICAR")
+        for cat in sorted(df['categoria'].unique()):
+            df_cat = df[df['categoria'] == cat]
+            with st.expander(f"📁 {cat} ({len(df_cat)})", expanded=True if busqueda else False):
+                st.dataframe(
+                    df_cat[['nombre', 'cantidad_actual', 'unidad', 'ubicacion_detallada']],
+                    use_container_width=True,
+                    hide_index=True
+                )
+    else:
+        st.info("No hay datos para mostrar.")
