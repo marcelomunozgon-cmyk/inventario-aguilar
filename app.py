@@ -15,99 +15,95 @@ try:
     genai.configure(api_key=GENAI_KEY)
     supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 except:
-    st.error("Error de configuración en los Secrets.")
+    st.error("Error en Secrets.")
     st.stop()
 
-# --- MODELO (Nombre corregido para evitar el 404) ---
+# --- MODELO (Nombre corregido para máxima compatibilidad) ---
 @st.cache_resource
 def obtener_modelo():
-    # Usamos gemini-1.5-flash que es el más rápido y económico
-    return genai.GenerativeModel('gemini-1.5-flash')
+    # Esta es la ruta más estable para la API de Google
+    return genai.GenerativeModel('models/gemini-1.5-flash-latest')
 
 model = obtener_modelo()
 
 # --- MEMORIA DEL CHAT ---
 if "messages" not in st.session_state:
     st.session_state.messages = [
-        {"role": "assistant", "content": "Hola Rodrigo. Estoy listo. Puedo ayudarte a registrar reactivos, mover cosas de estante o explicarte cómo funciona la app. ¿Qué necesitas?"}
+        {"role": "assistant", "content": "Hola Rodrigo. Soy tu Agente del Lab Aguilar. ¿Qué vamos a gestionar hoy?"}
     ]
 
-# --- FUNCIÓN DEL AGENTE CONVERSACIONAL ---
-def ejecutar_agente(prompt_usuario, inventario_contexto):
-    contexto_sistema = f"""
-    Eres el Asistente Inteligente del Lab Aguilar.
-    Tu objetivo es gestionar el inventario mediante una conversación natural.
+# --- FUNCIÓN DEL AGENTE ---
+def ejecutar_agente(prompt_usuario, contexto_inventario):
+    instrucciones = f"""
+    Eres el Asistente del Lab Aguilar. Tienes acceso al inventario.
+    Inventario Actual:
+    {contexto_inventario}
     
     REGLAS:
-    1. Si el usuario quiere actualizar algo, busca en este contexto: {inventario_contexto}
-    2. Si no estás seguro de a qué producto se refiere, PREGUNTA (ej: ¿Es el Etanol de 1L o el de 500ml?).
-    3. Si confirmas una acción técnica, incluye al final de tu respuesta este formato JSON: 
-       DATA_UPDATE: {{"id": "ID_DEL_PRODUCTO", "cantidad": "NUEVA_CANTIDAD", "ubicacion": "NUEVA_UBICACION_O_NULL"}}
-    4. Si te preguntan cómo funciona la app, explica que eres una IA conectada a Supabase.
+    1. Si el usuario pide un cambio, verifica que el producto exista.
+    2. Si hay dudas, pregunta.
+    3. Si confirmas una acción, añade al final: UPDATE: {{"id": ID, "cantidad": N, "ubicacion": "U"}}
+    4. Responde en español, de forma breve y profesional.
     """
-    
     try:
-        # Generar respuesta
+        # Iniciamos el chat con el historial acumulado
         chat = model.start_chat(history=[])
-        response = chat.send_message(f"{contexto_sistema}\n\nUsuario dice: {prompt_usuario}")
+        response = chat.send_message(f"{instrucciones}\n\nUsuario: {prompt_usuario}")
         return response.text
     except Exception as e:
-        return f"Ups, mi conexión con Google se cansó. Esperemos un minuto. Error: {str(e)}"
+        return f"Error de conexión (Cuota o API): {str(e)}"
 
-# --- INTERFAZ DASHBOARD ---
-st.title("🔬 Lab Aguilar: Control Conversacional")
+# --- INTERFAZ EN DOS COLUMNAS ---
+st.title("🔬 Monitor Inteligente Lab Aguilar")
 
 col_chat, col_monitor = st.columns([1, 1.2], gap="large")
 
 with col_monitor:
-    st.subheader("📊 Estado Actual del Inventario")
-    res_db = supabase.table("items").select("*").execute()
-    inventario_raw = ""
-    if res_db.data:
-        df = pd.DataFrame(res_db.data)
-        inventario_raw = df[['id', 'nombre', 'cantidad_actual', 'ubicacion_detallada']].to_string()
+    st.subheader("📊 Inventario en Tiempo Real")
+    res = supabase.table("items").select("*").execute()
+    inventario_texto = ""
+    if res.data:
+        df = pd.DataFrame(res.data)
+        # Resumen para la IA (ahorro de tokens)
+        inventario_texto = df[['id', 'nombre', 'cantidad_actual', 'ubicacion_detallada']].to_string(index=False)
         
-        # Vista organizada para el humano
-        df['categoria'] = df['categoria'].fillna("SIN CLASIFICAR")
+        # Vista para el Humano
+        df['categoria'] = df['categoria'].fillna("GENERAL")
         for cat in sorted(df['categoria'].unique()):
             with st.expander(f"📁 {cat}"):
-                st.dataframe(df[df['categoria'] == cat][['nombre', 'cantidad_actual', 'unidad', 'ubicacion_detallada']], use_container_width=True, hide_index=True)
+                st.dataframe(df[df['categoria'] == cat][['nombre', 'cantidad_actual', 'unidad', 'ubicacion_detallada']], 
+                             use_container_width=True, hide_index=True)
 
 with col_chat:
-    st.subheader("💬 Chat con el Lab")
-    
-    # Mostrar historial
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
+    # Mostrar el chat
+    container_chat = st.container(height=500)
+    with container_chat:
+        for m in st.session_state.messages:
+            with st.chat_message(m["role"]):
+                st.markdown(m["content"])
 
     # Entrada de texto
-    if prompt := st.chat_input("Ej: 'Mueve el Etanol al Estante 3' o '¿Cómo agrego un nuevo ítem?'"):
+    if prompt := st.chat_input("Dime qué hacer..."):
         st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
-        
-        with st.chat_message("assistant"):
-            with st.spinner("Pensando..."):
-                respuesta = ejecutar_agente(prompt, inventario_raw)
-                
-                # Procesar si hay una actualización en la respuesta
-                if "DATA_UPDATE:" in respuesta:
-                    try:
-                        json_parte = respuesta.split("DATA_UPDATE:")[1].strip()
-                        datos = json.loads(json_parte)
-                        update_data = {"cantidad_actual": datos["cantidad"]}
-                        if datos["ubicacion"]:
-                            update_data["ubicacion_detallada"] = datos["ubicacion"]
-                        
-                        supabase.table("items").update(update_data).eq("id", datos["id"]).execute()
-                        respuesta = respuesta.split("DATA_UPDATE:")[0] + "\n\n✨ *Base de datos actualizada en tiempo real.*"
-                    except:
-                        pass
-                
-                st.markdown(respuesta)
-                st.session_state.messages.append({"role": "assistant", "content": respuesta})
-                
-                # Refrescar para ver cambios en la tabla si hubo update
-                if "✨" in respuesta:
-                    st.rerun()
+        with container_chat:
+            with st.chat_message("user"): st.markdown(prompt)
+            
+            with st.chat_message("assistant"):
+                with st.spinner("Consultando..."):
+                    respuesta = ejecutar_agente(prompt, inventario_texto)
+                    
+                    # Lógica de actualización de DB
+                    if "UPDATE:" in respuesta:
+                        try:
+                            json_data = respuesta.split("UPDATE:")[1].strip()
+                            d = json.loads(json_data)
+                            upd = {"cantidad_actual": d["cantidad"]}
+                            if d["ubicacion"]: upd["ubicacion_detallada"] = d["ubicacion"]
+                            
+                            supabase.table("items").update(upd).eq("id", d["id"]).execute()
+                            respuesta = respuesta.split("UPDATE:")[0] + "\n\n✅ *Inventario actualizado.*"
+                        except: pass
+                    
+                    st.markdown(respuesta)
+                    st.session_state.messages.append({"role": "assistant", "content": respuesta})
+                    if "✅" in respuesta: st.rerun()
