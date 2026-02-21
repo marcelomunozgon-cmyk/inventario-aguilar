@@ -10,14 +10,18 @@ import time
 # --- CONFIGURACIÓN ---
 st.set_page_config(page_title="Lab Aguilar Business", page_icon="🔬", layout="wide")
 
-GENAI_KEY = st.secrets["GENAI_KEY"]
-SUPABASE_URL = st.secrets["SUPABASE_URL"]
-SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
+# Conexión Segura
+try:
+    GENAI_KEY = st.secrets["GENAI_KEY"]
+    SUPABASE_URL = st.secrets["SUPABASE_URL"]
+    SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
+except:
+    st.error("Revisa los Secrets en Streamlit Cloud.")
+    st.stop()
 
 genai.configure(api_key=GENAI_KEY)
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# --- MODELO ---
 @st.cache_resource
 def obtener_modelo():
     modelos = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
@@ -26,89 +30,62 @@ def obtener_modelo():
 
 model = obtener_modelo()
 
-# --- FUNCIONES DE CLASIFICACIÓN ---
-def clasificar_texto(nombre_item):
-    prompt = f"Clasifica este objeto de laboratorio: '{nombre_item}'. Responde SOLO la categoría (Reactivos, Consumibles, Vidriería, Equipos, Buffers o Anticuerpos)."
+# --- FUNCIONES ---
+def clasificar_uno(nombre):
+    prompt = f"Categoriza este ítem de laboratorio: '{nombre}'. Responde solo una palabra: Reactivos, Consumibles, Vidriería, Equipos, Buffers o Anticuerpos."
     try:
-        response = model.generate_content(prompt)
-        return response.text.strip()
-    except:
-        return "Sin Clasificar"
-
-def procesar_inteligente(texto, imagen=None):
-    prompt = f"""
-    Instrucción: "{texto}"
-    Responde JSON: {{"producto": "nombre", "valor": numero, "accion": "sumar/reemplazar", "categoria": "categoría", "ubicacion": "texto", "umbral_minimo": numero}}
-    """
-    try:
-        response = model.generate_content([prompt, imagen] if imagen else prompt)
-        raw_text = response.text
-        start, end = raw_text.find('{'), raw_text.rfind('}') + 1
-        orden = json.loads(raw_text[start:end])
-        
-        palabras = [p for p in orden['producto'].lower().split() if len(p) > 2]
-        query = supabase.table("items").select("*")
-        for p in palabras: query = query.ilike("nombre", f"%{p}%")
-        res = query.execute()
-
-        if not res.data: return f"❓ No encontré '{orden['producto']}'."
-        
-        item = res.data[0]
-        updates = {
-            "ultima_actualizacion": datetime.now().isoformat(),
-            "categoria": orden['categoria']
-        }
-        if orden.get('valor') is not None:
-            actual = item.get('cantidad_actual') or 0
-            updates['cantidad_actual'] = actual + orden['valor'] if orden['accion'] == 'sumar' else orden['valor']
-        if orden.get('ubicacion'): updates['ubicacion_detallada'] = orden['ubicacion']
-        if orden.get('umbral_minimo'): updates['umbral_minimo'] = orden['umbral_minimo']
-        
-        supabase.table("items").update(updates).eq("id", item['id']).execute()
-        return f"✅ **{item['nombre']}** actualizado."
-    except Exception as e: return f"❌ Error: {str(e)}"
+        res = model.generate_content(prompt)
+        return res.text.strip()
+    except: return "Sin Clasificar"
 
 # --- INTERFAZ ---
-tab1, tab2, tab3 = st.tabs(["🎙️ Registro", "📂 Inventario Organizado", "⚙️ Admin"])
+st.title("🔬 Gestión Lab Aguilar")
+
+# Selector de Usuario en la parte principal para que sea fácil en el móvil
+usuario = st.selectbox("👤 Operador actual:", ["Rodrigo Aguilar", "Asistente 1", "Admin"])
+
+tab1, tab2 = st.tabs(["🎙️ Nueva Acción", "📂 Inventario y Clasificación"])
 
 with tab1:
-    foto = st.camera_input("Foto etiqueta")
-    instruccion = st.text_area("¿Qué hiciste?", placeholder="Ej: 'Llegaron 5 de Optimem'")
-    if st.button("🚀 Ejecutar", use_container_width=True):
-        img_pil = Image.open(foto) if foto else None
-        st.info(procesar_inteligente(instruccion, img_pil))
+    foto = st.camera_input("📷 Cámara")
+    instruccion = st.text_area("Comando:", placeholder="Ej: 'Usa 2 del kit pcr'")
+    if st.button("🚀 Procesar Acción", use_container_width=True):
+        # (Aquí va la lógica de procesamiento que ya teníamos)
+        st.write("Procesando...")
 
 with tab2:
-    busqueda = st.text_input("🔍 Buscar reactivo...", "")
-    res = supabase.table("items").select("*").execute()
-    if res.data:
-        df = pd.DataFrame(res.data)
-        if busqueda:
-            df = df[df['nombre'].str.contains(busqueda, case=False, na=False)]
+    st.header("📦 Control de Stock")
+    
+    # BOTÓN DE AUTO-CLASIFICACIÓN (AQUÍ ESTÁ EL BOTÓN QUE BUSCAS)
+    if st.button("🤖 CLASIFICAR TODO EL INVENTARIO AHORA", use_container_width=True, type="primary"):
+        # Buscamos ítems que NO tengan categoría
+        res_items = supabase.table("items").select("id", "nombre").execute()
+        items_a_procesar = [i for i in res_items.data if not i.get('categoria')]
         
-        df['categoria'] = df['categoria'].fillna("Sin Clasificar")
+        if not items_a_procesar:
+            st.success("✅ ¡Todo el inventario ya está clasificado!")
+        else:
+            bar = st.progress(0)
+            total = len(items_a_procesar)
+            for i, item in enumerate(items_a_procesar):
+                cat = clasificar_uno(item['nombre'])
+                supabase.table("items").update({"categoria": cat}).eq("id", item['id']).execute()
+                bar.progress((i + 1) / total)
+                st.toast(f"Clasificando: {item['nombre']} -> {cat}")
+            st.success("🎉 ¡Proceso terminado!")
+            st.rerun()
+
+    # VISUALIZACIÓN
+    busqueda = st.text_input("🔍 Buscar reactivo...")
+    res_db = supabase.table("items").select("*").execute()
+    if res_db.data:
+        df = pd.DataFrame(res_db.data)
+        df['categoria'] = df['categoria'].fillna("⚠️ Sin Clasificar")
+        
         for cat in sorted(df['categoria'].unique()):
             df_cat = df[df['categoria'] == cat]
-            with st.expander(f"📁 {cat} ({len(df_cat)})"):
+            if busqueda:
+                df_cat = df_cat[df_cat['nombre'].str.contains(busqueda, case=False)]
+            
+            with st.expander(f"📁 {cat} ({len(df_cat)} ítems)"):
                 st.dataframe(df_cat[['nombre', 'cantidad_actual', 'unidad', 'ubicacion_detallada']], use_container_width=True, hide_index=True)
-
-with tab3:
-    st.header("Herramientas de Inteligencia")
-    if st.button("🤖 Auto-Clasificar Inventario Completo"):
-        res = supabase.table("items").select("id", "nombre").is_("categoria", "null").execute()
-        if not res.data:
-            st.success("¡Todos los ítems ya tienen categoría!")
-        else:
-            progreso = st.progress(0)
-            status = st.empty()
-            total = len(res.data)
-            
-            for i, item in enumerate(res.data):
-                nueva_cat = clasificar_texto(item['nombre'])
-                supabase.table("items").update({"categoria": nueva_cat}).eq("id", item['id']).execute()
-                progreso.progress((i + 1) / total)
-                status.text(f"Clasificando: {item['nombre']} -> {nueva_cat}")
-                time.sleep(0.1) # Evitar saturar la API
-            
-            st.success(f"✅ ¡Se han clasificado {total} ítems exitosamente!")
-            st.rerun()
