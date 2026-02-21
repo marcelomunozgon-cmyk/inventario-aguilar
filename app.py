@@ -2,7 +2,6 @@ import streamlit as st
 import google.generativeai as genai
 from supabase import create_client
 import json
-from PIL import Image
 import pandas as pd
 from datetime import datetime
 import time
@@ -28,39 +27,45 @@ def obtener_modelo():
 
 model = obtener_modelo()
 
-# --- FUNCIÓN DE CLASIFICACIÓN REFORZADA ---
-def clasificar_robusto(nombre):
-    # Forzamos a la IA a elegir de una lista para evitar errores de formato
+# --- CEREBRO DE CLASIFICACIÓN TÉCNICA ---
+def clasificar_cientifico(nombre):
     prompt = f"""
-    Clasifica este objeto de laboratorio: '{nombre}'.
-    Elige SOLO una de estas categorías:
-    'REACTIVOS - Químicos', 'REACTIVOS - Biología', 'CONSUMIBLES - Plásticos', 'CONSUMIBLES - Guantes/Papel', 'VIDRIERÍA - Frascos', 'EQUIPOS - Instrumentos'.
+    Eres un experto en suministros de laboratorio (Sigma-Aldrich, Thermo Fisher, Bio-Rad).
+    Analiza el producto: '{nombre}'
     
-    Responde ÚNICAMENTE la categoría elegida, nada más.
+    Determina su categoría siguiendo esta lógica:
+    - Si es una sustancia química, buffer, enzima, anticuerpo o kit: 'REACTIVOS - [Tipo]'
+    - Si es plástico, descartable, guantes o puntas: 'CONSUMIBLES - [Tipo]'
+    - Si es de vidrio o cuarzo: 'VIDRIERÍA - [Tipo]'
+    - Si es un aparato eléctrico o mecánico: 'EQUIPOS - [Tipo]'
+    
+    Responde SOLAMENTE la categoría en formato: CATEGORIA - SUBCATEGORIA.
+    Si no estás seguro, usa tu conocimiento de catálogos científicos para adivinar.
+    Ejemplo: 'Opti-MEM' -> 'REACTIVOS - Medios de Cultivo'
     """
     try:
         res = model.generate_content(prompt)
-        # Limpiamos cualquier carácter extraño que devuelva la IA
-        limpio = res.text.strip().replace("'", "").replace('"', '').replace(".", "")
-        return limpio if len(limpio) > 3 else "GENERAL - Sin clasificar"
+        return res.text.strip().replace("'", "").replace('"', '').upper()
     except:
-        return "GENERAL - Sin clasificar"
+        return "GENERAL - SIN CLASIFICAR"
 
 # --- INTERFAZ ---
-st.title("🔬 Sistema Lab Aguilar")
+st.title("🔬 Inteligencia de Inventario Aguilar")
 
-tab1, tab2 = st.tabs(["🎙️ Registro", "📂 Inventario Organizado"])
+tab1, tab2 = st.tabs(["🎙️ Registro Multimodal", "📂 Explorador Jerárquico"])
 
 with tab1:
     col1, col2 = st.columns(2)
-    with col1: foto = st.camera_input("Captura")
+    with col1: foto = st.camera_input("Capturar etiqueta")
     with col2:
-        instruccion = st.text_area("Comando:", placeholder="Ej: 'Se usaron 100ml de Etanol'")
+        instruccion = st.text_area("Instrucción rápida:", placeholder="Ej: 'Suma 10 a los frascos de glucosa'")
         if st.button("🚀 Ejecutar", use_container_width=True):
-            st.info("Procesando...")
+            st.info("Procesando con lógica científica...")
 
 with tab2:
-    if st.button("🤖 CLASIFICAR TODO AHORA (Modo Forzado)", use_container_width=True, type="primary"):
+    st.subheader("📦 Organización del Almacén")
+    
+    if st.button("🤖 EJECUTAR CLASIFICACIÓN TÉCNICA (180 ítems)", use_container_width=True, type="primary"):
         res_items = supabase.table("items").select("id", "nombre").execute()
         items = res_items.data
         
@@ -68,30 +73,28 @@ with tab2:
         status = st.empty()
         
         for i, item in enumerate(items):
-            nueva_cat = clasificar_robusto(item['nombre'])
-            # Actualizamos la base de datos
+            # Aquí es donde ocurre la magia técnica
+            nueva_cat = clasificar_cientifico(item['nombre'])
+            
             try:
                 supabase.table("items").update({"categoria": nueva_cat}).eq("id", item['id']).execute()
-                status.write(f"✅ {item['nombre']} -> {nueva_cat}")
+                status.write(f"🔬 Identificado: **{item['nombre']}** como **{nueva_cat}**")
             except Exception as e:
-                status.write(f"❌ Error en {item['nombre']}: {e}")
+                status.write(f"⚠️ Error al guardar {item['nombre']}")
             
             progreso.progress((i + 1) / len(items))
-            time.sleep(0.3) # Pausa para asegurar que la API no nos bloquee
+            time.sleep(0.5) # Pausa necesaria para que Google no bloquee la cuenta gratuita
             
-        st.success("¡Organización completada!")
+        st.success("✅ Clasificación masiva terminada.")
         st.rerun()
 
-    # Visualización de carpetas
+    # Visualización organizada
     res_db = supabase.table("items").select("*").execute()
     if res_db.data:
         df = pd.DataFrame(res_db.data)
-        df['categoria'] = df['categoria'].fillna("GENERAL - Sin clasificar")
+        df['categoria'] = df['categoria'].fillna("GENERAL - SIN CLASIFICAR")
         
-        # Agrupamos por lo que diga la columna categoria
-        categorias_unicas = sorted(df['categoria'].unique())
-        
-        for cat in categorias_unicas:
+        for cat in sorted(df['categoria'].unique()):
             with st.expander(f"📁 {cat}", expanded=False):
                 df_cat = df[df['categoria'] == cat]
                 st.dataframe(df_cat[['nombre', 'cantidad_actual', 'unidad', 'ubicacion_detallada']], 
