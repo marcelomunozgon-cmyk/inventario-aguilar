@@ -3,6 +3,7 @@ import google.generativeai as genai
 from supabase import create_client
 import pandas as pd
 import json
+import re
 from datetime import datetime
 from streamlit_mic_recorder import mic_recorder
 
@@ -13,7 +14,7 @@ try:
     supabase = create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
     genai.configure(api_key=st.secrets["GENAI_KEY"])
 except:
-    st.error("Error: Revisa los Secrets.")
+    st.error("Error: Revisa los Secrets en Streamlit Cloud.")
     st.stop()
 
 @st.cache_resource
@@ -45,10 +46,10 @@ with col_mon:
     df['cantidad_actual'] = pd.to_numeric(df['cantidad_actual'], errors='coerce').fillna(0).astype(int)
     df['umbral_minimo'] = pd.to_numeric(df['umbral_minimo'], errors='coerce').fillna(0).astype(int)
     
-    busqueda = st.text_input("🔍 Buscar...", "")
+    busqueda = st.text_input("🔍 Buscar producto...", "")
     df_show = df[df['nombre'].str.contains(busqueda, case=False)] if busqueda else df
     
-    for cat in sorted(df_show['categoria'].fillna("SIN CAT").unique()):
+    for cat in sorted(df_show['categoria'].fillna("SIN CATEGORÍA").unique()):
         with st.expander(f"📁 {cat}"):
             subset = df_show[df_show['categoria'] == cat][['nombre', 'cantidad_actual', 'unidad', 'umbral_minimo']]
             st.dataframe(subset.style.apply(aplicar_estilos, axis=1).format({"cantidad_actual": "{:.0f}", "umbral_minimo": "{:.0f}"}), use_container_width=True, hide_index=True)
@@ -58,21 +59,19 @@ with col_chat:
     chat_box = st.container(height=400, border=True)
     
     if "messages" not in st.session_state:
-        st.session_state.messages = [{"role": "assistant", "content": "Hola Rodrigo. ¿Qué gestionamos hoy?"}]
+        st.session_state.messages = [{"role": "assistant", "content": "Hola Rodrigo. Entendido: trabajamos con las unidades de la tabla. ¿Qué agregamos?"}]
 
     with chat_box:
         for m in st.session_state.messages:
             with st.chat_message(m["role"]): st.markdown(m["content"])
 
-    # --- LÓGICA DE VOZ Y TEXTO ---
-    st.write("🎙️ Grabación de voz:")
+    st.write("🎙️ Voz:")
     audio = mic_recorder(start_prompt="🔴 Hablar", stop_prompt="🟢 Enviar", key='recorder')
-    input_text = st.chat_input("O escribe aquí...")
+    input_text = st.chat_input("Escribe aquí...")
     
     prompt = None
-    if audio and 'text' in audio and audio['text']:
+    if audio and isinstance(audio, dict) and audio.get('text'):
         prompt = audio['text']
-        st.toast(f"Escuchado: {prompt}")
     elif input_text:
         prompt = input_text
 
@@ -82,20 +81,33 @@ with col_chat:
             with st.chat_message("user"): st.markdown(prompt)
             with st.chat_message("assistant"):
                 try:
-                    ctx = df[['id', 'nombre', 'cantidad_actual', 'umbral_minimo']].to_csv(index=False, sep="|")
-                    full_p = f"Inventario:\n{ctx}\n\nInstrucción: {prompt}\n\nResponde con UPDATE_BATCH: [{{id:N, cantidad:N, umbral:N}}]"
+                    ctx = df[['id', 'nombre', 'cantidad_actual', 'unidad']].to_csv(index=False, sep="|")
+                    
+                    full_p = f"""
+                    Inventario: {ctx}
+                    Instrucción: "{prompt}"
+                    REGLA: Usa las unidades que aparecen en la tabla. Si piden agregar 'una bolsa' y la unidad es 'bolsas', suma 1.
+                    Responde SIEMPRE con este formato al final:
+                    UPDATE_BATCH: [{{"id": ID, "cantidad": NUEVA_CANTIDAD}}]
+                    """
+                    
                     res_ai = model.generate_content(full_p)
                     texto = res_ai.text
                     
                     if "UPDATE_BATCH:" in texto:
-                        data = json.loads(texto.split("UPDATE_BATCH:")[1].strip())
-                        for item in data:
-                            upd = {k: v for k, v in {"cantidad_actual": item.get("cantidad"), "umbral_minimo": item.get("umbral")}.items() if v is not None}
-                            supabase.table("items").update(upd).eq("id", item["id"]).execute()
-                        texto = texto.split("UPDATE_BATCH:")[0] + "\n\n✅ **Actualizado.**"
-                    
-                    st.markdown(texto)
-                    st.session_state.messages.append({"role": "assistant", "content": texto})
-                    st.rerun()
+                        # Buscamos el JSON con comillas dobles forzadas
+                        match = re.search(r'\[.*\]', texto.replace("'", '"'), re.DOTALL)
+                        if match:
+                            data = json.loads(match.group())
+                            for item in data:
+                                supabase.table("items").update({"cantidad_actual": int(item["cantidad"])}).eq("id", item["id"]).execute()
+                            
+                            confirmacion = texto.split("UPDATE_BATCH:")[0]
+                            st.markdown(confirmacion + "\n\n✅ **Actualizado.**")
+                            st.session_state.messages.append({"role": "assistant", "content": confirmacion})
+                            st.rerun()
+                    else:
+                        st.markdown(texto)
+                        st.session_state.messages.append({"role": "assistant", "content": texto})
                 except Exception as e:
                     st.error(f"Error: {e}")
