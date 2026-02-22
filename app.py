@@ -67,16 +67,32 @@ with col_chat:
         for m in st.session_state.messages:
             with st.chat_message(m["role"]): st.markdown(m["content"])
 
-    # --- BOTÓN DE MICROFONO MEJORADO ---
-    st.write("🎙️ Grabación de voz:")
-    # mic_recorder devuelve un diccionario. El texto está en audio['text'] solo si se grabó bien.
+# --- BOTÓN DE MICRÓFONO CON DEPURACIÓN ---
+    st.write("🎙️ Control por Voz:")
     audio = mic_recorder(
-        start_prompt="Presiona para hablar", 
-        stop_prompt="Detener y procesar", 
-        key='recorder'
+        start_prompt="🔴 Iniciar Grabación", 
+        stop_prompt="🟢 Detener y Procesar", 
+        key='recorder',
+        use_container_width=True
     )
     
     input_text = st.chat_input("O escribe aquí...")
+    
+    prompt = None
+
+    # Si hay una acción de audio
+    if audio:
+        if 'text' in audio and audio['text']:
+            prompt = audio['text']
+            st.toast(f"🎙️ Escuché: {prompt}") # Notificación rápida
+        else:
+            # Si el audio existe pero el texto no, mostramos aviso
+            st.warning("⚠️ El micrófono capturó audio, pero la transcripción falló. Revisa tu conexión a internet o intenta hablar más claro.")
+    elif input_text:
+        prompt = input_text
+
+    if prompt:
+        # Aquí sigue el resto de tu lógica de st.session_state.messages...
     
     # LÓGICA DE DETECCIÓN DE ENTRADA
     prompt = None
