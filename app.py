@@ -28,6 +28,14 @@ def get_model():
 
 model = get_model()
 
+# --- INICIALIZAR MEMORIA DE RESPALDO (UNDO) ---
+if "backup_inventario" not in st.session_state:
+    st.session_state.backup_inventario = None
+
+# Función para guardar la "foto" antes de hacer un cambio
+def crear_punto_restauracion(df_actual):
+    st.session_state.backup_inventario = df_actual.copy()
+
 # --- 2. LÓGICA DE DATOS ---
 def aplicar_estilos(row):
     cant = row.get('cantidad_actual', 0)
@@ -36,39 +44,52 @@ def aplicar_estilos(row):
     if cant <= umb: return ['background-color: #fff4cc; color: black'] * len(row)
     return [''] * len(row)
 
-# Cargar inventario completo
 res_items = supabase.table("items").select("*").execute()
 df = pd.DataFrame(res_items.data)
 
-# Asegurar que las columnas clave existan aunque estén vacías
-if 'cantidad_actual' not in df.columns: df['cantidad_actual'] = 0
-if 'umbral_minimo' not in df.columns: df['umbral_minimo'] = 0
-if 'subcategoria' not in df.columns: df['subcategoria'] = ""
+# Asegurar columnas
+for col in ['cantidad_actual', 'umbral_minimo']:
+    if col not in df.columns: df[col] = 0
+for col in ['subcategoria', 'link_proveedor']:
+    if col not in df.columns: df[col] = ""
 
 df['cantidad_actual'] = pd.to_numeric(df['cantidad_actual'], errors='coerce').fillna(0).astype(int)
 df['umbral_minimo'] = pd.to_numeric(df['umbral_minimo'], errors='coerce').fillna(0).astype(int)
 df['subcategoria'] = df['subcategoria'].fillna("")
+df['link_proveedor'] = df['link_proveedor'].fillna("")
 
 # --- 3. INTERFAZ ---
 st.markdown("## 🔬 Lab Aguilar: Control de Inventario")
 
-# Panel de Compras Urgentes
-df_urgente = df[df['cantidad_actual'] <= df['umbral_minimo']]
-if not df_urgente.empty:
-    with st.expander("⚠️ **COMPRAS URGENTES (Stock bajo mínimo)**", expanded=False):
-        cols_urgentes = [c for c in ['nombre', 'cantidad_actual', 'umbral_minimo', 'unidad'] if c in df.columns]
-        st.dataframe(df_urgente[cols_urgentes].style.apply(aplicar_estilos, axis=1), use_container_width=True, hide_index=True)
-
 col_chat, col_mon = st.columns([1, 1.6], gap="large")
 
 with col_mon:
+    # --- BOTÓN DE DESHACER ---
+    if st.session_state.backup_inventario is not None:
+        if st.button("↩️ Deshacer Última Acción (Restaurar Inventario)", type="secondary"):
+            with st.spinner("Restaurando inventario..."):
+                try:
+                    # Restauramos los datos desde el backup
+                    backup_df = st.session_state.backup_inventario
+                    backup_df = backup_df.replace({np.nan: None})
+                    for index, row in backup_df.iterrows():
+                        row_dict = row.dropna().to_dict()
+                        if 'id' in row_dict and row_dict['id'] is not None:
+                            row_dict['id'] = int(row_dict['id'])
+                            supabase.table("items").upsert(row_dict).execute()
+                    
+                    st.session_state.backup_inventario = None # Limpiamos el backup usado
+                    st.success("¡Inventario restaurado a su estado anterior!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error al restaurar: {e}")
+
     tab_inventario, tab_historial, tab_editar = st.tabs(["📦 Inventario", "⏱️ Historial", "⚙️ Editar Catálogo"])
     
     with tab_inventario:
         busqueda = st.text_input("🔍 Buscar producto...", key="search")
         df_show = df[df['nombre'].str.contains(busqueda, case=False)] if busqueda else df
         
-        # Agrupación por Categoría y Subcategoría
         categorias = sorted(df_show['categoria'].fillna("GENERAL").unique())
         for cat in categorias:
             with st.expander(f"📁 {cat}"):
@@ -76,14 +97,21 @@ with col_mon:
                 subcategorias = sorted(subset_cat['subcategoria'].unique())
                 
                 for subcat in subcategorias:
-                    # Si tiene subcategoría, mostramos un subtítulo
-                    if subcat != "":
-                        st.markdown(f"<h5 style='color:#555;'>└ 📂 {subcat}</h5>", unsafe_allow_html=True)
-                    
+                    if subcat != "": st.markdown(f"<h5 style='color:#555;'>└ 📂 {subcat}</h5>", unsafe_allow_html=True)
                     subset_sub = subset_cat[subset_cat['subcategoria'] == subcat]
-                    # Ocultar ID y columnas de categoría para una vista más limpia
+                    
+                    # Mostrar la tabla configurando el link para que sea un botón limpio
                     cols_vista = [c for c in subset_sub.columns if c not in ['id', 'categoria', 'subcategoria', 'created_at']]
-                    st.dataframe(subset_sub[cols_vista].style.apply(aplicar_estilos, axis=1), use_container_width=True, hide_index=True)
+                    st.dataframe(
+                        subset_sub[cols_vista].style.apply(aplicar_estilos, axis=1), 
+                        column_config={
+                            "link_proveedor": st.column_config.LinkColumn(
+                                "Proveedor",
+                                display_text="🌐 Ver Proveedor" # Esto oculta la URL larga
+                            )
+                        },
+                        use_container_width=True, hide_index=True
+                    )
                 
     with tab_historial:
         try:
@@ -92,85 +120,50 @@ with col_mon:
                 df_mov = pd.DataFrame(res_mov.data)
                 df_mov['Fecha'] = pd.to_datetime(df_mov['created_at']).dt.strftime('%d-%m-%Y %H:%M')
                 st.dataframe(df_mov[['Fecha', 'nombre_item', 'tipo', 'cantidad_cambio']], use_container_width=True, hide_index=True)
-            else:
-                st.info("No hay movimientos recientes.")
-        except:
-            st.warning("La tabla 'movimientos' aún no está creada en Supabase.")
+        except: pass
 
-    # --- PESTAÑA DE EDICIÓN AVANZADA ---
     with tab_editar:
-        st.info("💡 **Tip:** Escribe un nombre nuevo en 'categoria' o 'subcategoria' para crear una nueva carpeta.")
-        
+        st.info("💡 Usa **Ctrl+Z** en tu teclado para deshacer un error mientras editas las celdas.")
         todas_las_columnas = df.columns.tolist()
-        cols_default = [c for c in ['nombre', 'categoria', 'subcategoria', 'cantidad_actual', 'unidad', 'ubicacion'] if c in todas_las_columnas]
-        
-        # Selector para ocultar/mostrar columnas
-        columnas_seleccionadas = st.multiselect(
-            "👁️ Selecciona las columnas que deseas ver/editar:",
-            options=todas_las_columnas,
-            default=cols_default
-        )
-        
-        # Forzamos que 'id' siempre esté presente para poder guardar, pero lo deshabilitamos
-        if 'id' not in columnas_seleccionadas:
-            columnas_seleccionadas.insert(0, 'id')
+        columnas_seleccionadas = st.multiselect("👁️ Columnas visibles:", options=todas_las_columnas, default=[c for c in ['nombre', 'categoria', 'subcategoria', 'cantidad_actual', 'unidad', 'link_proveedor'] if c in todas_las_columnas])
+        if 'id' not in columnas_seleccionadas: columnas_seleccionadas.insert(0, 'id')
             
         df_edit = df[columnas_seleccionadas].copy()
         
-        # Editor de datos interactivo
         edited_df = st.data_editor(
             df_edit,
             column_config={
                 "id": st.column_config.NumberColumn("ID", disabled=True),
-                "cantidad_actual": st.column_config.NumberColumn("Stock", min_value=0)
+                "link_proveedor": st.column_config.TextColumn("URL del Proveedor")
             },
-            use_container_width=True,
-            hide_index=True,
-            num_rows="dynamic" # Permite agregar o eliminar filas
+            use_container_width=True, hide_index=True, num_rows="dynamic"
         )
         
         if st.button("💾 Guardar Catálogo", type="primary"):
-            with st.spinner("Guardando en la base de datos..."):
-                try:
-                    # Limpiamos los NaNs para evitar errores de JSON en Supabase
-                    edited_df = edited_df.replace({np.nan: None})
-                    
-                    cambios = 0
-                    for index, row in edited_df.iterrows():
-                        # Si es una fila nueva o modificada
-                        if index >= len(df_edit) or not row.equals(df_edit.loc[index]):
-                            row_dict = row.dropna().to_dict()
-                            
-                            # Si es nuevo (no tiene ID), lo quitamos para que Supabase lo genere
-                            if 'id' in row_dict and row_dict['id'] is None:
-                                del row_dict['id']
-                            elif 'id' in row_dict:
-                                row_dict['id'] = int(row_dict['id'])
-                                
-                            supabase.table("items").upsert(row_dict).execute()
-                            cambios += 1
-                            
-                    if cambios > 0:
-                        st.success(f"¡{cambios} cambios guardados con éxito!")
-                        st.rerun()
-                    else:
-                        st.warning("No se detectaron cambios.")
-                except Exception as e:
-                    st.error(f"Error al guardar: {e}")
+            with st.spinner("Guardando..."):
+                crear_punto_restauracion(df) # Tomamos la foto antes de guardar
+                edited_df = edited_df.replace({np.nan: None})
+                for index, row in edited_df.iterrows():
+                    if index >= len(df_edit) or not row.equals(df_edit.loc[index]):
+                        row_dict = row.dropna().to_dict()
+                        if 'id' in row_dict and row_dict['id'] is None: del row_dict['id']
+                        elif 'id' in row_dict: row_dict['id'] = int(row_dict['id'])
+                        supabase.table("items").upsert(row_dict).execute()
+                st.success("Guardado. Si te equivocaste, ve arriba y usa 'Deshacer'.")
+                st.rerun()
 
 with col_chat:
     st.subheader("💬 Asistente")
     chat_box = st.container(height=350, border=True)
     
     if "messages" not in st.session_state:
-        st.session_state.messages = [{"role": "assistant", "content": "Hola. Puedes usar la voz para actualizar stock, o la pestaña 'Editar Catálogo' para gestionar ubicaciones y subcategorías."}]
+        st.session_state.messages = [{"role": "assistant", "content": "Pídeme que agregue reactivos. Buscaré automáticamente su categoría y el link de compra (Thermo, NEB, Sigma, etc)."}]
 
     with chat_box:
         for m in st.session_state.messages:
             with st.chat_message(m["role"]): st.markdown(m["content"])
 
-    st.write("🎙️ **Dictado por Voz:**")
-    v_in = speech_to_text(language='es-CL', start_prompt="🎤 INICIAR GRABACIÓN", stop_prompt="🛑 DETENER Y ENVIAR AL CHAT", just_once=True, key='voice_input')
+    v_in = speech_to_text(language='es-CL', start_prompt="🎤 INICIAR GRABACIÓN", stop_prompt="🛑 DETENER Y ENVIAR", just_once=True, key='voice_input')
     m_in = st.chat_input("O escribe aquí...")
     prompt = v_in if v_in else m_in
 
@@ -182,43 +175,42 @@ with col_chat:
                 try:
                     ctx = df.to_csv(index=False, sep="|")
                     sys_p = f"""
-                    Inventario Actual:
-                    {ctx}
+                    Inventario: {ctx}
                     Instrucción: "{prompt}"
-                    Diccionario: "eppendorf"=1.5mL, "falcon"=15mL/50mL, "bolsa"=suma 1.
-                    Reglas:
+                    
+                    Eres un experto en biología molecular. Si te piden agregar un reactivo (enzimas, kits, químicos, plásticos), debes deducir la mejor "categoria", "subcategoria" y generar un "link_proveedor" real de búsqueda hacia Thermo Fisher, NEB, Sigma Aldrich, Promega o Qiagen.
+                    
+                    Reglas (Elige UNA):
                     1. ACTUALIZAR STOCK: UPDATE_BATCH: [{{"id": N, "cantidad_final": N, "diferencia": N, "nombre": "texto"}}]
-                    2. NUEVO: INSERT_NEW: {{"nombre": "T", "categoria": "T", "subcategoria": "T", "cantidad_actual": N, "unidad": "T"}}
-                    3. EDITAR: EDIT_ITEM: [{{"id": N, "cambios": {{"columna": "valor"}}}}]
+                    2. NUEVO REACTIVO: INSERT_NEW: {{"nombre": "T", "categoria": "T", "subcategoria": "T", "cantidad_actual": N, "unidad": "T", "link_proveedor": "https://..."}}
+                    3. EDITAR EXISTENTE: EDIT_ITEM: [{{"id": N, "cambios": {{"columna": "valor"}}}}]
                     """
                     
                     res_ai = model.generate_content(sys_p).text
                     
-                    if "UPDATE_BATCH:" in res_ai:
-                        updates = json.loads(res_ai.split("UPDATE_BATCH:")[1].strip().replace("'", '"'))
-                        for item in updates:
-                            supabase.table("items").update({"cantidad_actual": int(item["cantidad_final"])}).eq("id", item["id"]).execute()
-                            try:
-                                supabase.table("movimientos").insert({
-                                    "item_id": item["id"], "nombre_item": item["nombre"],
-                                    "cantidad_cambio": item["diferencia"], "tipo": "Entrada" if item["diferencia"] > 0 else "Salida"
-                                }).execute()
-                            except: pass
-                        st.markdown("✅ **Stock actualizado.**")
-                        st.rerun()
-                    elif "INSERT_NEW:" in res_ai:
-                        new_item = json.loads(res_ai.split("INSERT_NEW:")[1].strip().replace("'", '"'))
-                        supabase.table("items").insert(new_item).execute()
-                        st.markdown("✅ **Nuevo reactivo agregado.**")
-                        st.rerun()
-                    elif "EDIT_ITEM:" in res_ai:
-                        edits = json.loads(res_ai.split("EDIT_ITEM:")[1].strip().replace("'", '"'))
-                        for edit in edits:
-                            supabase.table("items").update(edit["cambios"]).eq("id", edit["id"]).execute()
-                        st.markdown("✅ **Reactivo modificado.**")
+                    if "UPDATE_BATCH:" in res_ai or "INSERT_NEW:" in res_ai or "EDIT_ITEM:" in res_ai:
+                        crear_punto_restauracion(df) # Guardar la foto antes de que la IA modifique todo
+                        
+                        if "UPDATE_BATCH:" in res_ai:
+                            updates = json.loads(res_ai.split("UPDATE_BATCH:")[1].strip().replace("'", '"'))
+                            for item in updates:
+                                supabase.table("items").update({"cantidad_actual": int(item["cantidad_final"])}).eq("id", item["id"]).execute()
+                                try: supabase.table("movimientos").insert({"item_id": item["id"], "nombre_item": item["nombre"], "cantidad_cambio": item["diferencia"], "tipo": "Entrada" if item["diferencia"] > 0 else "Salida"}).execute()
+                                except: pass
+                                
+                        elif "INSERT_NEW:" in res_ai:
+                            new_item = json.loads(res_ai.split("INSERT_NEW:")[1].strip().replace("'", '"'))
+                            supabase.table("items").insert(new_item).execute()
+                            
+                        elif "EDIT_ITEM:" in res_ai:
+                            edits = json.loads(res_ai.split("EDIT_ITEM:")[1].strip().replace("'", '"'))
+                            for edit in edits:
+                                supabase.table("items").update(edit["cambios"]).eq("id", edit["id"]).execute()
+                                
+                        st.markdown("✅ **Comando ejecutado.** (Puedes deshacerlo con el botón de arriba si hubo un error).")
                         st.rerun()
                     else:
                         st.markdown(res_ai)
                         st.session_state.messages.append({"role": "assistant", "content": res_ai})
                 except Exception as e:
-                    st.error(f"Error procesando la IA: {e}")
+                    st.error(f"Error procesando: {e}")
