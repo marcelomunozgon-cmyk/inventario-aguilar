@@ -9,6 +9,7 @@ from datetime import datetime, date
 import numpy as np
 import PyPDF2
 import io
+import qrcode # NUEVA LIBRERÍA
 
 # --- 1. CONFIGURACIÓN ---
 st.set_page_config(page_title="Lab Aguilar OS", layout="wide", page_icon="🔬")
@@ -24,7 +25,6 @@ except Exception as e:
 def get_model():
     try:
         available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        # Preferimos gemini-1.5-flash por ser más rápido y tener mejor cuota gratuita
         m_name = next((m for m in available_models if '1.5-flash' in m), available_models[0])
         return genai.GenerativeModel(m_name)
     except: return None
@@ -43,23 +43,19 @@ def aplicar_estilos(row):
     umb = row.get('umbral_minimo', 0) if pd.notnull(row.get('umbral_minimo', 0)) else 0
     venc = row.get('fecha_vencimiento')
     
-    # Alerta de Vencimiento
     if pd.notnull(venc) and venc != "":
         try:
             if datetime.strptime(str(venc), '%Y-%m-%d').date() < date.today():
                 return ['background-color: #ffb3b3; color: #900; font-weight: bold'] * len(row)
         except: pass
 
-    # Alertas de Stock
     if cant <= 0: return ['background-color: #ffe6e6; color: black'] * len(row)
     if cant <= umb: return ['background-color: #fff4cc; color: black'] * len(row)
     return [''] * len(row)
 
-# Carga inicial de datos
 res_items = supabase.table("items").select("*").execute()
 df = pd.DataFrame(res_items.data)
 
-# Asegurar columnas necesarias
 for col in ['cantidad_actual', 'umbral_minimo']:
     if col not in df.columns: df[col] = 0
 for col in ['subcategoria', 'link_proveedor', 'lote', 'fecha_vencimiento']:
@@ -85,7 +81,6 @@ with col_user:
 col_chat, col_mon = st.columns([1, 1.6], gap="large")
 
 with col_mon:
-    # Botón Deshacer
     if st.session_state.backup_inventario is not None:
         if st.button("↩️ Deshacer Última Acción", type="secondary"):
             with st.spinner("Restaurando..."):
@@ -101,7 +96,8 @@ with col_mon:
                     st.rerun()
                 except Exception as e: st.error(f"Error al restaurar: {e}")
 
-    tab_inventario, tab_historial, tab_editar, tab_protocolos = st.tabs(["📦 Inventario", "⏱️ Historial", "⚙️ Editar Catálogo", "🧪 Protocolos"])
+    # --- NUEVA PESTAÑA AÑADIDA AQUÍ ---
+    tab_inventario, tab_historial, tab_editar, tab_protocolos, tab_qr = st.tabs(["📦 Inventario", "⏱️ Historial", "⚙️ Editar Catálogo", "🧪 Protocolos", "🖨️ Etiquetas QR"])
     
     with tab_inventario:
         busqueda = st.text_input("🔍 Buscar producto...", key="search")
@@ -129,7 +125,7 @@ with col_mon:
 
     with tab_editar:
         st.markdown("### ✍️ Edición Manual")
-        columnas_visibles = st.multiselect("Columnas:", options=df.columns.tolist(), default=['nombre', 'cantidad_actual', 'unidad', 'lote', 'fecha_vencimiento'])
+        columnas_visibles = st.multiselect("Columnas:", options=df.columns.tolist(), default=['nombre', 'categoria', 'cantidad_actual', 'unidad', 'lote', 'fecha_vencimiento'])
         if 'id' not in columnas_visibles: columnas_visibles.insert(0, 'id')
         
         edited_df = st.data_editor(df[columnas_visibles].copy(), column_config={"id": st.column_config.NumberColumn("ID", disabled=True), "fecha_vencimiento": st.column_config.DateColumn("Vencimiento")}, use_container_width=True, hide_index=True, num_rows="dynamic")
@@ -161,17 +157,28 @@ with col_mon:
                     with st.spinner("Calculando..."):
                         try:
                             info_p = df_prot[df_prot['nombre'] == p_sel]['materiales_base'].values[0]
-                            sys_f = f"Protocolo: {info_p}\nMuestras: {n_muestras}\nInventario: {df[['id','nombre','cantidad_actual']].to_dict()}\nResponde SOLO JSON UPDATE_BATCH: [{{'id': N, 'cantidad_final': N, 'diferencia': N, 'nombre': 'T'}}]"
-                            res = model.generate_content(sys_f).text
-                            m = re.search(r'\[.*\]', res, re.DOTALL)
-                            if m:
-                                crear_punto_restauracion(df)
-                                for item in json.loads(m.group().replace("'", '"')):
-                                    supabase.table("items").update({"cantidad_actual": item["cantidad_final"]}).eq("id", item["id"]).execute()
-                                    supabase.table("movimientos").insert({"item_id": item["id"], "nombre_item": item["nombre"], "cantidad_cambio": item["diferencia"], "tipo": "Salida", "usuario": usuario_actual}).execute()
-                                st.success("¡Descontado!")
+                            # LÓGICA LOCAL PARA AHORRAR CUOTA DE IA
+                            lineas = info_p.split('\n')
+                            exitos = 0
+                            for linea in lineas:
+                                match = re.search(r'([^:-]+)[:\-]\s*(\d+)', linea)
+                                if match:
+                                    nombre_b = match.group(1).strip()
+                                    cant_m = int(match.group(2))
+                                    total_d = cant_m * n_muestras
+                                    item_db = df[df['nombre'].str.contains(nombre_b, case=False, na=False)]
+                                    if not item_db.empty:
+                                        id_it = int(item_db.iloc[0]['id'])
+                                        nueva_c = int(item_db.iloc[0]['cantidad_actual']) - total_d
+                                        supabase.table("items").update({"cantidad_actual": nueva_c}).eq("id", id_it).execute()
+                                        supabase.table("movimientos").insert({"item_id": id_it, "nombre_item": item_db.iloc[0]['nombre'], "cantidad_cambio": -total_d, "tipo": "Salida", "usuario": usuario_actual}).execute()
+                                        exitos += 1
+                            if exitos > 0:
+                                st.success("¡Inventario descontado correctamente!")
                                 st.rerun()
-                        except Exception as e: st.error(f"Error de Cuota/IA: {e}")
+                            else:
+                                st.warning("El protocolo no tiene el formato correcto de receta (Reactivo: Cantidad).")
+                        except Exception as e: st.error(f"Error: {e}")
 
         st.markdown("---")
         st.markdown("### 🤖 Cargar PDF de Kit")
@@ -181,20 +188,59 @@ with col_mon:
                 try:
                     read = PyPDF2.PdfReader(file)
                     txt = "".join([read.pages[i].extract_text() for i in range(min(len(read.pages), 10))])
-                    prompt_pdf = f"Extrae nombre y materiales de este manual:\n{txt[:20000]}\nResponde SOLO JSON: {{\"nombre\": \"T\", \"materiales_base\": \"T\"}}"
+                    prompt_pdf = f"Extrae los reactivos de este kit. Responde estrictamente con este formato para que una calculadora lo lea: 'Reactivo: Cantidad'.\nTexto: {txt[:20000]}"
                     res_p = model.generate_content(prompt_pdf).text
-                    m = re.search(r'\{.*\}', res_p, re.DOTALL)
-                    if m:
-                        supabase.table("protocolos").insert(json.loads(m.group().replace("'", '"'))).execute()
-                        st.success("Guardado.")
-                        st.rerun()
-                except Exception as e: st.error(f"Error: {e}")
+                    supabase.table("protocolos").insert({"nombre": file.name, "materiales_base": res_p}).execute()
+                    st.success("Guardado.")
+                    st.rerun()
+                except Exception as e: st.error(f"Error de cuota. Intenta luego: {e}")
+
+    # --- PESTAÑA NUEVA: GENERADOR DE QR ---
+    with tab_qr:
+        st.markdown("### 🖨️ Generador de Etiquetas QR")
+        st.info("Imprime estas etiquetas y pégalas en los frascos. Pronto habilitaremos la cámara para escanear y descontar reactivos al instante.")
+        
+        # Seleccionar el producto
+        item_para_qr = st.selectbox("Selecciona un reactivo del inventario:", df['nombre'].tolist())
+        
+        if item_para_qr:
+            fila_item = df[df['nombre'] == item_para_qr].iloc[0]
+            
+            # El "secreto" del QR: un string con el ID exacto de Supabase
+            codigo_interno = f"LAB_AGUILAR_ID:{fila_item['id']}"
+            
+            # Crear la imagen QR
+            qr = qrcode.QRCode(version=1, box_size=8, border=2)
+            qr.add_data(codigo_interno)
+            qr.make(fit=True)
+            img_qr = qr.make_image(fill_color="black", back_color="white")
+            
+            # Convertir a formato que Streamlit pueda mostrar/descargar
+            buf = io.BytesIO()
+            img_qr.save(buf, format="PNG")
+            
+            col_img, col_info = st.columns([1, 2])
+            with col_img:
+                st.image(buf, width=200)
+            with col_info:
+                st.markdown(f"**Reactivo:** {fila_item['nombre']}")
+                st.markdown(f"**Categoría:** {fila_item['categoria']}")
+                st.markdown(f"**Lote:** {fila_item.get('lote', 'N/A')}")
+                st.markdown(f"**Venc. / Expira:** {fila_item.get('fecha_vencimiento', 'N/A')}")
+                
+                # Botón para descargar
+                st.download_button(
+                    label="⬇️ Descargar Etiqueta (PNG)", 
+                    data=buf.getvalue(), 
+                    file_name=f"QR_{fila_item['nombre'].replace(' ', '_')}.png", 
+                    mime="image/png"
+                )
 
 with col_chat:
     st.subheader("💬 Asistente")
     chat_box = st.container(height=400, border=True)
     if "messages" not in st.session_state:
-        st.session_state.messages = [{"role": "assistant", "content": f"Hola {usuario_actual}. ¿Qué experimento haremos hoy?"}]
+        st.session_state.messages = [{"role": "assistant", "content": f"Hola {usuario_actual}. Recuerda usar la voz para consultas complejas y los botones para ahorrar cuota de IA."}]
 
     with chat_box:
         for m in st.session_state.messages:
@@ -209,19 +255,18 @@ with col_chat:
             st.chat_message("user").markdown(prompt)
             with st.chat_message("assistant"):
                 try:
-                    ctx = f"Usuario:{usuario_actual}\nInv:{df.to_csv(sep='|')}\nProt:{df_prot.to_csv(sep='|')}"
-                    res_ai = model.generate_content(f"{ctx}\nHistorial: {st.session_state.messages[-4:]}\nPrompt: {prompt}\nResponde con texto o JSON (UPDATE_BATCH, INSERT_NEW, EDIT_ITEM, INSERT_PROTOCOL)").text
+                    ctx = f"Usuario:{usuario_actual}\nInv:{df.to_csv(sep='|')}"
+                    res_ai = model.generate_content(f"{ctx}\nHistorial: {st.session_state.messages[-4:]}\nPrompt: {prompt}\nResponde con texto o JSON (UPDATE_BATCH, INSERT_NEW, EDIT_ITEM)").text
                     
-                    if any(x in res_ai for x in ["UPDATE_BATCH", "INSERT_NEW", "EDIT_ITEM", "INSERT_PROTOCOL"]):
+                    if any(x in res_ai for x in ["UPDATE_BATCH", "INSERT_NEW", "EDIT_ITEM"]):
                         crear_punto_restauracion(df)
                         if "UPDATE_BATCH:" in res_ai:
                             m = re.search(r'\[.*\]', res_ai, re.DOTALL)
                             for it in json.loads(m.group().replace("'", '"')):
                                 supabase.table("items").update({"cantidad_actual": it["cantidad_final"]}).eq("id", it["id"]).execute()
                                 supabase.table("movimientos").insert({"item_id": it["id"], "nombre_item": it["nombre"], "cantidad_cambio": it["diferencia"], "tipo": "Salida", "usuario": usuario_actual}).execute()
-                        # (Otros procesos de JSON simplificados para estabilidad)
                         st.rerun()
                     else:
                         st.markdown(res_ai)
                         st.session_state.messages.append({"role": "assistant", "content": res_ai})
-                except Exception as e: st.error(f"Límite de cuota alcanzado. Espera un poco. {e}")
+                except Exception as e: st.error(f"Límite de cuota IA. Espera un poco. {e}")
