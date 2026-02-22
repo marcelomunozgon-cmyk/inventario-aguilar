@@ -45,7 +45,7 @@ col_chat, col_mon = st.columns([1, 1.6], gap="large")
 
 with col_mon:
     st.subheader("📊 Monitor de Stock")
-    busqueda = st.text_input("🔍 Buscar producto...", placeholder="Ej: Eppendorf")
+    busqueda = st.text_input("🔍 Buscar producto...", placeholder="Ej: Eppendorf", key="search")
     df_show = df[df['nombre'].str.contains(busqueda, case=False)] if busqueda else df
     
     categorias = sorted(df_show['categoria'].fillna("GENERAL").unique())
@@ -59,13 +59,13 @@ with col_chat:
     chat_box = st.container(height=350, border=True)
     
     if "messages" not in st.session_state:
-        st.session_state.messages = [{"role": "assistant", "content": "Hola. Presiona el botón para grabar, habla y luego presiona detener."}]
+        st.session_state.messages = [{"role": "assistant", "content": "Hola Marcelo. Presiona el botón para hablar y luego DETENER para procesar."}]
 
     with chat_box:
         for m in st.session_state.messages:
             with st.chat_message(m["role"]): st.markdown(m["content"])
 
-    # --- BOTÓN DE VOZ CON TRANSCRIPCIÓN EN VIVO ---
+    # --- BOTÓN DE VOZ REFORZADO ---
     st.write("🎙️ Control por voz:")
     scr = """
     <div style="display: flex; flex-direction: column; align-items: center; background: #f0f2f6; padding: 15px; border-radius: 15px;">
@@ -73,7 +73,7 @@ with col_chat:
             🎤 INICIAR GRABACIÓN
         </button>
         <div style="margin-top: 10px; width: 100%; min-height: 40px; background: white; padding: 10px; border: 1px solid #ddd; border-radius: 5px; font-family: sans-serif; font-size: 14px; color: #333;">
-            <strong>Transcripción:</strong> <span id="live-text">...</span>
+            <strong>Voz capturada:</strong> <span id="live-text">...</span>
         </div>
     </div>
 
@@ -86,7 +86,7 @@ with col_chat:
             const recognition = new SpeechRecognition();
             recognition.lang = 'es-CL';
             recognition.continuous = true;
-            recognition.interimResults = true; // Permite ver resultados parciales mientras habla
+            recognition.interimResults = true;
             let isRecording = false;
             let finalTranscript = '';
 
@@ -94,20 +94,13 @@ with col_chat:
                 if (!isRecording) {
                     recognition.start();
                     isRecording = true;
-                    btn.innerText = "🛑 DETENER Y ENVIAR";
+                    btn.innerText = "🛑 DETENER Y PROCESAR";
                     btn.style.backgroundColor = "#28a745";
-                    liveText.innerText = "Escuchando...";
                 } else {
                     recognition.stop();
                     isRecording = false;
-                    btn.innerText = "⌛ PROCESANDO...";
+                    btn.innerText = "⌛ ENVIANDO...";
                     btn.style.backgroundColor = "#666";
-                    // Enviar el texto final recolectado
-                    if(finalTranscript) {
-                        const url = new URL(window.parent.location.href);
-                        url.searchParams.set('voice', finalTranscript);
-                        window.parent.location.href = url.toString();
-                    }
                 }
             };
 
@@ -120,18 +113,51 @@ with col_chat:
                         interimTranscript += event.results[i][0].transcript;
                     }
                 }
-                liveText.innerText = finalTranscript + interimTranscript;
-            };
-
-            recognition.onerror = (event) => {
-                liveText.innerText = "Error: " + event.error;
-                isRecording = false;
-                btn.style.backgroundColor = "#ff4b4b";
-                btn.innerText = "🎤 REINTENTAR";
+                const fullText = finalTranscript + interimTranscript;
+                liveText.innerText = fullText;
+                
+                // Si la grabación se detuvo, forzamos la salida a Streamlit
+                if (!isRecording && fullText.length > 0) {
+                    const currentUrl = new URL(window.top.location.href);
+                    currentUrl.searchParams.set('voice', fullText);
+                    window.top.location.href = currentUrl.toString();
+                }
             };
         }
     </script>
     """
     components.html(scr, height=160)
     
-    # --- 4. PRO
+    # --- 4. PROCESAMIENTO DE VOZ Y CHAT ---
+    voice_input = st.query_params.get("voice")
+    manual_input = st.chat_input("O escribe aquí...")
+    
+    # Priorizamos la voz si existe en la URL
+    prompt = voice_input if voice_input else manual_input
+
+    if prompt:
+        # Limpiar URL para que no se repita el comando
+        st.query_params.clear()
+        
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with chat_box:
+            with st.chat_message("user"): st.markdown(prompt)
+            with st.chat_message("assistant"):
+                try:
+                    ctx = df[['id', 'nombre', 'cantidad_actual', 'unidad']].to_csv(index=False, sep="|")
+                    full_p = f"Inventario: {ctx}\nInstrucción: {prompt}\nRegla: Si dicen bolsa y la unidad es bolsa, suma 1. Responde con UPDATE_BATCH: [{{id:ID, cantidad:N}}]"
+                    res_ai = model.generate_content(full_p)
+                    texto_ai = res_ai.text
+                    
+                    if "UPDATE_BATCH:" in texto_ai:
+                        match = re.search(r'\[.*\]', texto_ai.replace("'", '"'), re.DOTALL)
+                        if match:
+                            for item in json.loads(match.group()):
+                                supabase.table("items").update({"cantidad_actual": int(item["cantidad"])}).eq("id", item["id"]).execute()
+                            st.markdown("✅ **Inventario actualizado.**")
+                            st.rerun()
+                    else:
+                        st.markdown(texto_ai)
+                        st.session_state.messages.append({"role": "assistant", "content": texto_ai})
+                except Exception as e:
+                    st.error(f"Error: {e}")
