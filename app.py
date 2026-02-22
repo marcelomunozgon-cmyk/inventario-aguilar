@@ -52,8 +52,13 @@ for col in ['subcategoria', 'link_proveedor']:
 
 df['cantidad_actual'] = pd.to_numeric(df['cantidad_actual'], errors='coerce').fillna(0).astype(int)
 df['umbral_minimo'] = pd.to_numeric(df['umbral_minimo'], errors='coerce').fillna(0).astype(int)
-df['subcategoria'] = df['subcategoria'].fillna("")
-df['link_proveedor'] = df['link_proveedor'].fillna("")
+
+# Cargar Protocolos
+try:
+    res_prot = supabase.table("protocolos").select("*").execute()
+    df_prot = pd.DataFrame(res_prot.data)
+except:
+    df_prot = pd.DataFrame(columns=["id", "nombre", "materiales_base"])
 
 # --- 3. INTERFAZ ---
 st.markdown("## 🔬 Lab Aguilar: Control de Inventario")
@@ -72,33 +77,26 @@ with col_mon:
                             row_dict['id'] = int(row_dict['id'])
                             supabase.table("items").upsert(row_dict).execute()
                     st.session_state.backup_inventario = None
-                    st.success("¡Inventario restaurado a su estado anterior!")
+                    st.success("¡Inventario restaurado!")
                     st.rerun()
                 except Exception as e:
                     st.error(f"Error al restaurar: {e}")
 
-    tab_inventario, tab_historial, tab_editar = st.tabs(["📦 Inventario", "⏱️ Historial", "⚙️ Editar Catálogo"])
+    tab_inventario, tab_historial, tab_editar, tab_protocolos = st.tabs(["📦 Inventario", "⏱️ Historial", "⚙️ Editar Catálogo", "🧪 Protocolos"])
     
     with tab_inventario:
         busqueda = st.text_input("🔍 Buscar producto...", key="search")
         df_show = df[df['nombre'].str.contains(busqueda, case=False)] if busqueda else df
-        
         categorias = sorted(df_show['categoria'].fillna("GENERAL").unique())
         for cat in categorias:
             with st.expander(f"📁 {cat}"):
                 subset_cat = df_show[df_show['categoria'] == cat]
                 subcategorias = sorted(subset_cat['subcategoria'].unique())
-                
                 for subcat in subcategorias:
                     if subcat != "": st.markdown(f"<h5 style='color:#555;'>└ 📂 {subcat}</h5>", unsafe_allow_html=True)
                     subset_sub = subset_cat[subset_cat['subcategoria'] == subcat]
-                    
                     cols_vista = [c for c in subset_sub.columns if c not in ['id', 'categoria', 'subcategoria', 'created_at']]
-                    st.dataframe(
-                        subset_sub[cols_vista].style.apply(aplicar_estilos, axis=1), 
-                        column_config={"link_proveedor": st.column_config.LinkColumn("Proveedor", display_text="🌐 Ver Proveedor")},
-                        use_container_width=True, hide_index=True
-                    )
+                    st.dataframe(subset_sub[cols_vista].style.apply(aplicar_estilos, axis=1), column_config={"link_proveedor": st.column_config.LinkColumn("Proveedor", display_text="🌐 Ver Proveedor")}, use_container_width=True, hide_index=True)
                 
     with tab_historial:
         try:
@@ -110,78 +108,13 @@ with col_mon:
         except: pass
 
     with tab_editar:
-        st.markdown("### 🤖 Asistente de IA para el Catálogo")
-        st.info("La IA puede analizar todos tus reactivos actuales y asignarles automáticamente la mejor Categoría, Subcategoría y un Link de búsqueda hacia el proveedor.")
-        if st.button("✨ Auto-Clasificar Todo con IA", type="primary"):
-            with st.spinner("Analizando inventario... (Esto puede tardar hasta un minuto si hay muchos items)"):
-                try:
-                    # Pasamos un dataset limpio a la IA
-                    ctx_clasificar = df[['id', 'nombre']].to_csv(index=False, sep="|")
-                    sys_clasificar = f"""
-                    Eres un sistema LIMS experto en biología molecular.
-                    Base de datos actual de reactivos (IDs y nombres):
-                    {ctx_clasificar}
-                    
-                    Tu tarea:
-                    1. Asignar 'categoria'.
-                    2. Asignar 'subcategoria'.
-                    3. Crear 'link_proveedor' (búsqueda en Thermo Fisher, NEB, Sigma, etc).
-                    
-                    REGLA ESTRICTA DE FORMATO JSON:
-                    - Devuelve ÚNICAMENTE un array de JSON válido.
-                    - Las claves deben usar comillas dobles "".
-                    - NO uses comillas dobles ni simples dentro de los valores de texto. Reemplázalas por espacios si es necesario.
-                    - Formato exacto requerido:
-                    [
-                        {{"id": 1, "categoria": "Enzimas", "subcategoria": "Polimerasas", "link_proveedor": "https://..."}},
-                        {{"id": 2, "categoria": "Plásticos", "subcategoria": "Tubos", "link_proveedor": "https://..."}}
-                    ]
-                    """
-                    res_clasificacion = model.generate_content(sys_clasificar).text
-                    
-                    # Extraemos el JSON crudo sin hacer reemplazos peligrosos de comillas
-                    match = re.search(r'\[.*\]', res_clasificacion, re.DOTALL)
-                    
-                    if match:
-                        json_str = match.group()
-                        nuevos_datos = json.loads(json_str)
-                        crear_punto_restauracion(df)
-                        
-                        for item in nuevos_datos:
-                            supabase.table("items").update({
-                                "categoria": item.get("categoria", "General"),
-                                "subcategoria": item.get("subcategoria", ""),
-                                "link_proveedor": item.get("link_proveedor", "")
-                            }).eq("id", item["id"]).execute()
-                            
-                        st.success("¡Inventario clasificado y actualizado con éxito!")
-                        st.rerun()
-                    else:
-                        st.error("La IA no devolvió un formato válido. Intenta de nuevo.")
-                        st.write("Respuesta cruda para depurar:", res_clasificacion)
-                except json.JSONDecodeError as je:
-                    st.error(f"Error de formato JSON: {je}")
-                    st.write("Dile al desarrollador que la IA devolvió este texto mal formado:", json_str)
-                except Exception as e:
-                    st.error(f"Error general: {e}")
-
-        st.markdown("---")
         st.markdown("### ✍️ Edición Manual")
         todas_las_columnas = df.columns.tolist()
-        columnas_seleccionadas = st.multiselect("👁️ Columnas visibles:", options=todas_las_columnas, default=[c for c in ['nombre', 'categoria', 'subcategoria', 'cantidad_actual', 'unidad', 'link_proveedor'] if c in todas_las_columnas])
+        columnas_seleccionadas = st.multiselect("👁️ Columnas visibles:", options=todas_las_columnas, default=[c for c in ['nombre', 'categoria', 'subcategoria', 'cantidad_actual', 'unidad'] if c in todas_las_columnas])
         if 'id' not in columnas_seleccionadas: columnas_seleccionadas.insert(0, 'id')
-            
         df_edit = df[columnas_seleccionadas].copy()
         
-        edited_df = st.data_editor(
-            df_edit,
-            column_config={
-                "id": st.column_config.NumberColumn("ID", disabled=True),
-                "link_proveedor": st.column_config.TextColumn("URL del Proveedor")
-            },
-            use_container_width=True, hide_index=True, num_rows="dynamic"
-        )
-        
+        edited_df = st.data_editor(df_edit, column_config={"id": st.column_config.NumberColumn("ID", disabled=True)}, use_container_width=True, hide_index=True, num_rows="dynamic")
         if st.button("💾 Guardar Cambios Manuales"):
             with st.spinner("Guardando..."):
                 crear_punto_restauracion(df)
@@ -192,7 +125,39 @@ with col_mon:
                         if 'id' in row_dict and row_dict['id'] is None: del row_dict['id']
                         elif 'id' in row_dict: row_dict['id'] = int(row_dict['id'])
                         supabase.table("items").upsert(row_dict).execute()
-                st.success("Guardado manual exitoso.")
+                st.success("Guardado exitoso.")
+                st.rerun()
+
+    # --- NUEVA PESTAÑA: PROTOCOLOS ---
+    with tab_protocolos:
+        st.markdown("### 📋 Mis Experimentos (Recetas)")
+        st.info("Escribe aquí los protocolos recurrentes del laboratorio. La IA los leerá para saber qué reactivos descontar y qué variaciones preguntarte.")
+        
+        if not df_prot.empty:
+            df_prot_edit = df_prot[['id', 'nombre', 'materiales_base']].copy()
+        else:
+            df_prot_edit = pd.DataFrame(columns=["id", "nombre", "materiales_base"])
+            
+        edited_prot = st.data_editor(
+            df_prot_edit,
+            column_config={
+                "id": st.column_config.NumberColumn("ID", disabled=True),
+                "nombre": st.column_config.TextColumn("Nombre del Experimento", width="medium"),
+                "materiales_base": st.column_config.TextColumn("Materiales Base y Variaciones", width="large")
+            },
+            use_container_width=True, hide_index=True, num_rows="dynamic"
+        )
+        
+        if st.button("💾 Guardar Protocolos"):
+            with st.spinner("Guardando..."):
+                edited_prot = edited_prot.replace({np.nan: None})
+                for index, row in edited_prot.iterrows():
+                    if index >= len(df_prot_edit) or not row.equals(df_prot_edit.loc[index]):
+                        row_dict = row.dropna().to_dict()
+                        if 'id' in row_dict and row_dict['id'] is None: del row_dict['id']
+                        elif 'id' in row_dict: row_dict['id'] = int(row_dict['id'])
+                        supabase.table("protocolos").upsert(row_dict).execute()
+                st.success("Protocolos actualizados.")
                 st.rerun()
 
 with col_chat:
@@ -200,7 +165,7 @@ with col_chat:
     chat_box = st.container(height=350, border=True)
     
     if "messages" not in st.session_state:
-        st.session_state.messages = [{"role": "assistant", "content": "Hola. Pídeme que agregue reactivos nuevos o que mueva stock."}]
+        st.session_state.messages = [{"role": "assistant", "content": "Hola. Dime qué experimento hiciste hoy o actualiza reactivos directamente."}]
 
     with chat_box:
         for m in st.session_state.messages:
@@ -216,36 +181,49 @@ with col_chat:
             with st.chat_message("user"): st.markdown(prompt)
             with st.chat_message("assistant"):
                 try:
-                    ctx = df.to_csv(index=False, sep="|")
+                    ctx_inv = df.to_csv(index=False, sep="|")
+                    ctx_prot = df_prot.to_csv(index=False, sep="|") if not df_prot.empty else "No hay protocolos."
+                    
+                    # Le pasamos a la IA los últimos 6 mensajes del chat para que tenga MEMORIA
+                    historial_chat = "\n".join([f"{m['role']}: {m['content']}" for m in st.session_state.messages[-6:]])
+                    
                     sys_p = f"""
-                    Inventario: {ctx}
-                    Instrucción: "{prompt}"
-                    Eres experto en biología molecular.
-                    Reglas (Elige UNA y devuelve SOLO el JSON, sin comillas raras dentro del texto):
-                    1. ACTUALIZAR STOCK: UPDATE_BATCH: [{{"id": N, "cantidad_final": N, "diferencia": N, "nombre": "texto"}}]
-                    2. NUEVO REACTIVO: INSERT_NEW: {{"nombre": "T", "categoria": "T", "subcategoria": "T", "cantidad_actual": N, "unidad": "T", "link_proveedor": "https://..."}}
-                    3. EDITAR EXISTENTE: EDIT_ITEM: [{{"id": N, "cambios": {{"columna": "valor"}}}}]
+                    Eres el asistente del Lab Aguilar (biología molecular).
+                    
+                    Inventario Actual:
+                    {ctx_inv}
+                    
+                    Protocolos Frecuentes:
+                    {ctx_prot}
+                    
+                    Historial Reciente de la Conversación:
+                    {historial_chat}
+                    
+                    MISIONES:
+                    A) Si el usuario reporta un EXPERIMENTO de los protocolos:
+                       1. Revisa qué materiales_base usa.
+                       2. Si no ha especificado cantidades o variaciones (ej: tipo de placa, volumen de medio), RESPÓNDELE EN TEXTO NORMAL preguntándole esos detalles. ("¿Cuántas placas P100 ocupaste y cuántos mL de DMEM?").
+                       3. NO EJECUTES EL DESCUENTO HASTA QUE EL USUARIO RESPONDA Y CONFIRME.
+                    
+                    B) Si el usuario ya confirmó las cantidades o da una instrucción directa de stock:
+                       Responde ÚNICAMENTE con el formato JSON:
+                       UPDATE_BATCH: [{{"id": N, "cantidad_final": N, "diferencia": N, "nombre": "texto"}}]
                     """
+                    
                     res_ai = model.generate_content(sys_p).text
                     
-                    if "UPDATE_BATCH:" in res_ai or "INSERT_NEW:" in res_ai or "EDIT_ITEM:" in res_ai:
+                    if "UPDATE_BATCH:" in res_ai:
                         crear_punto_restauracion(df)
                         
-                        if "UPDATE_BATCH:" in res_ai:
-                            updates = json.loads(res_ai.split("UPDATE_BATCH:")[1].strip())
-                            for item in updates:
-                                supabase.table("items").update({"cantidad_actual": int(item["cantidad_final"])}).eq("id", item["id"]).execute()
-                                try: supabase.table("movimientos").insert({"item_id": item["id"], "nombre_item": item["nombre"], "cantidad_cambio": item["diferencia"], "tipo": "Entrada" if item["diferencia"] > 0 else "Salida"}).execute()
-                                except: pass
-                        elif "INSERT_NEW:" in res_ai:
-                            new_item = json.loads(res_ai.split("INSERT_NEW:")[1].strip())
-                            supabase.table("items").insert(new_item).execute()
-                        elif "EDIT_ITEM:" in res_ai:
-                            edits = json.loads(res_ai.split("EDIT_ITEM:")[1].strip())
-                            for edit in edits:
-                                supabase.table("items").update(edit["cambios"]).eq("id", edit["id"]).execute()
+                        updates = json.loads(res_ai.split("UPDATE_BATCH:")[1].strip())
+                        for item in updates:
+                            supabase.table("items").update({"cantidad_actual": int(item["cantidad_final"])}).eq("id", item["id"]).execute()
+                            try: supabase.table("movimientos").insert({"item_id": item["id"], "nombre_item": item["nombre"], "cantidad_cambio": item["diferencia"], "tipo": "Entrada" if item["diferencia"] > 0 else "Salida"}).execute()
+                            except: pass
                                 
-                        st.markdown("✅ **Comando ejecutado.**")
+                        mensaje_final = "✅ **Materiales descontados correctamente según tu experimento.**"
+                        st.markdown(mensaje_final)
+                        st.session_state.messages.append({"role": "assistant", "content": mensaje_final})
                         st.rerun()
                     else:
                         st.markdown(res_ai)
