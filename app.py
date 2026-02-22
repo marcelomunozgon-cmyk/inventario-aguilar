@@ -176,4 +176,79 @@ with col_mon:
         edited_df = st.data_editor(
             df_edit,
             column_config={
-                "id": st.column_config.Number
+                "id": st.column_config.NumberColumn("ID", disabled=True),
+                "link_proveedor": st.column_config.TextColumn("URL del Proveedor")
+            },
+            use_container_width=True, hide_index=True, num_rows="dynamic"
+        )
+        
+        if st.button("💾 Guardar Cambios Manuales"):
+            with st.spinner("Guardando..."):
+                crear_punto_restauracion(df)
+                edited_df = edited_df.replace({np.nan: None})
+                for index, row in edited_df.iterrows():
+                    if index >= len(df_edit) or not row.equals(df_edit.loc[index]):
+                        row_dict = row.dropna().to_dict()
+                        if 'id' in row_dict and row_dict['id'] is None: del row_dict['id']
+                        elif 'id' in row_dict: row_dict['id'] = int(row_dict['id'])
+                        supabase.table("items").upsert(row_dict).execute()
+                st.success("Guardado manual exitoso.")
+                st.rerun()
+
+with col_chat:
+    st.subheader("💬 Asistente")
+    chat_box = st.container(height=350, border=True)
+    
+    if "messages" not in st.session_state:
+        st.session_state.messages = [{"role": "assistant", "content": "Hola. Pídeme que agregue reactivos nuevos o que mueva stock."}]
+
+    with chat_box:
+        for m in st.session_state.messages:
+            with st.chat_message(m["role"]): st.markdown(m["content"])
+
+    v_in = speech_to_text(language='es-CL', start_prompt="🎤 INICIAR GRABACIÓN", stop_prompt="🛑 DETENER Y ENVIAR", just_once=True, key='voice_input')
+    m_in = st.chat_input("O escribe aquí...")
+    prompt = v_in if v_in else m_in
+
+    if prompt:
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with chat_box:
+            with st.chat_message("user"): st.markdown(prompt)
+            with st.chat_message("assistant"):
+                try:
+                    ctx = df.to_csv(index=False, sep="|")
+                    sys_p = f"""
+                    Inventario: {ctx}
+                    Instrucción: "{prompt}"
+                    Eres experto en biología molecular.
+                    Reglas (Elige UNA y devuelve SOLO el JSON, sin comillas raras dentro del texto):
+                    1. ACTUALIZAR STOCK: UPDATE_BATCH: [{{"id": N, "cantidad_final": N, "diferencia": N, "nombre": "texto"}}]
+                    2. NUEVO REACTIVO: INSERT_NEW: {{"nombre": "T", "categoria": "T", "subcategoria": "T", "cantidad_actual": N, "unidad": "T", "link_proveedor": "https://..."}}
+                    3. EDITAR EXISTENTE: EDIT_ITEM: [{{"id": N, "cambios": {{"columna": "valor"}}}}]
+                    """
+                    res_ai = model.generate_content(sys_p).text
+                    
+                    if "UPDATE_BATCH:" in res_ai or "INSERT_NEW:" in res_ai or "EDIT_ITEM:" in res_ai:
+                        crear_punto_restauracion(df)
+                        
+                        if "UPDATE_BATCH:" in res_ai:
+                            updates = json.loads(res_ai.split("UPDATE_BATCH:")[1].strip())
+                            for item in updates:
+                                supabase.table("items").update({"cantidad_actual": int(item["cantidad_final"])}).eq("id", item["id"]).execute()
+                                try: supabase.table("movimientos").insert({"item_id": item["id"], "nombre_item": item["nombre"], "cantidad_cambio": item["diferencia"], "tipo": "Entrada" if item["diferencia"] > 0 else "Salida"}).execute()
+                                except: pass
+                        elif "INSERT_NEW:" in res_ai:
+                            new_item = json.loads(res_ai.split("INSERT_NEW:")[1].strip())
+                            supabase.table("items").insert(new_item).execute()
+                        elif "EDIT_ITEM:" in res_ai:
+                            edits = json.loads(res_ai.split("EDIT_ITEM:")[1].strip())
+                            for edit in edits:
+                                supabase.table("items").update(edit["cambios"]).eq("id", edit["id"]).execute()
+                                
+                        st.markdown("✅ **Comando ejecutado.**")
+                        st.rerun()
+                    else:
+                        st.markdown(res_ai)
+                        st.session_state.messages.append({"role": "assistant", "content": res_ai})
+                except Exception as e:
+                    st.error(f"Error procesando la solicitud: {e}")
