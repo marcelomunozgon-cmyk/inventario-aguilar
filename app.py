@@ -55,7 +55,6 @@ for col in ['subcategoria', 'link_proveedor']:
 df['cantidad_actual'] = pd.to_numeric(df['cantidad_actual'], errors='coerce').fillna(0).astype(int)
 df['umbral_minimo'] = pd.to_numeric(df['umbral_minimo'], errors='coerce').fillna(0).astype(int)
 
-# Cargar Protocolos
 try:
     res_prot = supabase.table("protocolos").select("*").execute()
     df_prot = pd.DataFrame(res_prot.data)
@@ -132,7 +131,7 @@ with col_mon:
 
     with tab_protocolos:
         st.markdown("### 🤖 Cargar Manual de Kit (PDF)")
-        archivo_pdf = st.file_uploader("Sube el PDF del manual comercial (Ej: Qiagen, Thermo, Zymo). La IA extraerá los reactivos.", type=["pdf"])
+        archivo_pdf = st.file_uploader("Sube el PDF del manual comercial. La IA extraerá los reactivos.", type=["pdf"])
         
         if archivo_pdf is not None:
             if st.button("✨ Analizar y Extraer Protocolo", type="primary"):
@@ -140,11 +139,11 @@ with col_mon:
                     try:
                         lector = PyPDF2.PdfReader(archivo_pdf)
                         texto_pdf = ""
-                        for i in range(min(len(lector.pages), 15)): # Leemos las primeras 15 páginas para no saturar
+                        for i in range(min(len(lector.pages), 15)):
                             texto_pdf += lector.pages[i].extract_text()
                         
                         sys_pdf = f"""
-                        Eres un experto LIMS. Lee este manual de kit comercial:
+                        Eres un experto LIMS. Lee este manual de kit comercial de biología molecular:
                         {texto_pdf[:25000]}
                         
                         Tu tarea:
@@ -152,17 +151,26 @@ with col_mon:
                         2. Resumir en 'materiales_base' los buffers usados, spin columns, y volúmenes requeridos por muestra (prep). 
                         3. AÑADIR UNA NOTA al final de materiales_base que diga: "Al reportar este experimento, la IA debe preguntar cuántas reacciones (preps) se procesaron para descontar del Kit general o de los buffers individuales".
                         
-                        Devuelve SOLO JSON: INSERT_PROTOCOL: {{"nombre": "T", "materiales_base": "T"}}
+                        REGLA ESTRICTA: Devuelve ÚNICAMENTE un objeto JSON con las claves "nombre" y "materiales_base". No agregues texto extra ni bloques de código.
+                        Ejemplo: {{"nombre": "Nombre Kit", "materiales_base": "Detalles aquí."}}
                         """
                         res_pdf = model.generate_content(sys_pdf).text
                         
-                        if "INSERT_PROTOCOL:" in res_pdf:
-                            nuevo_prot = json.loads(res_pdf.split("INSERT_PROTOCOL:")[1].strip().replace("'", '"'))
+                        # Fix maestro: Extracción pura de JSON mediante Regex
+                        match = re.search(r'\{.*\}', res_pdf, re.DOTALL)
+                        
+                        if match:
+                            json_str = match.group()
+                            nuevo_prot = json.loads(json_str)
                             supabase.table("protocolos").insert(nuevo_prot).execute()
                             st.success(f"¡Protocolo '{nuevo_prot['nombre']}' extraído y guardado con éxito!")
                             st.rerun()
                         else:
-                            st.error("No se pudo procesar el PDF correctamente.")
+                            st.error("No se pudo extraer el JSON. Revisa la respuesta cruda abajo:")
+                            st.write(res_pdf)
+                    except json.JSONDecodeError as je:
+                        st.error("La IA generó un formato de texto inválido.")
+                        st.write("Respuesta de la IA para auditar:", res_pdf)
                     except Exception as e:
                         st.error(f"Error procesando el PDF: {e}")
         
@@ -240,7 +248,9 @@ with col_chat:
                         
                         if "UPDATE_BATCH:" in res_ai:
                             crear_punto_restauracion(df)
-                            updates = json.loads(res_ai.split("UPDATE_BATCH:")[1].strip())
+                            # Extraemos JSON con Regex de forma segura
+                            match = re.search(r'\[.*\]', res_ai, re.DOTALL)
+                            updates = json.loads(match.group()) if match else []
                             for item in updates:
                                 supabase.table("items").update({"cantidad_actual": int(item["cantidad_final"])}).eq("id", item["id"]).execute()
                                 try: supabase.table("movimientos").insert({"item_id": item["id"], "nombre_item": item["nombre"], "cantidad_cambio": item["diferencia"], "tipo": "Entrada" if item["diferencia"] > 0 else "Salida"}).execute()
@@ -249,19 +259,22 @@ with col_chat:
                             
                         elif "INSERT_NEW:" in res_ai:
                             crear_punto_restauracion(df)
-                            new_item = json.loads(res_ai.split("INSERT_NEW:")[1].strip())
+                            match = re.search(r'\{.*\}', res_ai, re.DOTALL)
+                            new_item = json.loads(match.group()) if match else {}
                             supabase.table("items").insert(new_item).execute()
-                            st.markdown(f"✅ **Nuevo reactivo '{new_item['nombre']}' agregado.**")
+                            st.markdown(f"✅ **Nuevo reactivo '{new_item.get('nombre', '')}' agregado.**")
                             
                         elif "EDIT_ITEM:" in res_ai:
                             crear_punto_restauracion(df)
-                            edits = json.loads(res_ai.split("EDIT_ITEM:")[1].strip())
+                            match = re.search(r'\[.*\]', res_ai, re.DOTALL)
+                            edits = json.loads(match.group()) if match else []
                             for edit in edits:
                                 supabase.table("items").update(edit["cambios"]).eq("id", edit["id"]).execute()
                             st.markdown("✅ **Reactivo editado correctamente.**")
                             
                         elif "INSERT_PROTOCOL:" in res_ai:
-                            new_prot = json.loads(res_ai.split("INSERT_PROTOCOL:")[1].strip())
+                            match = re.search(r'\{.*\}', res_ai, re.DOTALL)
+                            new_prot = json.loads(match.group()) if match else {}
                             supabase.table("protocolos").insert(new_prot).execute()
                             st.markdown(f"✅ **Protocolo guardado.**")
                             
