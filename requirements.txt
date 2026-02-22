@@ -3,3 +3,4 @@ google-generativeai
 supabase
 pandas
 pillow
+streamlit-mic-recorder
