@@ -58,24 +58,21 @@ with col_chat:
     chat_box = st.container(height=350, border=True)
     
     if "messages" not in st.session_state:
-        st.session_state.messages = [{"role": "assistant", "content": "Hola Marcelo. Usa el botón de voz o escribe abajo."}]
+        st.session_state.messages = [{"role": "assistant", "content": "Hola Marcelo. Prueba el botón de voz o escribe."}]
 
     with chat_box:
         for m in st.session_state.messages:
             with st.chat_message(m["role"]): st.markdown(m["content"])
 
-    # --- BOTÓN DE VOZ CON AUTO-SUBMIT ---
+    # --- BOTÓN DE VOZ ULTRA-DIRECTO ---
     st.write("🎙️ Control por voz:")
-    
-    # Este script detecta el texto y lo inyecta directamente en la URL 
-    # forzando a la ventana principal a recargar y procesar el comando.
     scr = """
     <div style="background: #f0f2f6; padding: 15px; border-radius: 15px; text-align: center;">
         <button id="v-btn" style="width:100%; height:50px; border-radius:10px; border:none; background-color:#ff4b4b; color:white; font-weight:bold; cursor:pointer; font-size:16px;">
             🎤 INICIAR GRABACIÓN
         </button>
-        <div id="box" style="margin-top:10px; background:white; padding:8px; border-radius:5px; font-size:14px; min-height:30px; border:1px solid #ccc;">
-            <span id="t">...</span>
+        <div style="margin-top:10px; background:white; padding:8px; border-radius:5px; font-size:14px; min-height:30px; border:1px solid #ccc; text-align: left;">
+            <strong>Escuchado:</strong> <span id="t">...</span>
         </div>
     </div>
 
@@ -90,36 +87,35 @@ with col_chat:
             rec.continuous = true;
             rec.interimResults = true;
             let active = false;
-            let final = '';
+            let resultText = '';
 
             btn.onclick = () => {
                 if (!active) {
                     rec.start();
                     active = true;
-                    btn.innerText = "🛑 DETENER Y ENVIAR AL CHAT";
+                    btn.innerText = "🛑 DETENER Y PROCESAR";
                     btn.style.backgroundColor = "#28a745";
                 } else {
                     rec.stop();
                     active = false;
-                    btn.innerText = "⌛ ENVIANDO...";
                 }
             };
 
             rec.onresult = (e) => {
                 let inter = '';
                 for (let i = e.resultIndex; i < e.results.length; ++i) {
-                    if (e.results[i].isFinal) final += e.results[i][0].transcript;
+                    if (e.results[i].isFinal) resultText += e.results[i][0].transcript;
                     else inter += e.results[i][0].transcript;
                 }
-                txt.innerText = final + inter;
+                txt.innerText = resultText + inter;
             };
 
             rec.onend = () => {
-                if (final.length > 1) {
-                    // Truco maestro: enviamos por URL pero al TOP de la página
-                    const u = new URL(window.top.location.href);
-                    u.searchParams.set('chat_voice', final);
-                    window.top.location.href = u.toString();
+                if (resultText.length > 0) {
+                    // Forzamos la redirección usando la ventana principal
+                    const url = new URL(window.top.location.href);
+                    url.searchParams.set('voice', resultText);
+                    window.top.location.href = url.toString();
                 }
             };
         }
@@ -128,33 +124,35 @@ with col_chat:
     components.html(scr, height=160)
     
     # --- 4. PROCESAMIENTO ---
-    # Revisamos si viene algo de la voz o del teclado
-    v_input = st.query_params.get("chat_voice")
-    m_input = st.chat_input("Escribe aquí...")
-    prompt = v_input if v_input else m_input
+    v_in = st.query_params.get("voice")
+    m_in = st.chat_input("Escribe aquí...")
+    prompt = v_in if v_in else m_in
 
     if prompt:
-        # Limpiamos la URL inmediatamente
         st.query_params.clear()
-        
         st.session_state.messages.append({"role": "user", "content": prompt})
         with chat_box:
             with st.chat_message("user"): st.markdown(prompt)
             with st.chat_message("assistant"):
                 try:
-                    # Contexto para la IA
                     ctx = df[['id', 'nombre', 'cantidad_actual', 'unidad']].to_csv(index=False, sep="|")
-                    res_ai = model.generate_content(f"Inventario: {ctx}\nInstrucción: {prompt}\nResponde con UPDATE_BATCH: [{{id:N, cantidad:N}}]")
+                    # Instrucciones más estrictas para la IA para evitar errores de JSON
+                    sys_p = f"Inventario:\n{ctx}\nInstrucción: {prompt}\nRegla: Responde ÚNICAMENTE en este formato: UPDATE_BATCH: [{{'id': N, 'cantidad': N}}]"
+                    res_ai = model.generate_content(sys_p).text
                     
-                    if "UPDATE_BATCH:" in res_ai.text:
-                        match = re.search(r'\[.*\]', res_ai.text.replace("'", '"'), re.DOTALL)
-                        if match:
-                            for item in json.loads(match.group()):
-                                supabase.table("items").update({"cantidad_actual": int(item["cantidad"])}).eq("id", item["id"]).execute()
-                            st.markdown("✅ **Inventario actualizado.**")
-                            st.rerun()
+                    if "UPDATE_BATCH:" in res_ai:
+                        # Limpieza extrema del texto para evitar el error "Expecting property name"
+                        clean_json = res_ai.split("UPDATE_BATCH:")[1].strip()
+                        clean_json = clean_json.replace("'", '"') # Convertir comillas simples a dobles
+                        
+                        updates = json.loads(clean_json)
+                        for item in updates:
+                            supabase.table("items").update({"cantidad_actual": int(item["cantidad"])}).eq("id", item["id"]).execute()
+                        
+                        st.markdown("✅ **Inventario actualizado correctamente.**")
+                        st.rerun()
                     else:
-                        st.markdown(res_ai.text)
-                        st.session_state.messages.append({"role": "assistant", "content": res_ai.text})
+                        st.markdown(res_ai)
+                        st.session_state.messages.append({"role": "assistant", "content": res_ai})
                 except Exception as e:
-                    st.error(f"Error: {e}")
+                    st.error(f"Error de procesamiento: {e}")
