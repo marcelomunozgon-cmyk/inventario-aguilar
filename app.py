@@ -26,7 +26,6 @@ except Exception as e:
 @st.cache_resource
 def get_model():
     try:
-        # Forzamos 1.5-flash para maximizar la cuota gratuita diaria
         return genai.GenerativeModel('gemini-1.5-flash')
     except: return None
 
@@ -44,10 +43,11 @@ def enviar_alerta_correo(nombre_item, cantidad_actual, umbral):
         destinatarios = st.secrets.get("EMAIL_RECEIVERS")
         
         if not remitente or not password or not destinatarios:
-            return # Faltan configurar los secretos, ignorar silenciosamente
+            st.warning("⚠️ Faltan configurar los secretos de correo en Streamlit.")
+            return
             
         msg = EmailMessage()
-        msg.set_content(f"""Hola,\n\nEste es un aviso automático del Lab Aguilar OS.\n\nEl reactivo '{nombre_item}' ha alcanzado un nivel crítico.\n\nStock Actual: {cantidad_actual}\nUmbral Mínimo: {umbral}\n\nPor favor, gestionar su compra o reposición pronto para no retrasar los experimentos.\n\nSaludos,\nAsistente Virtual""")
+        msg.set_content(f"""Hola,\n\nEste es un aviso automático del Lab Aguilar OS.\n\nEl reactivo '{nombre_item}' ha alcanzado un nivel crítico.\n\nStock Actual: {cantidad_actual}\nUmbral Mínimo: {umbral}\n\nPor favor, gestionar su compra o reposición pronto.\n\nSaludos,\nAsistente Virtual""")
         msg['Subject'] = f"⚠️ Alerta de Stock Crítico: {nombre_item}"
         msg['From'] = remitente
         msg['To'] = destinatarios.split(',')
@@ -56,17 +56,19 @@ def enviar_alerta_correo(nombre_item, cantidad_actual, umbral):
         server.login(remitente, password)
         server.send_message(msg)
         server.quit()
+        st.toast(f"📧 Alerta de stock enviada por correo para: {nombre_item}", icon="⚠️")
     except Exception as e:
-        print(f"Error enviando correo: {e}")
+        # Ahora el error se mostrará en pantalla para poder diagnosticarlo
+        st.error(f"Error de conexión enviando el correo: {e}")
 
 def verificar_y_alertar(id_item, nueva_cantidad):
     item_row = df[df['id'] == id_item]
     if not item_row.empty:
         umbral = item_row.iloc[0]['umbral_minimo']
         nombre = item_row.iloc[0]['nombre']
-        if nueva_cantidad <= umbral:
+        # Solo enviamos correo si hay un umbral configurado mayor a 0
+        if umbral > 0 and nueva_cantidad <= umbral:
             enviar_alerta_correo(nombre, nueva_cantidad, umbral)
-            st.toast(f"📧 Alerta de stock enviada por correo para: {nombre}", icon="⚠️")
 
 # --- 2. LÓGICA DE DATOS Y ESTILOS ---
 def aplicar_estilos(row):
@@ -78,28 +80,22 @@ def aplicar_estilos(row):
             if datetime.strptime(str(venc), '%Y-%m-%d').date() < date.today(): return ['background-color: #ffb3b3; color: #900; font-weight: bold'] * len(row)
         except: pass
     if cant <= 0: return ['background-color: #ffe6e6; color: black'] * len(row)
-    if cant <= umb: return ['background-color: #fff4cc; color: black'] * len(row)
+    if umb > 0 and cant <= umb: return ['background-color: #fff4cc; color: black'] * len(row)
     return [''] * len(row)
 
-# Carga de inventario
 res_items = supabase.table("items").select("*").execute()
 df = pd.DataFrame(res_items.data)
 
-# --- CORRECCIÓN DE LIMPIEZA DE TIPOS DE DATOS ---
 for col in ['cantidad_actual', 'umbral_minimo']:
     if col not in df.columns: df[col] = 0
     df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype(int)
 
 for col in ['categoria', 'subcategoria', 'link_proveedor', 'lote', 'fecha_vencimiento']:
     if col not in df.columns: df[col] = ""
-    # Transformamos todo a string y llenamos nulos para que 'sorted()' nunca falle
     df[col] = df[col].fillna("").astype(str)
 
-# Si la categoría está vacía, le ponemos 'GENERAL'
 df['categoria'] = df['categoria'].replace("", "GENERAL")
-# ------------------------------------------------
 
-# Carga de Protocolos y Muestras
 try: res_prot = supabase.table("protocolos").select("*").execute(); df_prot = pd.DataFrame(res_prot.data)
 except: df_prot = pd.DataFrame(columns=["id", "nombre", "materiales_base"])
 
@@ -134,15 +130,21 @@ with col_mon:
     tab_inventario, tab_historial, tab_editar, tab_protocolos, tab_qr, tab_bioterio = st.tabs(["📦 Inventario", "⏱️ Historial", "⚙️ Editar", "🧪 Protocolos", "🖨️ QR", "❄️ Bioterio"])
     
     with tab_inventario:
+        # --- NUEVA SECCIÓN: REACTIVOS BAJO EL UMBRAL ---
+        df_criticos = df[(df['cantidad_actual'] <= df['umbral_minimo']) & (df['umbral_minimo'] > 0)]
+        if not df_criticos.empty:
+            st.error("🚨 **ATENCIÓN: Reactivos con Stock Crítico**")
+            st.dataframe(df_criticos[['nombre', 'categoria', 'cantidad_actual', 'umbral_minimo', 'unidad']], use_container_width=True, hide_index=True)
+            st.markdown("---")
+        # -----------------------------------------------
+
         busqueda = st.text_input("🔍 Buscar producto...", key="search")
         df_show = df[df['nombre'].str.contains(busqueda, case=False)] if busqueda else df
         
-        # Ordenado seguro sin TypeError
         categorias = sorted(df_show['categoria'].unique())
         for cat in categorias:
             with st.expander(f"📁 {cat}"):
                 subset_cat = df_show[df_show['categoria'] == cat]
-                # Ordenado seguro sin TypeError
                 subcategorias = sorted(subset_cat['subcategoria'].unique())
                 
                 for subcat in subcategorias:
