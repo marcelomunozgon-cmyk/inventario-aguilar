@@ -67,7 +67,7 @@ col_chat, col_mon = st.columns([1, 1.6], gap="large")
 
 with col_mon:
     if st.session_state.backup_inventario is not None:
-        if st.button("↩️ Deshacer Última Acción (Restaurar Inventario)", type="secondary"):
+        if st.button("↩️ Deshacer Última Acción", type="secondary"):
             with st.spinner("Restaurando inventario..."):
                 try:
                     backup_df = st.session_state.backup_inventario.replace({np.nan: None})
@@ -128,15 +128,11 @@ with col_mon:
                 st.success("Guardado exitoso.")
                 st.rerun()
 
-    # --- NUEVA PESTAÑA: PROTOCOLOS ---
     with tab_protocolos:
         st.markdown("### 📋 Mis Experimentos (Recetas)")
-        st.info("Escribe aquí los protocolos recurrentes del laboratorio. La IA los leerá para saber qué reactivos descontar y qué variaciones preguntarte.")
-        
-        if not df_prot.empty:
-            df_prot_edit = df_prot[['id', 'nombre', 'materiales_base']].copy()
-        else:
-            df_prot_edit = pd.DataFrame(columns=["id", "nombre", "materiales_base"])
+        st.info("Escribe o usa la voz para guardar recetas recurrentes. La IA las usará para guiarte en el descuento de inventario.")
+        if not df_prot.empty: df_prot_edit = df_prot[['id', 'nombre', 'materiales_base']].copy()
+        else: df_prot_edit = pd.DataFrame(columns=["id", "nombre", "materiales_base"])
             
         edited_prot = st.data_editor(
             df_prot_edit,
@@ -147,7 +143,6 @@ with col_mon:
             },
             use_container_width=True, hide_index=True, num_rows="dynamic"
         )
-        
         if st.button("💾 Guardar Protocolos"):
             with st.spinner("Guardando..."):
                 edited_prot = edited_prot.replace({np.nan: None})
@@ -165,7 +160,7 @@ with col_chat:
     chat_box = st.container(height=350, border=True)
     
     if "messages" not in st.session_state:
-        st.session_state.messages = [{"role": "assistant", "content": "Hola. Dime qué experimento hiciste hoy o actualiza reactivos directamente."}]
+        st.session_state.messages = [{"role": "assistant", "content": "Hola. Pídeme que agregue reactivos, actualice stock, o que anote un nuevo protocolo de experimento."}]
 
     with chat_box:
         for m in st.session_state.messages:
@@ -183,50 +178,67 @@ with col_chat:
                 try:
                     ctx_inv = df.to_csv(index=False, sep="|")
                     ctx_prot = df_prot.to_csv(index=False, sep="|") if not df_prot.empty else "No hay protocolos."
-                    
-                    # Le pasamos a la IA los últimos 6 mensajes del chat para que tenga MEMORIA
                     historial_chat = "\n".join([f"{m['role']}: {m['content']}" for m in st.session_state.messages[-6:]])
                     
                     sys_p = f"""
-                    Eres el asistente del Lab Aguilar (biología molecular).
+                    Eres el asistente LIMS del Lab Aguilar.
+                    Inventario: {ctx_inv}
+                    Protocolos: {ctx_prot}
+                    Historial: {historial_chat}
                     
-                    Inventario Actual:
-                    {ctx_inv}
+                    ELIGE UNA RUTA según lo que pida el usuario:
                     
-                    Protocolos Frecuentes:
-                    {ctx_prot}
+                    A) EJECUTAR EXPERIMENTO: Si dice que hizo un protocolo existente, revisa materiales_base. Si faltan cantidades, PREGUNTA en texto normal. Si ya tienes todo, usa UPDATE_BATCH.
+                    B) ACTUALIZAR STOCK: UPDATE_BATCH: [{{"id": N, "cantidad_final": N, "diferencia": N, "nombre": "texto"}}]
+                    C) NUEVO REACTIVO: INSERT_NEW: {{"nombre": "T", "categoria": "T", "subcategoria": "T", "cantidad_actual": N, "unidad": "T", "link_proveedor": "https://..."}}
+                    D) EDITAR REACTIVO: EDIT_ITEM: [{{"id": N, "cambios": {{"columna": "valor"}}}}]
+                    E) NUEVO PROTOCOLO: Si pide guardar/crear una nueva receta. INSERT_PROTOCOL: {{"nombre": "T", "materiales_base": "T"}}
+                    F) EDITAR PROTOCOLO: Si pide cambiar la receta de un protocolo. EDIT_PROTOCOL: [{{"id": N, "cambios": {{"materiales_base": "T"}}}}]
                     
-                    Historial Reciente de la Conversación:
-                    {historial_chat}
-                    
-                    MISIONES:
-                    A) Si el usuario reporta un EXPERIMENTO de los protocolos:
-                       1. Revisa qué materiales_base usa.
-                       2. Si no ha especificado cantidades o variaciones (ej: tipo de placa, volumen de medio), RESPÓNDELE EN TEXTO NORMAL preguntándole esos detalles. ("¿Cuántas placas P100 ocupaste y cuántos mL de DMEM?").
-                       3. NO EJECUTES EL DESCUENTO HASTA QUE EL USUARIO RESPONDA Y CONFIRME.
-                    
-                    B) Si el usuario ya confirmó las cantidades o da una instrucción directa de stock:
-                       Responde ÚNICAMENTE con el formato JSON:
-                       UPDATE_BATCH: [{{"id": N, "cantidad_final": N, "diferencia": N, "nombre": "texto"}}]
+                    Usa comillas dobles para los JSON. No uses bloques de código.
                     """
                     
                     res_ai = model.generate_content(sys_p).text
                     
-                    if "UPDATE_BATCH:" in res_ai:
-                        crear_punto_restauracion(df)
+                    if "UPDATE_BATCH:" in res_ai or "INSERT_NEW:" in res_ai or "EDIT_ITEM:" in res_ai or "INSERT_PROTOCOL:" in res_ai or "EDIT_PROTOCOL:" in res_ai:
                         
-                        updates = json.loads(res_ai.split("UPDATE_BATCH:")[1].strip())
-                        for item in updates:
-                            supabase.table("items").update({"cantidad_actual": int(item["cantidad_final"])}).eq("id", item["id"]).execute()
-                            try: supabase.table("movimientos").insert({"item_id": item["id"], "nombre_item": item["nombre"], "cantidad_cambio": item["diferencia"], "tipo": "Entrada" if item["diferencia"] > 0 else "Salida"}).execute()
-                            except: pass
-                                
-                        mensaje_final = "✅ **Materiales descontados correctamente según tu experimento.**"
-                        st.markdown(mensaje_final)
-                        st.session_state.messages.append({"role": "assistant", "content": mensaje_final})
+                        if "UPDATE_BATCH:" in res_ai:
+                            crear_punto_restauracion(df)
+                            updates = json.loads(res_ai.split("UPDATE_BATCH:")[1].strip())
+                            for item in updates:
+                                supabase.table("items").update({"cantidad_actual": int(item["cantidad_final"])}).eq("id", item["id"]).execute()
+                                try: supabase.table("movimientos").insert({"item_id": item["id"], "nombre_item": item["nombre"], "cantidad_cambio": item["diferencia"], "tipo": "Entrada" if item["diferencia"] > 0 else "Salida"}).execute()
+                                except: pass
+                            st.markdown("✅ **Inventario actualizado y descontado.**")
+                            
+                        elif "INSERT_NEW:" in res_ai:
+                            crear_punto_restauracion(df)
+                            new_item = json.loads(res_ai.split("INSERT_NEW:")[1].strip())
+                            supabase.table("items").insert(new_item).execute()
+                            st.markdown(f"✅ **Nuevo reactivo '{new_item['nombre']}' agregado.**")
+                            
+                        elif "EDIT_ITEM:" in res_ai:
+                            crear_punto_restauracion(df)
+                            edits = json.loads(res_ai.split("EDIT_ITEM:")[1].strip())
+                            for edit in edits:
+                                supabase.table("items").update(edit["cambios"]).eq("id", edit["id"]).execute()
+                            st.markdown("✅ **Reactivo editado correctamente.**")
+                            
+                        elif "INSERT_PROTOCOL:" in res_ai:
+                            new_prot = json.loads(res_ai.split("INSERT_PROTOCOL:")[1].strip())
+                            supabase.table("protocolos").insert(new_prot).execute()
+                            st.markdown(f"✅ **Protocolo '{new_prot['nombre']}' guardado. Ahora puedes decirme cuando lo utilices.**")
+                            
+                        elif "EDIT_PROTOCOL:" in res_ai:
+                            edits = json.loads(res_ai.split("EDIT_PROTOCOL:")[1].strip())
+                            for edit in edits:
+                                supabase.table("protocolos").update(edit["cambios"]).eq("id", edit["id"]).execute()
+                            st.markdown("✅ **Protocolo actualizado con la nueva receta.**")
+                            
                         st.rerun()
                     else:
                         st.markdown(res_ai)
                         st.session_state.messages.append({"role": "assistant", "content": res_ai})
                 except Exception as e:
-                    st.error(f"Error procesando la solicitud: {e}")
+                    st.error(f"Error procesando la IA: {e}")
+                    st.write("Respuesta cruda de la IA (para depurar):", res_ai)
