@@ -10,8 +10,6 @@ import numpy as np
 import PyPDF2
 import io
 import qrcode
-import smtplib
-from email.message import EmailMessage
 
 # --- 1. CONFIGURACIÓN ---
 st.set_page_config(page_title="Lab Aguilar OS", layout="wide", page_icon="🔬")
@@ -35,39 +33,6 @@ if "backup_inventario" not in st.session_state: st.session_state.backup_inventar
 
 def crear_punto_restauracion(df_actual): st.session_state.backup_inventario = df_actual.copy()
 
-# --- FUNCIÓN DE ALERTAS POR CORREO ---
-def enviar_alerta_correo(nombre_item, cantidad_actual, umbral):
-    try:
-        remitente = st.secrets.get("EMAIL_SENDER")
-        password = st.secrets.get("EMAIL_PASSWORD")
-        destinatarios = st.secrets.get("EMAIL_RECEIVERS")
-        
-        if not remitente or not password or not destinatarios:
-            return "Faltan configurar los secretos (EMAIL_SENDER, etc) en Streamlit."
-            
-        msg = EmailMessage()
-        msg.set_content(f"""Hola,\n\nEste es un aviso automático del Lab Aguilar OS.\n\nEl reactivo '{nombre_item}' ha alcanzado un nivel crítico.\n\nStock Actual: {cantidad_actual}\nUmbral Mínimo: {umbral}\n\nPor favor, gestionar su compra o reposición pronto.\n\nSaludos,\nAsistente Virtual""")
-        msg['Subject'] = f"⚠️ Alerta de Stock Crítico: {nombre_item}"
-        msg['From'] = remitente
-        msg['To'] = destinatarios.split(',')
-
-        server = smtplib.SMTP_SSL('smtp.gmail.com', 465)
-        server.login(remitente, password)
-        server.send_message(msg)
-        server.quit()
-        st.toast(f"📧 Correo enviado para: {nombre_item}", icon="✅")
-        return None # Éxito total
-    except Exception as e:
-        return str(e) # Devuelve el texto del bloqueo de Google
-
-def verificar_y_alertar(id_item, nueva_cantidad):
-    item_row = df[df['id'] == id_item]
-    if not item_row.empty:
-        umbral = item_row.iloc[0]['umbral_minimo']
-        nombre = item_row.iloc[0]['nombre']
-        if umbral > 0 and nueva_cantidad <= umbral:
-            return enviar_alerta_correo(nombre, nueva_cantidad, umbral)
-    return None
 # --- 2. LÓGICA DE DATOS Y ESTILOS ---
 def aplicar_estilos(row):
     cant = row.get('cantidad_actual', 0)
@@ -128,13 +93,11 @@ with col_mon:
     tab_inventario, tab_historial, tab_editar, tab_protocolos, tab_qr, tab_bioterio = st.tabs(["📦 Inventario", "⏱️ Historial", "⚙️ Editar", "🧪 Protocolos", "🖨️ QR", "❄️ Bioterio"])
     
     with tab_inventario:
-        # --- NUEVA SECCIÓN: REACTIVOS BAJO EL UMBRAL ---
         df_criticos = df[(df['cantidad_actual'] <= df['umbral_minimo']) & (df['umbral_minimo'] > 0)]
         if not df_criticos.empty:
             st.error("🚨 **ATENCIÓN: Reactivos con Stock Crítico**")
             st.dataframe(df_criticos[['nombre', 'categoria', 'cantidad_actual', 'umbral_minimo', 'unidad']], use_container_width=True, hide_index=True)
             st.markdown("---")
-        # -----------------------------------------------
 
         busqueda = st.text_input("🔍 Buscar producto...", key="search")
         df_show = df[df['nombre'].str.contains(busqueda, case=False)] if busqueda else df
@@ -175,30 +138,16 @@ with col_mon:
         if st.button("💾 Guardar Cambios"):
             crear_punto_restauracion(df)
             edited_df = edited_df.replace({np.nan: None})
-            
-            error_correo = None # Variable para cazar el error
-            
             for index, row in edited_df.iterrows():
                 row_dict = row.dropna().to_dict()
-                
                 if 'id' in row_dict:
                     try:
                         row_dict['id'] = int(float(row_dict['id']))
                     except (ValueError, TypeError):
                         del row_dict['id'] 
-                
                 supabase.table("items").upsert(row_dict).execute()
-                
-                # Revisar si se disparó el correo y guardar si hubo error
-                if 'cantidad_actual' in row_dict and 'id' in row_dict:
-                    falla = verificar_y_alertar(row_dict['id'], row_dict['cantidad_actual'])
-                    if falla: error_correo = falla
-            
-            if error_correo:
-                st.error(f"🛑 El stock se guardó en la base de datos, PERO el correo falló. Detalle del error de Google: {error_correo}")
-            else:
-                st.success("Cambios guardados exitosamente.")
-                st.rerun()
+            st.success("Cambios guardados.")
+            st.rerun()
 
     with tab_protocolos:
         st.markdown("### ▶️ Ejecución Rápida (Sin Chat)")
@@ -225,7 +174,6 @@ with col_mon:
                                         nueva_c = int(item_db.iloc[0]['cantidad_actual']) - total_d
                                         supabase.table("items").update({"cantidad_actual": nueva_c}).eq("id", id_it).execute()
                                         supabase.table("movimientos").insert({"item_id": id_it, "nombre_item": item_db.iloc[0]['nombre'], "cantidad_cambio": -total_d, "tipo": "Salida", "usuario": usuario_actual}).execute()
-                                        verificar_y_alertar(id_it, nueva_c)
                                         exitos += 1
                             if exitos > 0:
                                 st.success("¡Inventario descontado correctamente!")
@@ -270,13 +218,11 @@ with col_mon:
             edited_muestras = edited_muestras.replace({np.nan: None})
             for index, row in edited_muestras.iterrows():
                 row_dict = row.dropna().to_dict()
-                
                 if 'id' in row_dict:
                     try:
                         row_dict['id'] = int(float(row_dict['id']))
                     except (ValueError, TypeError):
                         del row_dict['id']
-                
                 supabase.table("muestras").upsert(row_dict).execute()
             st.success("Muestras guardadas.")
             st.rerun()
@@ -307,7 +253,6 @@ with col_chat:
                         for it in json.loads(m.group().replace("'", '"')):
                             supabase.table("items").update({"cantidad_actual": it["cantidad_final"]}).eq("id", it["id"]).execute()
                             supabase.table("movimientos").insert({"item_id": it["id"], "nombre_item": it["nombre"], "cantidad_cambio": it["diferencia"], "tipo": "Salida", "usuario": usuario_actual}).execute()
-                            verificar_y_alertar(it["id"], it["cantidad_final"]) 
                         st.markdown("✅ **Actualizado.**")
                     elif "INSERT_MUESTRA:" in res_ai:
                         m = re.search(r'\{.*\}', res_ai, re.DOTALL)
