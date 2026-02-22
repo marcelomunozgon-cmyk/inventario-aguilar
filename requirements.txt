@@ -4,3 +4,4 @@ supabase
 pandas
 streamlit-mic-recorder
 PyPDF2
+qrcode[pil]
