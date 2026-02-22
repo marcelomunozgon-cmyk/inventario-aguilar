@@ -7,6 +7,8 @@ import re
 from streamlit_mic_recorder import speech_to_text
 from datetime import datetime
 import numpy as np
+import PyPDF2
+import io
 
 # --- 1. CONFIGURACIÓN ---
 st.set_page_config(page_title="Lab Aguilar OS", layout="wide", page_icon="🔬")
@@ -129,8 +131,43 @@ with col_mon:
                 st.rerun()
 
     with tab_protocolos:
-        st.markdown("### 📋 Mis Experimentos (Recetas)")
-        st.info("Escribe o usa la voz para guardar recetas recurrentes. La IA las usará para guiarte en el descuento de inventario.")
+        st.markdown("### 🤖 Cargar Manual de Kit (PDF)")
+        archivo_pdf = st.file_uploader("Sube el PDF del manual comercial (Ej: Qiagen, Thermo, Zymo). La IA extraerá los reactivos.", type=["pdf"])
+        
+        if archivo_pdf is not None:
+            if st.button("✨ Analizar y Extraer Protocolo", type="primary"):
+                with st.spinner("Leyendo manual y extrayendo receta..."):
+                    try:
+                        lector = PyPDF2.PdfReader(archivo_pdf)
+                        texto_pdf = ""
+                        for i in range(min(len(lector.pages), 15)): # Leemos las primeras 15 páginas para no saturar
+                            texto_pdf += lector.pages[i].extract_text()
+                        
+                        sys_pdf = f"""
+                        Eres un experto LIMS. Lee este manual de kit comercial:
+                        {texto_pdf[:25000]}
+                        
+                        Tu tarea:
+                        1. Extraer el nombre del Kit o Protocolo principal.
+                        2. Resumir en 'materiales_base' los buffers usados, spin columns, y volúmenes requeridos por muestra (prep). 
+                        3. AÑADIR UNA NOTA al final de materiales_base que diga: "Al reportar este experimento, la IA debe preguntar cuántas reacciones (preps) se procesaron para descontar del Kit general o de los buffers individuales".
+                        
+                        Devuelve SOLO JSON: INSERT_PROTOCOL: {{"nombre": "T", "materiales_base": "T"}}
+                        """
+                        res_pdf = model.generate_content(sys_pdf).text
+                        
+                        if "INSERT_PROTOCOL:" in res_pdf:
+                            nuevo_prot = json.loads(res_pdf.split("INSERT_PROTOCOL:")[1].strip().replace("'", '"'))
+                            supabase.table("protocolos").insert(nuevo_prot).execute()
+                            st.success(f"¡Protocolo '{nuevo_prot['nombre']}' extraído y guardado con éxito!")
+                            st.rerun()
+                        else:
+                            st.error("No se pudo procesar el PDF correctamente.")
+                    except Exception as e:
+                        st.error(f"Error procesando el PDF: {e}")
+        
+        st.markdown("---")
+        st.markdown("### 📋 Mis Experimentos (Recetas Actuales)")
         if not df_prot.empty: df_prot_edit = df_prot[['id', 'nombre', 'materiales_base']].copy()
         else: df_prot_edit = pd.DataFrame(columns=["id", "nombre", "materiales_base"])
             
@@ -143,7 +180,7 @@ with col_mon:
             },
             use_container_width=True, hide_index=True, num_rows="dynamic"
         )
-        if st.button("💾 Guardar Protocolos"):
+        if st.button("💾 Guardar Cambios Manuales en Protocolos"):
             with st.spinner("Guardando..."):
                 edited_prot = edited_prot.replace({np.nan: None})
                 for index, row in edited_prot.iterrows():
@@ -160,7 +197,7 @@ with col_chat:
     chat_box = st.container(height=350, border=True)
     
     if "messages" not in st.session_state:
-        st.session_state.messages = [{"role": "assistant", "content": "Hola. Pídeme que agregue reactivos, actualice stock, o que anote un nuevo protocolo de experimento."}]
+        st.session_state.messages = [{"role": "assistant", "content": "Hola. Pídeme que agregue reactivos, actualice stock, o indícame qué experimento acabas de realizar."}]
 
     with chat_box:
         for m in st.session_state.messages:
@@ -181,26 +218,25 @@ with col_chat:
                     historial_chat = "\n".join([f"{m['role']}: {m['content']}" for m in st.session_state.messages[-6:]])
                     
                     sys_p = f"""
-                    Eres el asistente LIMS del Lab Aguilar.
+                    Eres el asistente del Lab Aguilar (biología molecular y celular).
                     Inventario: {ctx_inv}
                     Protocolos: {ctx_prot}
                     Historial: {historial_chat}
                     
-                    ELIGE UNA RUTA según lo que pida el usuario:
+                    ELIGE UNA RUTA:
                     
-                    A) EJECUTAR EXPERIMENTO: Si dice que hizo un protocolo existente, revisa materiales_base. Si faltan cantidades, PREGUNTA en texto normal. Si ya tienes todo, usa UPDATE_BATCH.
-                    B) ACTUALIZAR STOCK: UPDATE_BATCH: [{{"id": N, "cantidad_final": N, "diferencia": N, "nombre": "texto"}}]
+                    A) EJECUTAR EXPERIMENTO / KIT: Si reporta que hizo un experimento, revisa sus materiales. Pregunta cuántas reacciones (preps) o muestras hizo. Calcula el descuento total. Si tienes todo claro, haz UPDATE_BATCH.
+                    B) ACTUALIZAR STOCK DIRECTO: UPDATE_BATCH: [{{"id": N, "cantidad_final": N, "diferencia": N, "nombre": "texto"}}]
                     C) NUEVO REACTIVO: INSERT_NEW: {{"nombre": "T", "categoria": "T", "subcategoria": "T", "cantidad_actual": N, "unidad": "T", "link_proveedor": "https://..."}}
                     D) EDITAR REACTIVO: EDIT_ITEM: [{{"id": N, "cambios": {{"columna": "valor"}}}}]
-                    E) NUEVO PROTOCOLO: Si pide guardar/crear una nueva receta. INSERT_PROTOCOL: {{"nombre": "T", "materiales_base": "T"}}
-                    F) EDITAR PROTOCOLO: Si pide cambiar la receta de un protocolo. EDIT_PROTOCOL: [{{"id": N, "cambios": {{"materiales_base": "T"}}}}]
+                    E) NUEVO PROTOCOLO MANUAL: INSERT_PROTOCOL: {{"nombre": "T", "materiales_base": "T"}}
                     
-                    Usa comillas dobles para los JSON. No uses bloques de código.
+                    Usa JSON estricto sin bloques de markdown cuando actualices base de datos. Si necesitas hacer una pregunta al usuario para aclarar cantidades, responde solo con texto normal, sin JSON.
                     """
                     
                     res_ai = model.generate_content(sys_p).text
                     
-                    if "UPDATE_BATCH:" in res_ai or "INSERT_NEW:" in res_ai or "EDIT_ITEM:" in res_ai or "INSERT_PROTOCOL:" in res_ai or "EDIT_PROTOCOL:" in res_ai:
+                    if "UPDATE_BATCH:" in res_ai or "INSERT_NEW:" in res_ai or "EDIT_ITEM:" in res_ai or "INSERT_PROTOCOL:" in res_ai:
                         
                         if "UPDATE_BATCH:" in res_ai:
                             crear_punto_restauracion(df)
@@ -209,7 +245,7 @@ with col_chat:
                                 supabase.table("items").update({"cantidad_actual": int(item["cantidad_final"])}).eq("id", item["id"]).execute()
                                 try: supabase.table("movimientos").insert({"item_id": item["id"], "nombre_item": item["nombre"], "cantidad_cambio": item["diferencia"], "tipo": "Entrada" if item["diferencia"] > 0 else "Salida"}).execute()
                                 except: pass
-                            st.markdown("✅ **Inventario actualizado y descontado.**")
+                            st.markdown("✅ **Inventario actualizado.**")
                             
                         elif "INSERT_NEW:" in res_ai:
                             crear_punto_restauracion(df)
@@ -227,13 +263,7 @@ with col_chat:
                         elif "INSERT_PROTOCOL:" in res_ai:
                             new_prot = json.loads(res_ai.split("INSERT_PROTOCOL:")[1].strip())
                             supabase.table("protocolos").insert(new_prot).execute()
-                            st.markdown(f"✅ **Protocolo '{new_prot['nombre']}' guardado. Ahora puedes decirme cuando lo utilices.**")
-                            
-                        elif "EDIT_PROTOCOL:" in res_ai:
-                            edits = json.loads(res_ai.split("EDIT_PROTOCOL:")[1].strip())
-                            for edit in edits:
-                                supabase.table("protocolos").update(edit["cambios"]).eq("id", edit["id"]).execute()
-                            st.markdown("✅ **Protocolo actualizado con la nueva receta.**")
+                            st.markdown(f"✅ **Protocolo guardado.**")
                             
                         st.rerun()
                     else:
@@ -241,4 +271,3 @@ with col_chat:
                         st.session_state.messages.append({"role": "assistant", "content": res_ai})
                 except Exception as e:
                     st.error(f"Error procesando la IA: {e}")
-                    st.write("Respuesta cruda de la IA (para depurar):", res_ai)
