@@ -43,8 +43,7 @@ def enviar_alerta_correo(nombre_item, cantidad_actual, umbral):
         destinatarios = st.secrets.get("EMAIL_RECEIVERS")
         
         if not remitente or not password or not destinatarios:
-            st.warning("⚠️ Faltan configurar los secretos de correo en Streamlit.")
-            return
+            return "Faltan configurar los secretos (EMAIL_SENDER, etc) en Streamlit."
             
         msg = EmailMessage()
         msg.set_content(f"""Hola,\n\nEste es un aviso automático del Lab Aguilar OS.\n\nEl reactivo '{nombre_item}' ha alcanzado un nivel crítico.\n\nStock Actual: {cantidad_actual}\nUmbral Mínimo: {umbral}\n\nPor favor, gestionar su compra o reposición pronto.\n\nSaludos,\nAsistente Virtual""")
@@ -56,20 +55,19 @@ def enviar_alerta_correo(nombre_item, cantidad_actual, umbral):
         server.login(remitente, password)
         server.send_message(msg)
         server.quit()
-        st.toast(f"📧 Alerta de stock enviada por correo para: {nombre_item}", icon="⚠️")
+        st.toast(f"📧 Correo enviado para: {nombre_item}", icon="✅")
+        return None # Éxito total
     except Exception as e:
-        # Ahora el error se mostrará en pantalla para poder diagnosticarlo
-        st.error(f"Error de conexión enviando el correo: {e}")
+        return str(e) # Devuelve el texto del bloqueo de Google
 
 def verificar_y_alertar(id_item, nueva_cantidad):
     item_row = df[df['id'] == id_item]
     if not item_row.empty:
         umbral = item_row.iloc[0]['umbral_minimo']
         nombre = item_row.iloc[0]['nombre']
-        # Solo enviamos correo si hay un umbral configurado mayor a 0
         if umbral > 0 and nueva_cantidad <= umbral:
-            enviar_alerta_correo(nombre, nueva_cantidad, umbral)
-
+            return enviar_alerta_correo(nombre, nueva_cantidad, umbral)
+    return None
 # --- 2. LÓGICA DE DATOS Y ESTILOS ---
 def aplicar_estilos(row):
     cant = row.get('cantidad_actual', 0)
