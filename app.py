@@ -47,13 +47,14 @@ st.markdown("## 🔬 Lab Aguilar: Control de Inventario")
 # Panel de Compras Urgentes
 df_urgente = df[df['cantidad_actual'] <= df['umbral_minimo']]
 if not df_urgente.empty:
-    with st.expander("⚠️ **COMPRAS URGENTES (Stock bajo mínimo)**", expanded=True):
+    with st.expander("⚠️ **COMPRAS URGENTES (Stock bajo mínimo)**", expanded=False):
         st.dataframe(df_urgente[['nombre', 'cantidad_actual', 'umbral_minimo', 'unidad']].style.apply(aplicar_estilos, axis=1), use_container_width=True, hide_index=True)
 
 col_chat, col_mon = st.columns([1, 1.6], gap="large")
 
 with col_mon:
-    tab_inventario, tab_historial = st.tabs(["📦 Inventario", "⏱️ Historial de Movimientos"])
+    # --- NUEVO: 3 Pestañas ---
+    tab_inventario, tab_historial, tab_editar = st.tabs(["📦 Inventario", "⏱️ Historial", "⚙️ Editar Catálogo"])
     
     with tab_inventario:
         busqueda = st.text_input("🔍 Buscar producto...", key="search")
@@ -77,12 +78,61 @@ with col_mon:
         except:
             st.warning("La tabla 'movimientos' aún no está creada en Supabase.")
 
+    # --- NUEVO: Pestaña de Edición Manual ---
+    with tab_editar:
+        st.info("Haz doble clic en cualquier celda para editar (nombres, categorías, unidades, etc.). Al terminar, presiona Guardar.")
+        
+        # Preparamos los datos para el editor (ocultamos columnas que no se deben tocar)
+        df_edit = df[['id', 'nombre', 'categoria', 'cantidad_actual', 'unidad', 'umbral_minimo']].copy()
+        
+        # El editor interactivo
+        edited_df = st.data_editor(
+            df_edit,
+            column_config={
+                "id": st.column_config.NumberColumn("ID", disabled=True), # Bloqueamos el ID para no romper la base de datos
+                "nombre": st.column_config.TextColumn("Nombre del Reactivo", required=True),
+                "categoria": st.column_config.TextColumn("Categoría"),
+                "cantidad_actual": st.column_config.NumberColumn("Stock", min_value=0),
+                "unidad": st.column_config.TextColumn("Unidad"),
+                "umbral_minimo": st.column_config.NumberColumn("Alerta Mínima", min_value=0)
+            },
+            use_container_width=True,
+            hide_index=True,
+            num_rows="dynamic" # Permite incluso borrar o agregar filas manualmente
+        )
+        
+        if st.button("💾 Guardar Cambios Manuales", type="primary"):
+            with st.spinner("Guardando en base de datos..."):
+                try:
+                    # Buscamos qué filas cambiaron comparando el original con el editado
+                    cambios_realizados = 0
+                    for index, row in edited_df.iterrows():
+                        # Si es una fila nueva o existente modificada
+                        if index >= len(df_edit) or not row.equals(df_edit.loc[index]):
+                            supabase.table("items").upsert({
+                                "id": int(row["id"]) if pd.notna(row["id"]) else None,
+                                "nombre": row["nombre"],
+                                "categoria": row["categoria"],
+                                "cantidad_actual": int(row["cantidad_actual"]),
+                                "unidad": row["unidad"],
+                                "umbral_minimo": int(row["umbral_minimo"])
+                            }).execute()
+                            cambios_realizados += 1
+                    
+                    if cambios_realizados > 0:
+                        st.success(f"¡Se actualizaron {cambios_realizados} reactivos correctamente!")
+                        st.rerun()
+                    else:
+                        st.warning("No detecté ningún cambio para guardar.")
+                except Exception as e:
+                    st.error(f"Hubo un problema al guardar: {e}")
+
 with col_chat:
     st.subheader("💬 Asistente")
     chat_box = st.container(height=350, border=True)
     
     if "messages" not in st.session_state:
-        st.session_state.messages = [{"role": "assistant", "content": "Hola Marcelo. Ahora puedes pedirme que cambie unidades, nombres o umbrales de cualquier reactivo."}]
+        st.session_state.messages = [{"role": "assistant", "content": "Hola Marcelo. Usa el micrófono para movimientos rápidos, o la pestaña 'Editar Catálogo' para correcciones de fondo."}]
 
     with chat_box:
         for m in st.session_state.messages:
@@ -116,25 +166,21 @@ with col_chat:
                     
                     Instrucción del usuario: "{prompt}"
                     
-                    Diccionario de jerga del Lab Aguilar:
-                    - "eppendorf" o "tubo eppendorf" = tubos de 1.5mL
+                    Diccionario de jerga:
+                    - "eppendorf" = tubos de 1.5mL
                     - "falcon" = tubos de 15mL o 50mL
                     - "tips amarillas" = puntas de 200uL
                     - "agua miliq" = agua ultrapura
-                    - "bolsa" = si la unidad es bolsa, suma 1 a la cantidad.
+                    - "bolsa" = suma 1.
                     
-                    Reglas de respuesta (Elige SOLO UNA y responde estrictamente en ese formato):
-                    1. Si pide ACTUALIZAR CANTIDAD (sumar, restar, sacar, agregar stock), responde SOLO con: 
+                    Reglas (Elige UNA y responde en JSON estricto):
+                    1. ACTUALIZAR STOCK: 
                        UPDATE_BATCH: [{{"id": N, "cantidad_final": N, "diferencia": N, "nombre": "texto"}}]
-                    
-                    2. Si pide AGREGAR un REACTIVO NUEVO que no existe, responde SOLO con:
+                    2. AGREGAR NUEVO:
                        INSERT_NEW: {{"nombre": "texto", "categoria": "texto", "cantidad_actual": N, "unidad": "texto", "umbral_minimo": 0}}
-                    
-                    3. Si pide EDITAR/CAMBIAR características de un reactivo que YA EXISTE (cambiar unidad, nombre, categoría, o umbral mínimo), responde SOLO con:
+                    3. EDITAR ITEM EXISTENTE:
                        EDIT_ITEM: [{{"id": N, "cambios": {{"unidad": "gramos"}}}}]
-                       (Pon dentro de "cambios" solo las columnas que el usuario pidió modificar).
-                    
-                    4. Si no es claro o falta información, responde con texto normal preguntando detalles.
+                    4. Si no es claro, responde con texto normal.
                     """
                     
                     res_ai = model.generate_content(sys_p).text
@@ -142,20 +188,15 @@ with col_chat:
                     if "UPDATE_BATCH:" in res_ai:
                         clean_json = res_ai.split("UPDATE_BATCH:")[1].strip().replace("'", '"')
                         updates = json.loads(clean_json)
-                        
                         for item in updates:
                             supabase.table("items").update({"cantidad_actual": int(item["cantidad_final"])}).eq("id", item["id"]).execute()
-                            tipo_mov = "Entrada" if item["diferencia"] > 0 else "Salida"
                             try:
                                 supabase.table("movimientos").insert({
-                                    "item_id": item["id"],
-                                    "nombre_item": item["nombre"],
-                                    "cantidad_cambio": item["diferencia"],
-                                    "tipo": tipo_mov
+                                    "item_id": item["id"], "nombre_item": item["nombre"],
+                                    "cantidad_cambio": item["diferencia"], "tipo": "Entrada" if item["diferencia"] > 0 else "Salida"
                                 }).execute()
                             except: pass
-                            
-                        st.markdown("✅ **Stock actualizado y registrado.**")
+                        st.markdown("✅ **Stock actualizado.**")
                         st.rerun()
                         
                     elif "INSERT_NEW:" in res_ai:
@@ -166,13 +207,11 @@ with col_chat:
                         st.rerun()
                         
                     elif "EDIT_ITEM:" in res_ai:
-                        # Lógica para modificar parámetros de reactivos existentes
                         clean_json = res_ai.split("EDIT_ITEM:")[1].strip().replace("'", '"')
                         edits = json.loads(clean_json)
-                        
                         for edit in edits:
                             supabase.table("items").update(edit["cambios"]).eq("id", edit["id"]).execute()
-                        st.markdown("✅ **Propiedades del reactivo actualizadas correctamente.**")
+                        st.markdown("✅ **Propiedades actualizadas.**")
                         st.rerun()
                         
                     else:
