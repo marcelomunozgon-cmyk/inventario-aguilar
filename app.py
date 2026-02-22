@@ -56,36 +56,39 @@ with col_mon:
 
 with col_chat:
     st.subheader("💬 Asistente")
-    chat_box = st.container(height=400, border=True)
+    chat_box = st.container(height=350, border=True)
     
     if "messages" not in st.session_state:
-        st.session_state.messages = [{"role": "assistant", "content": "Hola. Presiona el botón para grabar y vuelve a presionarlo para enviar."}]
+        st.session_state.messages = [{"role": "assistant", "content": "Hola. Presiona el botón para grabar, habla y luego presiona detener."}]
 
     with chat_box:
         for m in st.session_state.messages:
             with st.chat_message(m["role"]): st.markdown(m["content"])
 
-    # --- BOTÓN DE VOZ MANUAL (START/STOP) ---
+    # --- BOTÓN DE VOZ CON TRANSCRIPCIÓN EN VIVO ---
     st.write("🎙️ Control por voz:")
     scr = """
-    <div style="display: flex; flex-direction: column; align-items: center;">
-        <button id="voice-btn" style="width:100%; height:60px; border-radius:12px; border:none; background-color:#ff4b4b; color:white; font-weight:bold; cursor:pointer; font-size:18px; transition: 0.3s;">
+    <div style="display: flex; flex-direction: column; align-items: center; background: #f0f2f6; padding: 15px; border-radius: 15px;">
+        <button id="voice-btn" style="width:100%; height:50px; border-radius:10px; border:none; background-color:#ff4b4b; color:white; font-weight:bold; cursor:pointer; font-size:16px;">
             🎤 INICIAR GRABACIÓN
         </button>
-        <p id="status" style="font-size:14px; color:#555; margin-top:8px; font-family:sans-serif;">Listo para escuchar</p>
+        <div style="margin-top: 10px; width: 100%; min-height: 40px; background: white; padding: 10px; border: 1px solid #ddd; border-radius: 5px; font-family: sans-serif; font-size: 14px; color: #333;">
+            <strong>Transcripción:</strong> <span id="live-text">...</span>
+        </div>
     </div>
 
     <script>
         const btn = document.getElementById('voice-btn');
-        const status = document.getElementById('status');
+        const liveText = document.getElementById('live-text');
         const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
         
         if (SpeechRecognition) {
             const recognition = new SpeechRecognition();
             recognition.lang = 'es-CL';
-            recognition.continuous = true; 
-            recognition.interimResults = false;
+            recognition.continuous = true;
+            recognition.interimResults = true; // Permite ver resultados parciales mientras habla
             let isRecording = false;
+            let finalTranscript = '';
 
             btn.onclick = () => {
                 if (!isRecording) {
@@ -93,60 +96,42 @@ with col_chat:
                     isRecording = true;
                     btn.innerText = "🛑 DETENER Y ENVIAR";
                     btn.style.backgroundColor = "#28a745";
-                    status.innerText = "Escuchando... hable ahora.";
+                    liveText.innerText = "Escuchando...";
                 } else {
                     recognition.stop();
                     isRecording = false;
                     btn.innerText = "⌛ PROCESANDO...";
                     btn.style.backgroundColor = "#666";
+                    // Enviar el texto final recolectado
+                    if(finalTranscript) {
+                        const url = new URL(window.parent.location.href);
+                        url.searchParams.set('voice', finalTranscript);
+                        window.parent.location.href = url.toString();
+                    }
                 }
             };
 
             recognition.onresult = (event) => {
-                const text = event.results[event.results.length - 1][0].transcript;
-                // Redirección inmediata al padre con el texto
-                window.parent.location.assign(window.parent.location.origin + window.parent.location.pathname + "?voice=" + encodeURIComponent(text));
+                let interimTranscript = '';
+                for (let i = event.resultIndex; i < event.results.length; ++i) {
+                    if (event.results[i].isFinal) {
+                        finalTranscript += event.results[i][0].transcript;
+                    } else {
+                        interimTranscript += event.results[i][0].transcript;
+                    }
+                }
+                liveText.innerText = finalTranscript + interimTranscript;
             };
 
             recognition.onerror = (event) => {
-                status.innerText = "Error: " + event.error;
+                liveText.innerText = "Error: " + event.error;
+                isRecording = false;
                 btn.style.backgroundColor = "#ff4b4b";
                 btn.innerText = "🎤 REINTENTAR";
-                isRecording = false;
             };
-        } else {
-            status.innerText = "Navegador no compatible.";
         }
     </script>
     """
-    components.html(scr, height=110)
+    components.html(scr, height=160)
     
-    # --- 4. PROCESAMIENTO ---
-    voice_command = st.query_params.get("voice")
-    manual_command = st.chat_input("O escribe aquí...")
-    prompt = voice_command if voice_command else manual_command
-
-    if prompt:
-        st.query_params.clear()
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with chat_box:
-            with st.chat_message("user"): st.markdown(prompt)
-            with st.chat_message("assistant"):
-                try:
-                    ctx = df[['id', 'nombre', 'cantidad_actual', 'unidad']].to_csv(index=False, sep="|")
-                    full_p = f"Inventario: {ctx}\nInstrucción: {prompt}\nRegla: Si piden bolsa y la unidad es bolsa, suma 1. Responde con UPDATE_BATCH: [{{id:N, cantidad:N}}]"
-                    res_ai = model.generate_content(full_p)
-                    texto_ai = res_ai.text
-                    
-                    if "UPDATE_BATCH:" in texto_ai:
-                        match = re.search(r'\[.*\]', texto_ai.replace("'", '"'), re.DOTALL)
-                        if match:
-                            for item in json.loads(match.group()):
-                                supabase.table("items").update({"cantidad_actual": int(item["cantidad"])}).eq("id", item["id"]).execute()
-                            st.markdown("✅ **Inventario actualizado.**")
-                            st.rerun()
-                    else:
-                        st.markdown(texto_ai)
-                        st.session_state.messages.append({"role": "assistant", "content": texto_ai})
-                except Exception as e:
-                    st.error(f"Error: {e}")
+    # --- 4. PRO
