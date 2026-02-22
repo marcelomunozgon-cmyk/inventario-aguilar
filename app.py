@@ -4,7 +4,7 @@ from supabase import create_client
 import pandas as pd
 import json
 import re
-from PIL import Image # Librería Pillow
+from PIL import Image
 from datetime import datetime
 from streamlit_mic_recorder import mic_recorder
 
@@ -69,6 +69,7 @@ with col_chat:
 
     # --- ENTRADA DE VOZ Y TEXTO ---
     st.write("🎙️ Control por Voz:")
+    # Botón de micrófono integrado
     audio = mic_recorder(start_prompt="🔴 Hablar", stop_prompt="🟢 Detener y Enviar", key='recorder')
     input_text = st.chat_input("Escribe aquí...")
     
@@ -85,21 +86,31 @@ with col_chat:
             with st.chat_message("assistant"):
                 try:
                     ctx = df[['id', 'nombre', 'cantidad_actual', 'unidad']].to_csv(index=False, sep="|")
-                    full_p = f"Inventario: {ctx}\nInstrucción: {prompt}\nRegla: Si piden 'bolsa', suma 1 a cantidad. Responde con UPDATE_BATCH: [{{id:N, cantidad:N}}]"
+                    
+                    # PROMPT REFORZADO PARA TOLERAR ERRORES DE VOZ
+                    full_p = f"""
+                    Contexto Inventario: {ctx}
+                    Instrucción del usuario: "{prompt}"
+                    
+                    REGLAS CRÍTICAS:
+                    1. Si el usuario dice "bolsa", "volsa" o similar, suma 1 a la cantidad.
+                    2. La instrucción puede venir de un dictado de voz imperfecto, interpreta el nombre del producto más parecido.
+                    3. Responde siempre con el formato JSON al final:
+                    UPDATE_BATCH: [{{"id": ID, "cantidad": NUEVA_CANTIDAD}}]
+                    """
                     
                     res_ai = model.generate_content(full_p)
                     texto = res_ai.text
                     
                     if "UPDATE_BATCH:" in texto:
-                        # Limpieza profunda de JSON
+                        # Limpieza de JSON con reemplazo de comillas simples por dobles
                         match = re.search(r'\[.*\]', texto.replace("'", '"'), re.DOTALL)
                         if match:
                             for item in json.loads(match.group()):
-                                upd = {"cantidad_actual": int(item["cantidad"])}
-                                if "categoria" in item: upd["categoria"] = item["categoria"]
-                                supabase.table("items").update(upd).eq("id", item["id"]).execute()
+                                # Solo actualizamos cantidad para ser más seguros
+                                supabase.table("items").update({"cantidad_actual": int(item["cantidad"])}).eq("id", item["id"]).execute()
                             
-                            st.markdown(texto.split("UPDATE_BATCH:")[0] + "\n\n✅ **Actualizado.**")
+                            st.markdown(texto.split("UPDATE_BATCH:")[0] + "\n\n✅ **Inventario actualizado.**")
                             st.session_state.messages.append({"role": "assistant", "content": "Cambio realizado ✅"})
                             st.rerun()
                     else:
