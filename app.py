@@ -101,4 +101,33 @@ with col_chat:
     components.html(scr, height=65)
     
     # --- 4. PROCESAMIENTO ---
-    voice_command = st.query_params.get("voice
+    # Corrección de la línea 104: Comilla cerrada correctamente
+    voice_command = st.query_params.get("voice")
+    manual_command = st.chat_input("Escribe aquí...")
+    prompt = voice_command if voice_command else manual_command
+
+    if prompt:
+        st.query_params.clear()
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with chat_box:
+            with st.chat_message("user"): st.markdown(prompt)
+            with st.chat_message("assistant"):
+                try:
+                    ctx = df[['id', 'nombre', 'cantidad_actual', 'unidad']].to_csv(index=False, sep="|")
+                    full_p = f"Inventario: {ctx}\nInstrucción: {prompt}\nResponde con UPDATE_BATCH: [{{id:N, cantidad:N}}]"
+                    res_ai = model.generate_content(full_p)
+                    texto_ai = res_ai.text
+                    
+                    if "UPDATE_BATCH:" in texto_ai:
+                        match = re.search(r'\[.*\]', texto_ai.replace("'", '"'), re.DOTALL)
+                        if match:
+                            updates = json.loads(match.group())
+                            for item in updates:
+                                supabase.table("items").update({"cantidad_actual": int(item["cantidad"])}).eq("id", item["id"]).execute()
+                            st.markdown("✅ **Inventario actualizado.**")
+                            st.rerun()
+                    else:
+                        st.markdown(texto_ai)
+                        st.session_state.messages.append({"role": "assistant", "content": texto_ai})
+                except Exception as e:
+                    st.error(f"Error procesando la solicitud: {e}")
