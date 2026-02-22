@@ -58,13 +58,13 @@ with col_chat:
     chat_box = st.container(height=350, border=True)
     
     if "messages" not in st.session_state:
-        st.session_state.messages = [{"role": "assistant", "content": "Hola Marcelo. Prueba el botón de voz o escribe."}]
+        st.session_state.messages = [{"role": "assistant", "content": "Hola. Presiona el botón para hablar y luego presiona detener para procesar."}]
 
     with chat_box:
         for m in st.session_state.messages:
             with st.chat_message(m["role"]): st.markdown(m["content"])
 
-    # --- BOTÓN DE VOZ ULTRA-DIRECTO ---
+    # --- BOTÓN DE VOZ CORREGIDO ---
     st.write("🎙️ Control por voz:")
     scr = """
     <div style="background: #f0f2f6; padding: 15px; border-radius: 15px; text-align: center;">
@@ -72,7 +72,7 @@ with col_chat:
             🎤 INICIAR GRABACIÓN
         </button>
         <div style="margin-top:10px; background:white; padding:8px; border-radius:5px; font-size:14px; min-height:30px; border:1px solid #ccc; text-align: left;">
-            <strong>Escuchado:</strong> <span id="t">...</span>
+            <strong>Voz:</strong> <span id="t">...</span>
         </div>
     </div>
 
@@ -87,36 +87,42 @@ with col_chat:
             rec.continuous = true;
             rec.interimResults = true;
             let active = false;
-            let resultText = '';
+            let finalResult = '';
 
             btn.onclick = () => {
                 if (!active) {
+                    finalResult = '';
                     rec.start();
                     active = true;
-                    btn.innerText = "🛑 DETENER Y PROCESAR";
+                    btn.innerText = "🛑 DETENER Y ENVIAR";
                     btn.style.backgroundColor = "#28a745";
                 } else {
-                    rec.stop();
                     active = false;
+                    rec.stop(); // Cerramos el micrófono
+                    btn.innerText = "⌛ ENVIANDO...";
+                    btn.style.backgroundColor = "#666";
+                    
+                    // Esperamos un instante a que se limpie el buffer y enviamos
+                    setTimeout(() => {
+                        if (finalResult.length > 0) {
+                            const url = new URL(window.top.location.href);
+                            url.searchParams.set('voice', finalResult);
+                            window.top.location.href = url.toString();
+                        } else {
+                            btn.innerText = "🎤 REINTENTAR (No se oyó nada)";
+                            btn.style.backgroundColor = "#ff4b4b";
+                        }
+                    }, 500);
                 }
             };
 
             rec.onresult = (e) => {
-                let inter = '';
+                let interim = '';
                 for (let i = e.resultIndex; i < e.results.length; ++i) {
-                    if (e.results[i].isFinal) resultText += e.results[i][0].transcript;
-                    else inter += e.results[i][0].transcript;
+                    if (e.results[i].isFinal) finalResult += e.results[i][0].transcript;
+                    else interim += e.results[i][0].transcript;
                 }
-                txt.innerText = resultText + inter;
-            };
-
-            rec.onend = () => {
-                if (resultText.length > 0) {
-                    // Forzamos la redirección usando la ventana principal
-                    const url = new URL(window.top.location.href);
-                    url.searchParams.set('voice', resultText);
-                    window.top.location.href = url.toString();
-                }
+                txt.innerText = finalResult + interim;
             };
         }
     </script>
@@ -136,23 +142,19 @@ with col_chat:
             with st.chat_message("assistant"):
                 try:
                     ctx = df[['id', 'nombre', 'cantidad_actual', 'unidad']].to_csv(index=False, sep="|")
-                    # Instrucciones más estrictas para la IA para evitar errores de JSON
-                    sys_p = f"Inventario:\n{ctx}\nInstrucción: {prompt}\nRegla: Responde ÚNICAMENTE en este formato: UPDATE_BATCH: [{{'id': N, 'cantidad': N}}]"
+                    sys_p = f"Inventario:\n{ctx}\nInstrucción: {prompt}\nResponde con UPDATE_BATCH: [{{'id': N, 'cantidad': N}}]"
                     res_ai = model.generate_content(sys_p).text
                     
                     if "UPDATE_BATCH:" in res_ai:
-                        # Limpieza extrema del texto para evitar el error "Expecting property name"
                         clean_json = res_ai.split("UPDATE_BATCH:")[1].strip()
-                        clean_json = clean_json.replace("'", '"') # Convertir comillas simples a dobles
-                        
+                        clean_json = clean_json.replace("'", '"') # Fix para comillas simples
                         updates = json.loads(clean_json)
                         for item in updates:
                             supabase.table("items").update({"cantidad_actual": int(item["cantidad"])}).eq("id", item["id"]).execute()
-                        
-                        st.markdown("✅ **Inventario actualizado correctamente.**")
+                        st.markdown("✅ **Inventario actualizado.**")
                         st.rerun()
                     else:
                         st.markdown(res_ai)
                         st.session_state.messages.append({"role": "assistant", "content": res_ai})
                 except Exception as e:
-                    st.error(f"Error de procesamiento: {e}")
+                    st.error(f"Error: {e}")
