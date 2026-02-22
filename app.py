@@ -24,6 +24,7 @@ except Exception as e:
 def get_model():
     try:
         available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        # Preferimos gemini-1.5-flash por ser más rápido y tener mejor cuota gratuita
         m_name = next((m for m in available_models if '1.5-flash' in m), available_models[0])
         return genai.GenerativeModel(m_name)
     except: return None
@@ -42,7 +43,7 @@ def aplicar_estilos(row):
     umb = row.get('umbral_minimo', 0) if pd.notnull(row.get('umbral_minimo', 0)) else 0
     venc = row.get('fecha_vencimiento')
     
-    # Alerta de Vencimiento (Rojo Oscuro)
+    # Alerta de Vencimiento
     if pd.notnull(venc) and venc != "":
         try:
             if datetime.strptime(str(venc), '%Y-%m-%d').date() < date.today():
@@ -54,10 +55,11 @@ def aplicar_estilos(row):
     if cant <= umb: return ['background-color: #fff4cc; color: black'] * len(row)
     return [''] * len(row)
 
+# Carga inicial de datos
 res_items = supabase.table("items").select("*").execute()
 df = pd.DataFrame(res_items.data)
 
-# Asegurar columnas (incluyendo las nuevas)
+# Asegurar columnas necesarias
 for col in ['cantidad_actual', 'umbral_minimo']:
     if col not in df.columns: df[col] = 0
 for col in ['subcategoria', 'link_proveedor', 'lote', 'fecha_vencimiento']:
@@ -72,21 +74,21 @@ try:
 except:
     df_prot = pd.DataFrame(columns=["id", "nombre", "materiales_base"])
 
-# --- 3. INTERFAZ SUPERIOR (LOGIN SIMULADO) ---
+# --- 3. INTERFAZ SUPERIOR ---
 col_logo, col_user = st.columns([3, 1])
 with col_logo:
     st.markdown("## 🔬 Lab Aguilar: Control de Inventario")
 with col_user:
-    # Nuevo Sistema de Usuarios
     usuarios_lab = ["Marcelo Muñoz", "Rodrigo Aguilar", "Tesista / Estudiante", "Otro"]
     usuario_actual = st.selectbox("👤 Usuario Activo:", usuarios_lab, index=0)
 
 col_chat, col_mon = st.columns([1, 1.6], gap="large")
 
 with col_mon:
+    # Botón Deshacer
     if st.session_state.backup_inventario is not None:
         if st.button("↩️ Deshacer Última Acción", type="secondary"):
-            with st.spinner("Restaurando inventario..."):
+            with st.spinner("Restaurando..."):
                 try:
                     backup_df = st.session_state.backup_inventario.replace({np.nan: None})
                     for index, row in backup_df.iterrows():
@@ -97,227 +99,9 @@ with col_mon:
                     st.session_state.backup_inventario = None
                     st.success("¡Inventario restaurado!")
                     st.rerun()
-                except Exception as e:
-                    st.error(f"Error al restaurar: {e}")
+                except Exception as e: st.error(f"Error al restaurar: {e}")
 
     tab_inventario, tab_historial, tab_editar, tab_protocolos = st.tabs(["📦 Inventario", "⏱️ Historial", "⚙️ Editar Catálogo", "🧪 Protocolos"])
     
     with tab_inventario:
         busqueda = st.text_input("🔍 Buscar producto...", key="search")
-        df_show = df[df['nombre'].str.contains(busqueda, case=False)] if busqueda else df
-        categorias = sorted(df_show['categoria'].fillna("GENERAL").unique())
-        for cat in categorias:
-            with st.expander(f"📁 {cat}"):
-                subset_cat = df_show[df_show['categoria'] == cat]
-                subcategorias = sorted(subset_cat['subcategoria'].unique())
-                for subcat in subcategorias:
-                    if subcat != "": st.markdown(f"<h5 style='color:#555;'>└ 📂 {subcat}</h5>", unsafe_allow_html=True)
-                    subset_sub = subset_cat[subset_cat['subcategoria'] == subcat]
-                    cols_vista = [c for c in subset_sub.columns if c not in ['id', 'categoria', 'subcategoria', 'created_at']]
-                    st.dataframe(subset_sub[cols_vista].style.apply(aplicar_estilos, axis=1), column_config={"link_proveedor": st.column_config.LinkColumn("Proveedor", display_text="🌐 Ver Proveedor")}, use_container_width=True, hide_index=True)
-                
-    with tab_historial:
-        try:
-            res_mov = supabase.table("movimientos").select("*").order("created_at", desc=True).limit(20).execute()
-            if res_mov.data:
-                df_mov = pd.DataFrame(res_mov.data)
-                df_mov['Fecha'] = pd.to_datetime(df_mov['created_at']).dt.strftime('%d-%m-%Y %H:%M')
-                # Mostrar el usuario responsable
-                if 'usuario' not in df_mov.columns: df_mov['usuario'] = "Desconocido"
-                st.dataframe(df_mov[['Fecha', 'usuario', 'nombre_item', 'tipo', 'cantidad_cambio']], use_container_width=True, hide_index=True)
-        except: pass
-
-    with tab_editar:
-        st.markdown("### ✍️ Edición Manual")
-        todas_las_columnas = df.columns.tolist()
-        # Agregamos Lote y Vencimiento a la vista por defecto
-        cols_default = [c for c in ['nombre', 'categoria', 'cantidad_actual', 'unidad', 'lote', 'fecha_vencimiento'] if c in todas_las_columnas]
-        columnas_seleccionadas = st.multiselect("👁️ Columnas visibles:", options=todas_las_columnas, default=cols_default)
-        if 'id' not in columnas_seleccionadas: columnas_seleccionadas.insert(0, 'id')
-        df_edit = df[columnas_seleccionadas].copy()
-        
-        edited_df = st.data_editor(
-            df_edit, 
-            column_config={
-                "id": st.column_config.NumberColumn("ID", disabled=True),
-                "fecha_vencimiento": st.column_config.DateColumn("Vencimiento", format="YYYY-MM-DD")
-            }, 
-            use_container_width=True, hide_index=True, num_rows="dynamic"
-        )
-        if st.button("💾 Guardar Cambios Manuales"):
-            with st.spinner("Guardando..."):
-                crear_punto_restauracion(df)
-                edited_df = edited_df.replace({np.nan: None})
-                
-                # Formatear fechas correctamente para Supabase
-                if 'fecha_vencimiento' in edited_df.columns:
-                    edited_df['fecha_vencimiento'] = edited_df['fecha_vencimiento'].astype(str).replace({'NaT': None, 'None': None})
-
-                for index, row in edited_df.iterrows():
-                    if index >= len(df_edit) or not row.equals(df_edit.loc[index]):
-                        row_dict = row.dropna().to_dict()
-                        if 'id' in row_dict and row_dict['id'] is None: del row_dict['id']
-                        elif 'id' in row_dict: row_dict['id'] = int(row_dict['id'])
-                        supabase.table("items").upsert(row_dict).execute()
-                st.success("Guardado exitoso.")
-                st.rerun()
-
-    with tab_protocolos:
-        # --- NUEVO: EJECUCIÓN RÁPIDA DE PROTOCOLOS ---
-        st.markdown("### ▶️ Ejecución Rápida")
-        st.info("Selecciona un protocolo y ejecuta el descuento directamente.")
-        
-        col_prot1, col_prot2, col_prot3 = st.columns([2, 1, 1])
-        with col_prot1:
-            prot_seleccionado = st.selectbox("Seleccionar Experimento/Kit:", df_prot['nombre'] if not df_prot.empty else ["No hay protocolos"])
-        with col_prot2:
-            num_muestras = st.number_input("N° de Muestras/Reacciones:", min_value=1, value=1)
-        with col_prot3:
-            st.write("") # Espaciador
-            st.write("") # Espaciador
-            if st.button("🚀 Ejecutar y Descontar", type="primary", use_container_width=True):
-                with st.spinner("Calculando y descontando materiales..."):
-                    try:
-                        info_prot = df_prot[df_prot['nombre'] == prot_seleccionado]['materiales_base'].values[0]
-                        ctx_inv = df.to_csv(index=False, sep="|")
-                        
-                        sys_fast = f"""
-                        Inventario: {ctx_inv}
-                        El usuario {usuario_actual} acaba de ejecutar el protocolo '{prot_seleccionado}' para {num_muestras} muestras.
-                        Materiales base del protocolo: {info_prot}
-                        
-                        Calcula el total de reactivos consumidos (multiplica por {num_muestras} si aplica) y descuéntalos del inventario.
-                        Responde SOLO con este JSON: UPDATE_BATCH: [{{"id": N, "cantidad_final": N, "diferencia": N, "nombre": "texto"}}]
-                        """
-                        res_fast = model.generate_content(sys_fast).text
-                        match = re.search(r'\[.*\]', res_fast, re.DOTALL)
-                        if match:
-                            crear_punto_restauracion(df)
-                            updates = json.loads(match.group())
-                            for item in updates:
-                                supabase.table("items").update({"cantidad_actual": int(item["cantidad_final"])}).eq("id", item["id"]).execute()
-                                try: supabase.table("movimientos").insert({"item_id": item["id"], "nombre_item": item["nombre"], "cantidad_cambio": item["diferencia"], "tipo": "Salida", "usuario": usuario_actual}).execute()
-                                except: pass
-                            st.success(f"¡Protocolo ejecutado para {num_muestras} muestras! Stock actualizado.")
-                            st.rerun()
-                        else:
-                            st.error("Error calculando el descuento. Revisa si el protocolo tiene información suficiente.")
-                    except Exception as e:
-                        st.error(f"Error en ejecución rápida: {e}")
-
-        st.markdown("---")
-        st.markdown("### 🤖 Cargar Manual de Kit (PDF)")
-        archivo_pdf = st.file_uploader("Sube el PDF del manual comercial.", type=["pdf"])
-        if archivo_pdf is not None:
-            if st.button("✨ Analizar y Extraer Protocolo", type="primary"):
-                with st.spinner("Leyendo manual..."):
-                    try:
-                        lector = PyPDF2.PdfReader(archivo_pdf)
-                        texto_pdf = "".join([lector.pages[i].extract_text() for i in range(min(len(lector.pages), 15))])
-                        sys_pdf = f"Extrae nombre y 'materiales_base' de este kit:\n{texto_pdf[:25000]}\nResponde SOLO JSON: {{\"nombre\": \"T\", \"materiales_base\": \"T\"}}"
-                        res_pdf = model.generate_content(sys_pdf).text
-                        match = re.search(r'\{.*\}', res_pdf, re.DOTALL)
-                        if match:
-                            nuevo_prot = json.loads(match.group())
-                            supabase.table("protocolos").insert(nuevo_prot).execute()
-                            st.success("Protocolo guardado.")
-                            st.rerun()
-                    except Exception as e: st.error(f"Error: {e}")
-        
-        st.markdown("---")
-        st.markdown("### 📋 Editar Mis Experimentos")
-        df_prot_edit = df_prot[['id', 'nombre', 'materiales_base']].copy() if not df_prot.empty else pd.DataFrame(columns=["id", "nombre", "materiales_base"])
-        edited_prot = st.data_editor(df_prot_edit, column_config={"id": st.column_config.NumberColumn("ID", disabled=True), "materiales_base": st.column_config.TextColumn(width="large")}, use_container_width=True, hide_index=True, num_rows="dynamic")
-        if st.button("💾 Guardar Protocolos"):
-            with st.spinner("Guardando..."):
-                edited_prot = edited_prot.replace({np.nan: None})
-                for index, row in edited_prot.iterrows():
-                    if index >= len(df_prot_edit) or not row.equals(df_prot_edit.loc[index]):
-                        row_dict = row.dropna().to_dict()
-                        if 'id' in row_dict and row_dict['id'] is None: del row_dict['id']
-                        elif 'id' in row_dict: row_dict['id'] = int(row_dict['id'])
-                        supabase.table("protocolos").upsert(row_dict).execute()
-                st.success("Actualizado.")
-                st.rerun()
-
-with col_chat:
-    st.subheader("💬 Asistente")
-    chat_box = st.container(height=350, border=True)
-    
-    if "messages" not in st.session_state:
-        st.session_state.messages = [{"role": "assistant", "content": "Hola. Soy el asistente del Lab Aguilar. ¿Qué necesitas?"}]
-
-    with chat_box:
-        for m in st.session_state.messages:
-            with st.chat_message(m["role"]): st.markdown(m["content"])
-
-    v_in = speech_to_text(language='es-CL', start_prompt="🎤 INICIAR GRABACIÓN", stop_prompt="🛑 DETENER Y ENVIAR", just_once=True, key='voice_input')
-    m_in = st.chat_input("O escribe aquí...")
-    prompt = v_in if v_in else m_in
-
-    if prompt:
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with chat_box:
-            with st.chat_message("user"): st.markdown(prompt)
-            with st.chat_message("assistant"):
-                try:
-                    ctx_inv = df.to_csv(index=False, sep="|")
-                    ctx_prot = df_prot.to_csv(index=False, sep="|") if not df_prot.empty else "No hay protocolos."
-                    historial_chat = "\n".join([f"{m['role']}: {m['content']}" for m in st.session_state.messages[-6:]])
-                    
-                    sys_p = f"""
-                    Eres el asistente LIMS del Lab. Usuario actual: {usuario_actual}.
-                    Inventario: {ctx_inv}
-                    Protocolos: {ctx_prot}
-                    Historial: {historial_chat}
-                    
-                    ELIGE UNA RUTA (Responde SOLO en JSON estructurado, sin texto adicional si es actualización de DB):
-                    
-                    A) EJECUTAR EXPERIMENTO / KIT: Revisa materiales_base. Pregunta muestras si faltan (Texto normal). Si tienes todo: UPDATE_BATCH: [{{"id": N, "cantidad_final": N, "diferencia": N, "nombre": "texto"}}]
-                    B) ACTUALIZAR STOCK: UPDATE_BATCH: [{{"id": N, "cantidad_final": N, "diferencia": N, "nombre": "texto"}}]
-                    C) NUEVO REACTIVO: INSERT_NEW: {{"nombre": "T", "categoria": "T", "subcategoria": "T", "cantidad_actual": N, "unidad": "T", "fecha_vencimiento": "YYYY-MM-DD", "lote": "T"}}
-                    D) EDITAR REACTIVO: EDIT_ITEM: [{{"id": N, "cambios": {{"columna": "valor"}}}}]
-                    E) NUEVO PROTOCOLO MANUAL: INSERT_PROTOCOL: {{"nombre": "T", "materiales_base": "T"}}
-                    """
-                    
-                    res_ai = model.generate_content(sys_p).text
-                    
-                    if "UPDATE_BATCH:" in res_ai or "INSERT_NEW:" in res_ai or "EDIT_ITEM:" in res_ai or "INSERT_PROTOCOL:" in res_ai:
-                        
-                        if "UPDATE_BATCH:" in res_ai:
-                            crear_punto_restauracion(df)
-                            match = re.search(r'\[.*\]', res_ai, re.DOTALL)
-                            updates = json.loads(match.group()) if match else []
-                            for item in updates:
-                                supabase.table("items").update({"cantidad_actual": int(item["cantidad_final"])}).eq("id", item["id"]).execute()
-                                try: supabase.table("movimientos").insert({"item_id": item["id"], "nombre_item": item["nombre"], "cantidad_cambio": item["diferencia"], "tipo": "Entrada" if item["diferencia"] > 0 else "Salida", "usuario": usuario_actual}).execute()
-                                except: pass
-                            st.markdown("✅ **Inventario actualizado.**")
-                            
-                        elif "INSERT_NEW:" in res_ai:
-                            crear_punto_restauracion(df)
-                            match = re.search(r'\{.*\}', res_ai, re.DOTALL)
-                            new_item = json.loads(match.group()) if match else {}
-                            supabase.table("items").insert(new_item).execute()
-                            st.markdown(f"✅ **Nuevo reactivo agregado.**")
-                            
-                        elif "EDIT_ITEM:" in res_ai:
-                            crear_punto_restauracion(df)
-                            match = re.search(r'\[.*\]', res_ai, re.DOTALL)
-                            edits = json.loads(match.group()) if match else []
-                            for edit in edits:
-                                supabase.table("items").update(edit["cambios"]).eq("id", edit["id"]).execute()
-                            st.markdown("✅ **Reactivo editado correctamente.**")
-                            
-                        elif "INSERT_PROTOCOL:" in res_ai:
-                            match = re.search(r'\{.*\}', res_ai, re.DOTALL)
-                            new_prot = json.loads(match.group()) if match else {}
-                            supabase.table("protocolos").insert(new_prot).execute()
-                            st.markdown(f"✅ **Protocolo guardado.**")
-                            
-                        st.rerun()
-                    else:
-                        st.markdown(res_ai)
-                        st.session_state.messages.append({"role": "assistant", "content": res_ai})
-                except Exception as e:
-                    st.error(f"Error procesando la IA: {e}")
