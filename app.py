@@ -175,6 +175,9 @@ with col_mon:
         if st.button("💾 Guardar Cambios"):
             crear_punto_restauracion(df)
             edited_df = edited_df.replace({np.nan: None})
+            
+            error_correo = None # Variable para cazar el error
+            
             for index, row in edited_df.iterrows():
                 row_dict = row.dropna().to_dict()
                 
@@ -186,10 +189,16 @@ with col_mon:
                 
                 supabase.table("items").upsert(row_dict).execute()
                 
+                # Revisar si se disparó el correo y guardar si hubo error
                 if 'cantidad_actual' in row_dict and 'id' in row_dict:
-                    verificar_y_alertar(row_dict['id'], row_dict['cantidad_actual'])
-            st.success("Cambios guardados.")
-            st.rerun()
+                    falla = verificar_y_alertar(row_dict['id'], row_dict['cantidad_actual'])
+                    if falla: error_correo = falla
+            
+            if error_correo:
+                st.error(f"🛑 El stock se guardó en la base de datos, PERO el correo falló. Detalle del error de Google: {error_correo}")
+            else:
+                st.success("Cambios guardados exitosamente.")
+                st.rerun()
 
     with tab_protocolos:
         st.markdown("### ▶️ Ejecución Rápida (Sin Chat)")
