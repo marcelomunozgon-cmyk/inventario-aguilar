@@ -2,68 +2,103 @@ import streamlit as st
 import google.generativeai as genai
 from supabase import create_client
 import pandas as pd
-import time
+import json
+from datetime import datetime
 
-# 1. CONFIGURACIÓN BÁSICA (Fuera de cualquier bucle)
-st.set_page_config(page_title="Lab Aguilar OS", layout="wide")
+# --- CONFIGURACIÓN ---
+st.set_page_config(page_title="Lab Aguilar OS", page_icon="🔬", layout="wide")
 
-# 2. CONEXIÓN SEGURA
+try:
+    GENAI_KEY = st.secrets["GENAI_KEY"]
+    SUPABASE_URL = st.secrets["SUPABASE_URL"]
+    SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
+    genai.configure(api_key=GENAI_KEY)
+    supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+except:
+    st.error("Error en Secrets.")
+    st.stop()
+
+# --- DETECCIÓN DINÁMICA DE MODELO (Adiós al 404) ---
 @st.cache_resource
-def inicializar_conexiones():
+def obtener_modelo_real():
     try:
-        url = st.secrets["SUPABASE_URL"]
-        key = st.secrets["SUPABASE_KEY"]
-        ai_key = st.secrets["GENAI_KEY"]
-        
-        supabase = create_client(url, key)
-        genai.configure(api_key=ai_key)
-        
-        # Intentar detectar modelo
+        # Le preguntamos a la API qué modelos tienes permitidos
         modelos = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        modelo_nombre = next((m for m in modelos if '1.5-flash' in m), modelos[0])
-        model = genai.GenerativeModel(modelo_nombre)
-        
-        return supabase, model
+        # Buscamos el flash, y si no, cualquiera que sea gemini
+        nombre_modelo = next((m for m in modelos if '1.5-flash' in m), modelos[0])
+        return genai.GenerativeModel(nombre_modelo)
     except Exception as e:
-        st.error(f"Error crítico de conexión: {e}")
-        return None, None
+        st.error(f"Error al detectar modelo: {e}")
+        return None
 
-supabase, model = inicializar_conexiones()
+model = obtener_modelo_real()
 
-# 3. INTERFAZ
-st.title("🔬 Lab Aguilar - Sistema de Control")
+# --- MEMORIA DEL CHAT ---
+if "messages" not in st.session_state:
+    st.session_state.messages = [{"role": "assistant", "content": "Hola Rodrigo. Sistema listo. ¿Qué cambio haremos?"}]
 
-if supabase and model:
-    # Columnas para el Dashboard
-    col_control, col_monitor = st.columns([1, 1.5])
+# --- FUNCIÓN DEL AGENTE ---
+def ejecutar_agente(prompt_usuario, contexto_inventario):
+    instrucciones = f"""
+    Eres el Asistente del Lab Aguilar.
+    Inventario: {contexto_inventario}
+    
+    Si el usuario quiere cambiar una categoría o cantidad:
+    1. Identifica el ID del producto.
+    2. Responde confirmando y añade al final: UPDATE: {{"id": ID, "cantidad": N, "categoria": "CAT", "ubicacion": "U"}}
+    """
+    try:
+        # Si el modelo no cargó bien, intentamos recargar
+        if not model: return "Error: El modelo IA no está disponible."
+        
+        response = model.generate_content(f"{instrucciones}\n\nUsuario: {prompt_usuario}")
+        return response.text
+    except Exception as e:
+        return f"Error de cuota o conexión: {str(e)}"
 
-    with col_control:
-        st.subheader("💬 Asistente")
-        # Usamos un formulario para evitar que cada tecla cause un rerun
-        with st.form("chat_form"):
-            user_input = st.text_input("Escribe tu instrucción aquí:")
-            submit = st.form_submit_button("Enviar")
+# --- INTERFAZ ---
+st.title("🔬 Monitor Inteligente")
+
+col_chat, col_monitor = st.columns([1, 1.2])
+
+with col_monitor:
+    st.subheader("📊 Inventario")
+    res = supabase.table("items").select("*").execute()
+    inventario_texto = ""
+    if res.data:
+        df = pd.DataFrame(res.data)
+        inventario_texto = df[['id', 'nombre', 'categoria', 'cantidad_actual']].to_string(index=False)
+        
+        df['categoria'] = df['categoria'].fillna("SIN CLASIFICAR")
+        for cat in sorted(df['categoria'].unique()):
+            with st.expander(f"📁 {cat}"):
+                st.dataframe(df[df['categoria'] == cat][['nombre', 'cantidad_actual', 'unidad', 'ubicacion_detallada']], 
+                             use_container_width=True, hide_index=True)
+
+with col_chat:
+    container_chat = st.container(height=450)
+    for m in st.session_state.messages:
+        with container_chat.chat_message(m["role"]): st.markdown(m["content"])
+
+    if prompt := st.chat_input("Ej: Cambia la categoría de los Eppendorf a CONSUMIBLES-PLASTICOS"):
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with container_chat.chat_message("user"): st.markdown(prompt)
+        
+        with container_chat.chat_message("assistant"):
+            respuesta = ejecutar_agente(prompt, inventario_texto)
             
-            if submit and user_input:
-                st.info(f"Procesando: {user_input}...")
-                # Aquí iría la lógica del agente que ya teníamos
-
-    with col_monitor:
-        st.subheader("📊 Inventario")
-        try:
-            # Traer solo 20 ítems para probar que carga rápido
-            res = supabase.table("items").select("*").limit(20).execute()
-            if res.data:
-                df = pd.DataFrame(res.data)
-                st.dataframe(df[['nombre', 'cantidad_actual', 'unidad']], use_container_width=True)
-            else:
-                st.write("No hay datos.")
-        except Exception as e:
-            st.error(f"Error al leer tablas: {e}")
-else:
-    st.warning("El sistema no pudo iniciar. Revisa los 'Secrets' en Streamlit Cloud.")
-
-# Botón de reset manual en la barra lateral
-if st.sidebar.button("Limpiar Caché y Reiniciar"):
-    st.cache_resource.clear()
-    st.rerun()
+            if "UPDATE:" in respuesta:
+                try:
+                    data = json.loads(respuesta.split("UPDATE:")[1].strip())
+                    upd = {}
+                    if "cantidad" in data: upd["cantidad_actual"] = data["cantidad"]
+                    if "categoria" in data: upd["categoria"] = data["categoria"]
+                    if "ubicacion" in data: upd["ubicacion_detallada"] = data["ubicacion"]
+                    
+                    supabase.table("items").update(upd).eq("id", data["id"]).execute()
+                    respuesta = respuesta.split("UPDATE:")[0] + "\n\n✅ *Cambio aplicado.*"
+                except: pass
+            
+            st.markdown(respuesta)
+            st.session_state.messages.append({"role": "assistant", "content": respuesta})
+            if "✅" in respuesta: st.rerun()
