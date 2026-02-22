@@ -110,51 +110,60 @@ with col_mon:
         except: pass
 
     with tab_editar:
-        # --- BOTÓN MÁGICO DE AUTO-CLASIFICACIÓN ---
         st.markdown("### 🤖 Asistente de IA para el Catálogo")
         st.info("La IA puede analizar todos tus reactivos actuales y asignarles automáticamente la mejor Categoría, Subcategoría y un Link de búsqueda hacia el proveedor.")
         if st.button("✨ Auto-Clasificar Todo con IA", type="primary"):
-            with st.spinner("Analizando inventario, deduciendo categorías y buscando proveedores... (Esto puede tardar unos segundos)"):
+            with st.spinner("Analizando inventario... (Esto puede tardar hasta un minuto si hay muchos items)"):
                 try:
-                    # Le pasamos a la IA solo los nombres y IDs para que haga el trabajo
-                    ctx_clasificar = df[['id', 'nombre', 'categoria', 'subcategoria']].to_csv(index=False, sep="|")
+                    # Pasamos un dataset limpio a la IA
+                    ctx_clasificar = df[['id', 'nombre']].to_csv(index=False, sep="|")
                     sys_clasificar = f"""
-                    Eres un experto en inventarios de laboratorios de biología molecular.
-                    Aquí tienes la base de datos actual de reactivos y materiales:
+                    Eres un sistema LIMS experto en biología molecular.
+                    Base de datos actual de reactivos (IDs y nombres):
                     {ctx_clasificar}
                     
-                    Tu tarea es analizar CADA reactivo por su 'nombre' y:
-                    1. Asignarle una 'categoria' general lógica (ej: Reactivos, Plásticos, Enzimas, Equipos, Buffers).
-                    2. Asignarle una 'subcategoria' específica (ej: Extracción de ARN, PCR, Cultivo Celular, Tubos).
-                    3. Crear un 'link_proveedor' directo de búsqueda (ej: URL de búsqueda en Thermo Fisher, NEB, Sigma Aldrich, Promega o Qiagen).
+                    Tu tarea:
+                    1. Asignar 'categoria'.
+                    2. Asignar 'subcategoria'.
+                    3. Crear 'link_proveedor' (búsqueda en Thermo Fisher, NEB, Sigma, etc).
                     
-                    Devuelve ÚNICAMENTE un JSON válido con esta estructura exacta para TODOS los items:
+                    REGLA ESTRICTA DE FORMATO JSON:
+                    - Devuelve ÚNICAMENTE un array de JSON válido.
+                    - Las claves deben usar comillas dobles "".
+                    - NO uses comillas dobles ni simples dentro de los valores de texto. Reemplázalas por espacios si es necesario.
+                    - Formato exacto requerido:
                     [
-                        {{"id": 1, "categoria": "Enzimas", "subcategoria": "Polimerasas", "link_proveedor": "https://www.thermofisher.com/search/browse/results?term=Taq+Polymerase"}},
-                        {{"id": 2, "categoria": "Plásticos", "subcategoria": "Tubos", "link_proveedor": "https://www.sigmaaldrich.com/search?term=eppendorf+tubes"}}
+                        {{"id": 1, "categoria": "Enzimas", "subcategoria": "Polimerasas", "link_proveedor": "https://..."}},
+                        {{"id": 2, "categoria": "Plásticos", "subcategoria": "Tubos", "link_proveedor": "https://..."}}
                     ]
                     """
                     res_clasificacion = model.generate_content(sys_clasificar).text
                     
-                    match = re.search(r'\[.*\]', res_clasificacion.replace("'", '"'), re.DOTALL)
+                    # Extraemos el JSON crudo sin hacer reemplazos peligrosos de comillas
+                    match = re.search(r'\[.*\]', res_clasificacion, re.DOTALL)
+                    
                     if match:
-                        nuevos_datos = json.loads(match.group())
-                        crear_punto_restauracion(df) # Guardar copia de seguridad por si acaso
+                        json_str = match.group()
+                        nuevos_datos = json.loads(json_str)
+                        crear_punto_restauracion(df)
                         
-                        # Actualizar la base de datos masivamente
                         for item in nuevos_datos:
                             supabase.table("items").update({
-                                "categoria": item["categoria"],
-                                "subcategoria": item["subcategoria"],
-                                "link_proveedor": item["link_proveedor"]
+                                "categoria": item.get("categoria", "General"),
+                                "subcategoria": item.get("subcategoria", ""),
+                                "link_proveedor": item.get("link_proveedor", "")
                             }).eq("id", item["id"]).execute()
                             
                         st.success("¡Inventario clasificado y actualizado con éxito!")
                         st.rerun()
                     else:
-                        st.error("Hubo un problema procesando la respuesta de la IA. Intenta de nuevo.")
+                        st.error("La IA no devolvió un formato válido. Intenta de nuevo.")
+                        st.write("Respuesta cruda para depurar:", res_clasificacion)
+                except json.JSONDecodeError as je:
+                    st.error(f"Error de formato JSON: {je}")
+                    st.write("Dile al desarrollador que la IA devolvió este texto mal formado:", json_str)
                 except Exception as e:
-                    st.error(f"Error en la auto-clasificación: {e}")
+                    st.error(f"Error general: {e}")
 
         st.markdown("---")
         st.markdown("### ✍️ Edición Manual")
@@ -167,79 +176,4 @@ with col_mon:
         edited_df = st.data_editor(
             df_edit,
             column_config={
-                "id": st.column_config.NumberColumn("ID", disabled=True),
-                "link_proveedor": st.column_config.TextColumn("URL del Proveedor")
-            },
-            use_container_width=True, hide_index=True, num_rows="dynamic"
-        )
-        
-        if st.button("💾 Guardar Cambios Manuales"):
-            with st.spinner("Guardando..."):
-                crear_punto_restauracion(df)
-                edited_df = edited_df.replace({np.nan: None})
-                for index, row in edited_df.iterrows():
-                    if index >= len(df_edit) or not row.equals(df_edit.loc[index]):
-                        row_dict = row.dropna().to_dict()
-                        if 'id' in row_dict and row_dict['id'] is None: del row_dict['id']
-                        elif 'id' in row_dict: row_dict['id'] = int(row_dict['id'])
-                        supabase.table("items").upsert(row_dict).execute()
-                st.success("Guardado manual exitoso.")
-                st.rerun()
-
-with col_chat:
-    st.subheader("💬 Asistente")
-    chat_box = st.container(height=350, border=True)
-    
-    if "messages" not in st.session_state:
-        st.session_state.messages = [{"role": "assistant", "content": "Hola. Pídeme que agregue reactivos nuevos o que mueva stock."}]
-
-    with chat_box:
-        for m in st.session_state.messages:
-            with st.chat_message(m["role"]): st.markdown(m["content"])
-
-    v_in = speech_to_text(language='es-CL', start_prompt="🎤 INICIAR GRABACIÓN", stop_prompt="🛑 DETENER Y ENVIAR", just_once=True, key='voice_input')
-    m_in = st.chat_input("O escribe aquí...")
-    prompt = v_in if v_in else m_in
-
-    if prompt:
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with chat_box:
-            with st.chat_message("user"): st.markdown(prompt)
-            with st.chat_message("assistant"):
-                try:
-                    ctx = df.to_csv(index=False, sep="|")
-                    sys_p = f"""
-                    Inventario: {ctx}
-                    Instrucción: "{prompt}"
-                    Eres experto en biología molecular.
-                    Reglas (Elige UNA):
-                    1. ACTUALIZAR STOCK: UPDATE_BATCH: [{{"id": N, "cantidad_final": N, "diferencia": N, "nombre": "texto"}}]
-                    2. NUEVO REACTIVO: INSERT_NEW: {{"nombre": "T", "categoria": "T", "subcategoria": "T", "cantidad_actual": N, "unidad": "T", "link_proveedor": "https://..."}}
-                    3. EDITAR EXISTENTE: EDIT_ITEM: [{{"id": N, "cambios": {{"columna": "valor"}}}}]
-                    """
-                    res_ai = model.generate_content(sys_p).text
-                    
-                    if "UPDATE_BATCH:" in res_ai or "INSERT_NEW:" in res_ai or "EDIT_ITEM:" in res_ai:
-                        crear_punto_restauracion(df)
-                        
-                        if "UPDATE_BATCH:" in res_ai:
-                            updates = json.loads(res_ai.split("UPDATE_BATCH:")[1].strip().replace("'", '"'))
-                            for item in updates:
-                                supabase.table("items").update({"cantidad_actual": int(item["cantidad_final"])}).eq("id", item["id"]).execute()
-                                try: supabase.table("movimientos").insert({"item_id": item["id"], "nombre_item": item["nombre"], "cantidad_cambio": item["diferencia"], "tipo": "Entrada" if item["diferencia"] > 0 else "Salida"}).execute()
-                                except: pass
-                        elif "INSERT_NEW:" in res_ai:
-                            new_item = json.loads(res_ai.split("INSERT_NEW:")[1].strip().replace("'", '"'))
-                            supabase.table("items").insert(new_item).execute()
-                        elif "EDIT_ITEM:" in res_ai:
-                            edits = json.loads(res_ai.split("EDIT_ITEM:")[1].strip().replace("'", '"'))
-                            for edit in edits:
-                                supabase.table("items").update(edit["cambios"]).eq("id", edit["id"]).execute()
-                                
-                        st.markdown("✅ **Comando ejecutado.**")
-                        st.rerun()
-                    else:
-                        st.markdown(res_ai)
-                        st.session_state.messages.append({"role": "assistant", "content": res_ai})
-                except Exception as e:
-                    st.error(f"Error procesando: {e}")
+                "id": st.column_config.Number
