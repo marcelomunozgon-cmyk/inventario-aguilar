@@ -28,11 +28,9 @@ def get_model():
 
 model = get_model()
 
-# --- INICIALIZAR MEMORIA DE RESPALDO (UNDO) ---
 if "backup_inventario" not in st.session_state:
     st.session_state.backup_inventario = None
 
-# Función para guardar la "foto" antes de hacer un cambio
 def crear_punto_restauracion(df_actual):
     st.session_state.backup_inventario = df_actual.copy()
 
@@ -47,7 +45,6 @@ def aplicar_estilos(row):
 res_items = supabase.table("items").select("*").execute()
 df = pd.DataFrame(res_items.data)
 
-# Asegurar columnas
 for col in ['cantidad_actual', 'umbral_minimo']:
     if col not in df.columns: df[col] = 0
 for col in ['subcategoria', 'link_proveedor']:
@@ -64,21 +61,17 @@ st.markdown("## 🔬 Lab Aguilar: Control de Inventario")
 col_chat, col_mon = st.columns([1, 1.6], gap="large")
 
 with col_mon:
-    # --- BOTÓN DE DESHACER ---
     if st.session_state.backup_inventario is not None:
         if st.button("↩️ Deshacer Última Acción (Restaurar Inventario)", type="secondary"):
             with st.spinner("Restaurando inventario..."):
                 try:
-                    # Restauramos los datos desde el backup
-                    backup_df = st.session_state.backup_inventario
-                    backup_df = backup_df.replace({np.nan: None})
+                    backup_df = st.session_state.backup_inventario.replace({np.nan: None})
                     for index, row in backup_df.iterrows():
                         row_dict = row.dropna().to_dict()
                         if 'id' in row_dict and row_dict['id'] is not None:
                             row_dict['id'] = int(row_dict['id'])
                             supabase.table("items").upsert(row_dict).execute()
-                    
-                    st.session_state.backup_inventario = None # Limpiamos el backup usado
+                    st.session_state.backup_inventario = None
                     st.success("¡Inventario restaurado a su estado anterior!")
                     st.rerun()
                 except Exception as e:
@@ -100,16 +93,10 @@ with col_mon:
                     if subcat != "": st.markdown(f"<h5 style='color:#555;'>└ 📂 {subcat}</h5>", unsafe_allow_html=True)
                     subset_sub = subset_cat[subset_cat['subcategoria'] == subcat]
                     
-                    # Mostrar la tabla configurando el link para que sea un botón limpio
                     cols_vista = [c for c in subset_sub.columns if c not in ['id', 'categoria', 'subcategoria', 'created_at']]
                     st.dataframe(
                         subset_sub[cols_vista].style.apply(aplicar_estilos, axis=1), 
-                        column_config={
-                            "link_proveedor": st.column_config.LinkColumn(
-                                "Proveedor",
-                                display_text="🌐 Ver Proveedor" # Esto oculta la URL larga
-                            )
-                        },
+                        column_config={"link_proveedor": st.column_config.LinkColumn("Proveedor", display_text="🌐 Ver Proveedor")},
                         use_container_width=True, hide_index=True
                     )
                 
@@ -123,7 +110,54 @@ with col_mon:
         except: pass
 
     with tab_editar:
-        st.info("💡 Usa **Ctrl+Z** en tu teclado para deshacer un error mientras editas las celdas.")
+        # --- BOTÓN MÁGICO DE AUTO-CLASIFICACIÓN ---
+        st.markdown("### 🤖 Asistente de IA para el Catálogo")
+        st.info("La IA puede analizar todos tus reactivos actuales y asignarles automáticamente la mejor Categoría, Subcategoría y un Link de búsqueda hacia el proveedor.")
+        if st.button("✨ Auto-Clasificar Todo con IA", type="primary"):
+            with st.spinner("Analizando inventario, deduciendo categorías y buscando proveedores... (Esto puede tardar unos segundos)"):
+                try:
+                    # Le pasamos a la IA solo los nombres y IDs para que haga el trabajo
+                    ctx_clasificar = df[['id', 'nombre', 'categoria', 'subcategoria']].to_csv(index=False, sep="|")
+                    sys_clasificar = f"""
+                    Eres un experto en inventarios de laboratorios de biología molecular.
+                    Aquí tienes la base de datos actual de reactivos y materiales:
+                    {ctx_clasificar}
+                    
+                    Tu tarea es analizar CADA reactivo por su 'nombre' y:
+                    1. Asignarle una 'categoria' general lógica (ej: Reactivos, Plásticos, Enzimas, Equipos, Buffers).
+                    2. Asignarle una 'subcategoria' específica (ej: Extracción de ARN, PCR, Cultivo Celular, Tubos).
+                    3. Crear un 'link_proveedor' directo de búsqueda (ej: URL de búsqueda en Thermo Fisher, NEB, Sigma Aldrich, Promega o Qiagen).
+                    
+                    Devuelve ÚNICAMENTE un JSON válido con esta estructura exacta para TODOS los items:
+                    [
+                        {{"id": 1, "categoria": "Enzimas", "subcategoria": "Polimerasas", "link_proveedor": "https://www.thermofisher.com/search/browse/results?term=Taq+Polymerase"}},
+                        {{"id": 2, "categoria": "Plásticos", "subcategoria": "Tubos", "link_proveedor": "https://www.sigmaaldrich.com/search?term=eppendorf+tubes"}}
+                    ]
+                    """
+                    res_clasificacion = model.generate_content(sys_clasificar).text
+                    
+                    match = re.search(r'\[.*\]', res_clasificacion.replace("'", '"'), re.DOTALL)
+                    if match:
+                        nuevos_datos = json.loads(match.group())
+                        crear_punto_restauracion(df) # Guardar copia de seguridad por si acaso
+                        
+                        # Actualizar la base de datos masivamente
+                        for item in nuevos_datos:
+                            supabase.table("items").update({
+                                "categoria": item["categoria"],
+                                "subcategoria": item["subcategoria"],
+                                "link_proveedor": item["link_proveedor"]
+                            }).eq("id", item["id"]).execute()
+                            
+                        st.success("¡Inventario clasificado y actualizado con éxito!")
+                        st.rerun()
+                    else:
+                        st.error("Hubo un problema procesando la respuesta de la IA. Intenta de nuevo.")
+                except Exception as e:
+                    st.error(f"Error en la auto-clasificación: {e}")
+
+        st.markdown("---")
+        st.markdown("### ✍️ Edición Manual")
         todas_las_columnas = df.columns.tolist()
         columnas_seleccionadas = st.multiselect("👁️ Columnas visibles:", options=todas_las_columnas, default=[c for c in ['nombre', 'categoria', 'subcategoria', 'cantidad_actual', 'unidad', 'link_proveedor'] if c in todas_las_columnas])
         if 'id' not in columnas_seleccionadas: columnas_seleccionadas.insert(0, 'id')
@@ -139,9 +173,9 @@ with col_mon:
             use_container_width=True, hide_index=True, num_rows="dynamic"
         )
         
-        if st.button("💾 Guardar Catálogo", type="primary"):
+        if st.button("💾 Guardar Cambios Manuales"):
             with st.spinner("Guardando..."):
-                crear_punto_restauracion(df) # Tomamos la foto antes de guardar
+                crear_punto_restauracion(df)
                 edited_df = edited_df.replace({np.nan: None})
                 for index, row in edited_df.iterrows():
                     if index >= len(df_edit) or not row.equals(df_edit.loc[index]):
@@ -149,7 +183,7 @@ with col_mon:
                         if 'id' in row_dict and row_dict['id'] is None: del row_dict['id']
                         elif 'id' in row_dict: row_dict['id'] = int(row_dict['id'])
                         supabase.table("items").upsert(row_dict).execute()
-                st.success("Guardado. Si te equivocaste, ve arriba y usa 'Deshacer'.")
+                st.success("Guardado manual exitoso.")
                 st.rerun()
 
 with col_chat:
@@ -157,7 +191,7 @@ with col_chat:
     chat_box = st.container(height=350, border=True)
     
     if "messages" not in st.session_state:
-        st.session_state.messages = [{"role": "assistant", "content": "Pídeme que agregue reactivos. Buscaré automáticamente su categoría y el link de compra (Thermo, NEB, Sigma, etc)."}]
+        st.session_state.messages = [{"role": "assistant", "content": "Hola. Pídeme que agregue reactivos nuevos o que mueva stock."}]
 
     with chat_box:
         for m in st.session_state.messages:
@@ -177,19 +211,16 @@ with col_chat:
                     sys_p = f"""
                     Inventario: {ctx}
                     Instrucción: "{prompt}"
-                    
-                    Eres un experto en biología molecular. Si te piden agregar un reactivo (enzimas, kits, químicos, plásticos), debes deducir la mejor "categoria", "subcategoria" y generar un "link_proveedor" real de búsqueda hacia Thermo Fisher, NEB, Sigma Aldrich, Promega o Qiagen.
-                    
+                    Eres experto en biología molecular.
                     Reglas (Elige UNA):
                     1. ACTUALIZAR STOCK: UPDATE_BATCH: [{{"id": N, "cantidad_final": N, "diferencia": N, "nombre": "texto"}}]
                     2. NUEVO REACTIVO: INSERT_NEW: {{"nombre": "T", "categoria": "T", "subcategoria": "T", "cantidad_actual": N, "unidad": "T", "link_proveedor": "https://..."}}
                     3. EDITAR EXISTENTE: EDIT_ITEM: [{{"id": N, "cambios": {{"columna": "valor"}}}}]
                     """
-                    
                     res_ai = model.generate_content(sys_p).text
                     
                     if "UPDATE_BATCH:" in res_ai or "INSERT_NEW:" in res_ai or "EDIT_ITEM:" in res_ai:
-                        crear_punto_restauracion(df) # Guardar la foto antes de que la IA modifique todo
+                        crear_punto_restauracion(df)
                         
                         if "UPDATE_BATCH:" in res_ai:
                             updates = json.loads(res_ai.split("UPDATE_BATCH:")[1].strip().replace("'", '"'))
@@ -197,17 +228,15 @@ with col_chat:
                                 supabase.table("items").update({"cantidad_actual": int(item["cantidad_final"])}).eq("id", item["id"]).execute()
                                 try: supabase.table("movimientos").insert({"item_id": item["id"], "nombre_item": item["nombre"], "cantidad_cambio": item["diferencia"], "tipo": "Entrada" if item["diferencia"] > 0 else "Salida"}).execute()
                                 except: pass
-                                
                         elif "INSERT_NEW:" in res_ai:
                             new_item = json.loads(res_ai.split("INSERT_NEW:")[1].strip().replace("'", '"'))
                             supabase.table("items").insert(new_item).execute()
-                            
                         elif "EDIT_ITEM:" in res_ai:
                             edits = json.loads(res_ai.split("EDIT_ITEM:")[1].strip().replace("'", '"'))
                             for edit in edits:
                                 supabase.table("items").update(edit["cambios"]).eq("id", edit["id"]).execute()
                                 
-                        st.markdown("✅ **Comando ejecutado.** (Puedes deshacerlo con el botón de arriba si hubo un error).")
+                        st.markdown("✅ **Comando ejecutado.**")
                         st.rerun()
                     else:
                         st.markdown(res_ai)
