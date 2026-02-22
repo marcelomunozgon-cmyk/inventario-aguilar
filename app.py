@@ -85,13 +85,19 @@ def aplicar_estilos(row):
 res_items = supabase.table("items").select("*").execute()
 df = pd.DataFrame(res_items.data)
 
+# --- CORRECCIÓN DE LIMPIEZA DE TIPOS DE DATOS ---
 for col in ['cantidad_actual', 'umbral_minimo']:
     if col not in df.columns: df[col] = 0
-for col in ['subcategoria', 'link_proveedor', 'lote', 'fecha_vencimiento']:
-    if col not in df.columns: df[col] = ""
+    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype(int)
 
-df['cantidad_actual'] = pd.to_numeric(df['cantidad_actual'], errors='coerce').fillna(0).astype(int)
-df['umbral_minimo'] = pd.to_numeric(df['umbral_minimo'], errors='coerce').fillna(0).astype(int)
+for col in ['categoria', 'subcategoria', 'link_proveedor', 'lote', 'fecha_vencimiento']:
+    if col not in df.columns: df[col] = ""
+    # Transformamos todo a string y llenamos nulos para que 'sorted()' nunca falle
+    df[col] = df[col].fillna("").astype(str)
+
+# Si la categoría está vacía, le ponemos 'GENERAL'
+df['categoria'] = df['categoria'].replace("", "GENERAL")
+# ------------------------------------------------
 
 # Carga de Protocolos y Muestras
 try: res_prot = supabase.table("protocolos").select("*").execute(); df_prot = pd.DataFrame(res_prot.data)
@@ -130,11 +136,15 @@ with col_mon:
     with tab_inventario:
         busqueda = st.text_input("🔍 Buscar producto...", key="search")
         df_show = df[df['nombre'].str.contains(busqueda, case=False)] if busqueda else df
-        categorias = sorted(df_show['categoria'].fillna("GENERAL").unique())
+        
+        # Ordenado seguro sin TypeError
+        categorias = sorted(df_show['categoria'].unique())
         for cat in categorias:
             with st.expander(f"📁 {cat}"):
                 subset_cat = df_show[df_show['categoria'] == cat]
+                # Ordenado seguro sin TypeError
                 subcategorias = sorted(subset_cat['subcategoria'].unique())
+                
                 for subcat in subcategorias:
                     if subcat != "": st.markdown(f"<h5 style='color:#555;'>└ 📂 {subcat}</h5>", unsafe_allow_html=True)
                     subset_sub = subset_cat[subset_cat['subcategoria'] == subcat]
@@ -168,17 +178,14 @@ with col_mon:
             for index, row in edited_df.iterrows():
                 row_dict = row.dropna().to_dict()
                 
-                # --- CORRECCIÓN ROBUSTA DEL ID ---
                 if 'id' in row_dict:
                     try:
                         row_dict['id'] = int(float(row_dict['id']))
                     except (ValueError, TypeError):
-                        del row_dict['id'] # Si falla, borramos el ID para que asigne uno nuevo
-                # ---------------------------------
+                        del row_dict['id'] 
                 
                 supabase.table("items").upsert(row_dict).execute()
                 
-                # Verificar alerta de stock al guardar
                 if 'cantidad_actual' in row_dict and 'id' in row_dict:
                     verificar_y_alertar(row_dict['id'], row_dict['cantidad_actual'])
             st.success("Cambios guardados.")
@@ -209,7 +216,7 @@ with col_mon:
                                         nueva_c = int(item_db.iloc[0]['cantidad_actual']) - total_d
                                         supabase.table("items").update({"cantidad_actual": nueva_c}).eq("id", id_it).execute()
                                         supabase.table("movimientos").insert({"item_id": id_it, "nombre_item": item_db.iloc[0]['nombre'], "cantidad_cambio": -total_d, "tipo": "Salida", "usuario": usuario_actual}).execute()
-                                        verificar_y_alertar(id_it, nueva_c) # ALERTA CORREO
+                                        verificar_y_alertar(id_it, nueva_c)
                                         exitos += 1
                             if exitos > 0:
                                 st.success("¡Inventario descontado correctamente!")
@@ -255,13 +262,11 @@ with col_mon:
             for index, row in edited_muestras.iterrows():
                 row_dict = row.dropna().to_dict()
                 
-                # --- CORRECCIÓN ROBUSTA DEL ID EN BIOTERIO ---
                 if 'id' in row_dict:
                     try:
                         row_dict['id'] = int(float(row_dict['id']))
                     except (ValueError, TypeError):
                         del row_dict['id']
-                # ---------------------------------------------
                 
                 supabase.table("muestras").upsert(row_dict).execute()
             st.success("Muestras guardadas.")
@@ -293,7 +298,7 @@ with col_chat:
                         for it in json.loads(m.group().replace("'", '"')):
                             supabase.table("items").update({"cantidad_actual": it["cantidad_final"]}).eq("id", it["id"]).execute()
                             supabase.table("movimientos").insert({"item_id": it["id"], "nombre_item": it["nombre"], "cantidad_cambio": it["diferencia"], "tipo": "Salida", "usuario": usuario_actual}).execute()
-                            verificar_y_alertar(it["id"], it["cantidad_final"]) # ALERTA CORREO
+                            verificar_y_alertar(it["id"], it["cantidad_final"]) 
                         st.markdown("✅ **Actualizado.**")
                     elif "INSERT_MUESTRA:" in res_ai:
                         m = re.search(r'\{.*\}', res_ai, re.DOTALL)
