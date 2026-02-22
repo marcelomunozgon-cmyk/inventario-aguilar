@@ -9,7 +9,7 @@ from datetime import datetime, date
 import numpy as np
 import PyPDF2
 import io
-import qrcode # NUEVA LIBRERÍA
+import qrcode
 
 # --- 1. CONFIGURACIÓN ---
 st.set_page_config(page_title="Lab Aguilar OS", layout="wide", page_icon="🔬")
@@ -64,11 +64,19 @@ for col in ['subcategoria', 'link_proveedor', 'lote', 'fecha_vencimiento']:
 df['cantidad_actual'] = pd.to_numeric(df['cantidad_actual'], errors='coerce').fillna(0).astype(int)
 df['umbral_minimo'] = pd.to_numeric(df['umbral_minimo'], errors='coerce').fillna(0).astype(int)
 
+# Cargar Protocolos
 try:
     res_prot = supabase.table("protocolos").select("*").execute()
     df_prot = pd.DataFrame(res_prot.data)
 except:
     df_prot = pd.DataFrame(columns=["id", "nombre", "materiales_base"])
+
+# Cargar Muestras (Bioterio)
+try:
+    res_muestras = supabase.table("muestras").select("*").execute()
+    df_muestras = pd.DataFrame(res_muestras.data)
+except:
+    df_muestras = pd.DataFrame(columns=["id", "codigo_muestra", "tipo", "ubicacion", "fecha_creacion", "notas"])
 
 # --- 3. INTERFAZ SUPERIOR ---
 col_logo, col_user = st.columns([3, 1])
@@ -96,8 +104,8 @@ with col_mon:
                     st.rerun()
                 except Exception as e: st.error(f"Error al restaurar: {e}")
 
-    # --- NUEVA PESTAÑA AÑADIDA AQUÍ ---
-    tab_inventario, tab_historial, tab_editar, tab_protocolos, tab_qr = st.tabs(["📦 Inventario", "⏱️ Historial", "⚙️ Editar Catálogo", "🧪 Protocolos", "🖨️ Etiquetas QR"])
+    # --- PESTAÑA BIOTERIO AÑADIDA ---
+    tab_inventario, tab_historial, tab_editar, tab_protocolos, tab_qr, tab_bioterio = st.tabs(["📦 Inventario", "⏱️ Historial", "⚙️ Editar", "🧪 Protocolos", "🖨️ QR", "❄️ Bioterio"])
     
     with tab_inventario:
         busqueda = st.text_input("🔍 Buscar producto...", key="search")
@@ -124,7 +132,7 @@ with col_mon:
         except: st.info("No hay movimientos registrados.")
 
     with tab_editar:
-        st.markdown("### ✍️ Edición Manual")
+        st.markdown("### ✍️ Edición Manual de Inventario")
         columnas_visibles = st.multiselect("Columnas:", options=df.columns.tolist(), default=['nombre', 'categoria', 'cantidad_actual', 'unidad', 'lote', 'fecha_vencimiento'])
         if 'id' not in columnas_visibles: columnas_visibles.insert(0, 'id')
         
@@ -145,19 +153,15 @@ with col_mon:
     with tab_protocolos:
         st.markdown("### ▶️ Ejecución Rápida (Sin Chat)")
         c1, c2, c3 = st.columns([2, 1, 1])
-        with c1:
-            p_sel = st.selectbox("Protocolo:", df_prot['nombre'] if not df_prot.empty else ["Vacío"])
-        with c2:
-            n_muestras = st.number_input("N° Muestras:", min_value=1, value=1)
+        with c1: p_sel = st.selectbox("Protocolo:", df_prot['nombre'] if not df_prot.empty else ["Vacío"])
+        with c2: n_muestras = st.number_input("N° Muestras:", min_value=1, value=1)
         with c3:
-            st.write(" ")
-            st.write(" ")
+            st.write(" "); st.write(" ")
             if st.button("🚀 Ejecutar", type="primary", use_container_width=True):
                 if not df_prot.empty:
                     with st.spinner("Calculando..."):
                         try:
                             info_p = df_prot[df_prot['nombre'] == p_sel]['materiales_base'].values[0]
-                            # LÓGICA LOCAL PARA AHORRAR CUOTA DE IA
                             lineas = info_p.split('\n')
                             exitos = 0
                             for linea in lineas:
@@ -176,8 +180,7 @@ with col_mon:
                             if exitos > 0:
                                 st.success("¡Inventario descontado correctamente!")
                                 st.rerun()
-                            else:
-                                st.warning("El protocolo no tiene el formato correcto de receta (Reactivo: Cantidad).")
+                            else: st.warning("El protocolo no tiene el formato correcto de receta (Reactivo: Cantidad).")
                         except Exception as e: st.error(f"Error: {e}")
 
         st.markdown("---")
@@ -195,52 +198,73 @@ with col_mon:
                     st.rerun()
                 except Exception as e: st.error(f"Error de cuota. Intenta luego: {e}")
 
-    # --- PESTAÑA NUEVA: GENERADOR DE QR ---
     with tab_qr:
         st.markdown("### 🖨️ Generador de Etiquetas QR")
-        st.info("Imprime estas etiquetas y pégalas en los frascos. Pronto habilitaremos la cámara para escanear y descontar reactivos al instante.")
-        
-        # Seleccionar el producto
         item_para_qr = st.selectbox("Selecciona un reactivo del inventario:", df['nombre'].tolist())
-        
         if item_para_qr:
             fila_item = df[df['nombre'] == item_para_qr].iloc[0]
-            
-            # El "secreto" del QR: un string con el ID exacto de Supabase
             codigo_interno = f"LAB_AGUILAR_ID:{fila_item['id']}"
-            
-            # Crear la imagen QR
             qr = qrcode.QRCode(version=1, box_size=8, border=2)
             qr.add_data(codigo_interno)
             qr.make(fit=True)
             img_qr = qr.make_image(fill_color="black", back_color="white")
-            
-            # Convertir a formato que Streamlit pueda mostrar/descargar
             buf = io.BytesIO()
             img_qr.save(buf, format="PNG")
             
             col_img, col_info = st.columns([1, 2])
-            with col_img:
-                st.image(buf, width=200)
+            with col_img: st.image(buf, width=200)
             with col_info:
                 st.markdown(f"**Reactivo:** {fila_item['nombre']}")
-                st.markdown(f"**Categoría:** {fila_item['categoria']}")
-                st.markdown(f"**Lote:** {fila_item.get('lote', 'N/A')}")
                 st.markdown(f"**Venc. / Expira:** {fila_item.get('fecha_vencimiento', 'N/A')}")
-                
-                # Botón para descargar
-                st.download_button(
-                    label="⬇️ Descargar Etiqueta (PNG)", 
-                    data=buf.getvalue(), 
-                    file_name=f"QR_{fila_item['nombre'].replace(' ', '_')}.png", 
-                    mime="image/png"
-                )
+                st.download_button(label="⬇️ Descargar Etiqueta (PNG)", data=buf.getvalue(), file_name=f"QR_{fila_item['nombre'].replace(' ', '_')}.png", mime="image/png")
+
+    # --- NUEVA PESTAÑA: BIOTERIO / MUESTRAS ---
+    with tab_bioterio:
+        st.markdown("### ❄️ Muestroteca y Almacenamiento")
+        st.info("Registra la ubicación exacta de tus extracciones de ARN, ADN, muestras en Trizol o proteínas.")
+        
+        if not df_muestras.empty:
+            df_m_edit = df_muestras[['id', 'codigo_muestra', 'tipo', 'ubicacion', 'fecha_creacion', 'notas']].copy()
+        else:
+            df_m_edit = pd.DataFrame(columns=["id", "codigo_muestra", "tipo", "ubicacion", "fecha_creacion", "notas"])
+            
+        st.markdown("#### 📝 Inventario de Muestras")
+        edited_muestras = st.data_editor(
+            df_m_edit,
+            column_config={
+                "id": st.column_config.NumberColumn("ID", disabled=True),
+                "codigo_muestra": st.column_config.TextColumn("Código Muestra", required=True),
+                "tipo": st.column_config.SelectboxColumn("Tipo", options=["ARN", "ADN", "Proteína", "Tejido en Trizol", "Células", "Otro"]),
+                "ubicacion": st.column_config.TextColumn("Ubicación (Ej: Freezer -80, Caja 1, A3)", required=True),
+                "fecha_creacion": st.column_config.DateColumn("Fecha Creación"),
+                "notas": st.column_config.TextColumn("Notas Extra", width="large")
+            },
+            use_container_width=True, hide_index=True, num_rows="dynamic"
+        )
+        
+        if st.button("💾 Guardar Muestras"):
+            with st.spinner("Guardando en el bioterio..."):
+                edited_muestras = edited_muestras.replace({np.nan: None})
+                # Auto-rellenar fecha si está vacía
+                if 'fecha_creacion' in edited_muestras.columns:
+                    edited_muestras['fecha_creacion'] = edited_muestras['fecha_creacion'].fillna(str(date.today()))
+                    edited_muestras['fecha_creacion'] = edited_muestras['fecha_creacion'].astype(str).replace({'NaT': None, 'None': None})
+
+                for index, row in edited_muestras.iterrows():
+                    if index >= len(df_m_edit) or not row.equals(df_m_edit.loc[index]):
+                        row_dict = row.dropna().to_dict()
+                        if 'id' in row_dict:
+                            if row_dict['id'] is not None: row_dict['id'] = int(row_dict['id'])
+                            else: del row_dict['id']
+                        supabase.table("muestras").upsert(row_dict).execute()
+                st.success("Muestras guardadas correctamente.")
+                st.rerun()
 
 with col_chat:
     st.subheader("💬 Asistente")
     chat_box = st.container(height=400, border=True)
     if "messages" not in st.session_state:
-        st.session_state.messages = [{"role": "assistant", "content": f"Hola {usuario_actual}. Recuerda usar la voz para consultas complejas y los botones para ahorrar cuota de IA."}]
+        st.session_state.messages = [{"role": "assistant", "content": f"Hola {usuario_actual}. Pídeme que descuente reactivos o que guarde una nueva muestra en el Bioterio."}]
 
     with chat_box:
         for m in st.session_state.messages:
@@ -255,18 +279,38 @@ with col_chat:
             st.chat_message("user").markdown(prompt)
             with st.chat_message("assistant"):
                 try:
-                    ctx = f"Usuario:{usuario_actual}\nInv:{df.to_csv(sep='|')}"
-                    res_ai = model.generate_content(f"{ctx}\nHistorial: {st.session_state.messages[-4:]}\nPrompt: {prompt}\nResponde con texto o JSON (UPDATE_BATCH, INSERT_NEW, EDIT_ITEM)").text
+                    ctx = f"Usuario:{usuario_actual}\nInv:{df[['id','nombre','cantidad_actual']].to_dict()}\nMuestras:{df_muestras[['codigo_muestra', 'ubicacion']].to_dict()}"
                     
-                    if any(x in res_ai for x in ["UPDATE_BATCH", "INSERT_NEW", "EDIT_ITEM"]):
-                        crear_punto_restauracion(df)
+                    sys_p = f"""
+                    Eres el asistente LIMS del Lab Aguilar.
+                    Datos actuales: {ctx}
+                    
+                    ELIGE UNA RUTA (Responde SOLO en JSON):
+                    A) ACTUALIZAR STOCK REACTIVOS: UPDATE_BATCH: [{{'id': N, 'cantidad_final': N, 'diferencia': N, 'nombre': 'T'}}]
+                    B) AGREGAR NUEVO REACTIVO: INSERT_NEW: {{"nombre": "T", "categoria": "T", "cantidad_actual": N, "unidad": "T"}}
+                    C) GUARDAR NUEVA MUESTRA EXPERIMENTAL: INSERT_MUESTRA: {{"codigo_muestra": "T", "tipo": "T", "ubicacion": "T", "notas": "T"}}
+                    """
+                    
+                    res_ai = model.generate_content(f"{sys_p}\nPrompt: {prompt}").text
+                    
+                    if "UPDATE_BATCH:" in res_ai or "INSERT_NEW:" in res_ai or "INSERT_MUESTRA:" in res_ai:
                         if "UPDATE_BATCH:" in res_ai:
+                            crear_punto_restauracion(df)
                             m = re.search(r'\[.*\]', res_ai, re.DOTALL)
                             for it in json.loads(m.group().replace("'", '"')):
                                 supabase.table("items").update({"cantidad_actual": it["cantidad_final"]}).eq("id", it["id"]).execute()
                                 supabase.table("movimientos").insert({"item_id": it["id"], "nombre_item": it["nombre"], "cantidad_cambio": it["diferencia"], "tipo": "Salida", "usuario": usuario_actual}).execute()
+                            st.markdown("✅ **Inventario de reactivos actualizado.**")
+                            
+                        elif "INSERT_MUESTRA:" in res_ai:
+                            m = re.search(r'\{.*\}', res_ai, re.DOTALL)
+                            new_muestra = json.loads(m.group().replace("'", '"')) if m else {}
+                            new_muestra['fecha_creacion'] = str(date.today())
+                            supabase.table("muestras").insert(new_muestra).execute()
+                            st.markdown(f"❄️ **Muestra '{new_muestra.get('codigo_muestra', '')}' guardada en el Bioterio exitosamente.**")
+                            
                         st.rerun()
                     else:
                         st.markdown(res_ai)
                         st.session_state.messages.append({"role": "assistant", "content": res_ai})
-                except Exception as e: st.error(f"Límite de cuota IA. Espera un poco. {e}")
+                except Exception as e: st.error(f"Error procesando la IA: {e}")
