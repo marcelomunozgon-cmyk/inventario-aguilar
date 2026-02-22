@@ -4,7 +4,7 @@ from supabase import create_client
 import pandas as pd
 import json
 import re
-import streamlit.components.v1 as components
+from streamlit_mic_recorder import speech_to_text
 
 # --- 1. CONFIGURACIÓN ---
 st.set_page_config(page_title="Lab Aguilar OS", layout="wide", page_icon="🔬")
@@ -58,103 +58,54 @@ with col_chat:
     chat_box = st.container(height=350, border=True)
     
     if "messages" not in st.session_state:
-        st.session_state.messages = [{"role": "assistant", "content": "Hola. Presiona el botón para hablar y luego presiona detener para procesar."}]
+        st.session_state.messages = [{"role": "assistant", "content": "Hola Marcelo. Prueba el botón de voz o escribe."}]
 
     with chat_box:
         for m in st.session_state.messages:
             with st.chat_message(m["role"]): st.markdown(m["content"])
 
-    # --- BOTÓN DE VOZ CORREGIDO ---
-    st.write("🎙️ Control por voz:")
-    scr = """
-    <div style="background: #f0f2f6; padding: 15px; border-radius: 15px; text-align: center;">
-        <button id="v-btn" style="width:100%; height:50px; border-radius:10px; border:none; background-color:#ff4b4b; color:white; font-weight:bold; cursor:pointer; font-size:16px;">
-            🎤 INICIAR GRABACIÓN
-        </button>
-        <div style="margin-top:10px; background:white; padding:8px; border-radius:5px; font-size:14px; min-height:30px; border:1px solid #ccc; text-align: left;">
-            <strong>Voz:</strong> <span id="t">...</span>
-        </div>
-    </div>
-
-    <script>
-        const btn = document.getElementById('v-btn');
-        const txt = document.getElementById('t');
-        const Speech = window.SpeechRecognition || window.webkitSpeechRecognition;
-        
-        if (Speech) {
-            const rec = new Speech();
-            rec.lang = 'es-CL';
-            rec.continuous = true;
-            rec.interimResults = true;
-            let active = false;
-            let finalResult = '';
-
-            btn.onclick = () => {
-                if (!active) {
-                    finalResult = '';
-                    rec.start();
-                    active = true;
-                    btn.innerText = "🛑 DETENER Y ENVIAR";
-                    btn.style.backgroundColor = "#28a745";
-                } else {
-                    active = false;
-                    rec.stop(); // Cerramos el micrófono
-                    btn.innerText = "⌛ ENVIANDO...";
-                    btn.style.backgroundColor = "#666";
-                    
-                    // Esperamos un instante a que se limpie el buffer y enviamos
-                    setTimeout(() => {
-                        if (finalResult.length > 0) {
-                            const url = new URL(window.top.location.href);
-                            url.searchParams.set('voice', finalResult);
-                            window.top.location.href = url.toString();
-                        } else {
-                            btn.innerText = "🎤 REINTENTAR (No se oyó nada)";
-                            btn.style.backgroundColor = "#ff4b4b";
-                        }
-                    }, 500);
-                }
-            };
-
-            rec.onresult = (e) => {
-                let interim = '';
-                for (let i = e.resultIndex; i < e.results.length; ++i) {
-                    if (e.results[i].isFinal) finalResult += e.results[i][0].transcript;
-                    else interim += e.results[i][0].transcript;
-                }
-                txt.innerText = finalResult + interim;
-            };
-        }
-    </script>
-    """
-    components.html(scr, height=160)
+    # --- 4. MOTOR DE VOZ NATIVO (EL CAMBIO CLAVE) ---
+    st.write("🎙️ **Dictado por Voz:**")
     
-    # --- 4. PROCESAMIENTO ---
-    v_in = st.query_params.get("voice")
-    m_in = st.chat_input("Escribe aquí...")
+    # Esta función crea un botón que se comunica directo con Python, sin bloqueos de Iframe
+    v_in = speech_to_text(
+        language='es-CL',
+        start_prompt="🎤 INICIAR GRABACIÓN",
+        stop_prompt="🛑 DETENER Y ENVIAR AL CHAT",
+        just_once=True,
+        key='voice_input'
+    )
+    
+    m_in = st.chat_input("O escribe aquí...")
+    
+    # Tomamos la voz (si hay) o el texto manual
     prompt = v_in if v_in else m_in
 
+    # --- 5. PROCESAMIENTO ---
     if prompt:
-        st.query_params.clear()
         st.session_state.messages.append({"role": "user", "content": prompt})
         with chat_box:
             with st.chat_message("user"): st.markdown(prompt)
             with st.chat_message("assistant"):
                 try:
                     ctx = df[['id', 'nombre', 'cantidad_actual', 'unidad']].to_csv(index=False, sep="|")
-                    sys_p = f"Inventario:\n{ctx}\nInstrucción: {prompt}\nResponde con UPDATE_BATCH: [{{'id': N, 'cantidad': N}}]"
+                    sys_p = f"Inventario:\n{ctx}\nInstrucción: {prompt}\nRegla: Responde ÚNICAMENTE en este formato: UPDATE_BATCH: [{{'id': N, 'cantidad': N}}]"
                     res_ai = model.generate_content(sys_p).text
                     
                     if "UPDATE_BATCH:" in res_ai:
+                        # Limpieza extrema del texto para JSON
                         clean_json = res_ai.split("UPDATE_BATCH:")[1].strip()
-                        clean_json = clean_json.replace("'", '"') # Fix para comillas simples
+                        clean_json = clean_json.replace("'", '"')
+                        
                         updates = json.loads(clean_json)
                         for item in updates:
                             supabase.table("items").update({"cantidad_actual": int(item["cantidad"])}).eq("id", item["id"]).execute()
+                        
                         st.markdown("✅ **Inventario actualizado.**")
+                        st.session_state.messages.append({"role": "assistant", "content": "✅ **Inventario actualizado.**"})
                         st.rerun()
                     else:
                         st.markdown(res_ai)
                         st.session_state.messages.append({"role": "assistant", "content": res_ai})
                 except Exception as e:
-                    st.error(f"Error: {e}")
+                    st.error(f"Error procesando la IA: {e}")
