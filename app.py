@@ -67,15 +67,23 @@ with col_chat:
         for m in st.session_state.messages:
             with st.chat_message(m["role"]): st.markdown(m["content"])
 
-    # --- BOTÓN DE MICROFONO ---
+    # --- BOTÓN DE MICROFONO MEJORADO ---
     st.write("🎙️ Grabación de voz:")
-    audio = mic_recorder(start_prompt="Presiona para hablar", stop_prompt="Detener y procesar", key='recorder')
+    # mic_recorder devuelve un diccionario. El texto está en audio['text'] solo si se grabó bien.
+    audio = mic_recorder(
+        start_prompt="Presiona para hablar", 
+        stop_prompt="Detener y procesar", 
+        key='recorder'
+    )
     
-    prompt = st.chat_input("O escribe aquí...")
+    input_text = st.chat_input("O escribe aquí...")
     
-    # Si hay audio grabado, usamos el texto transcrito como prompt
-    if audio:
-        prompt = audio['text']
+    # LÓGICA DE DETECCIÓN DE ENTRADA
+    prompt = None
+    if audio and 'text' in audio and audio['text']:
+        prompt = audio['text']  # Si hay voz, tomamos la voz
+    elif input_text:
+        prompt = input_text     # Si no, tomamos el teclado
 
     if prompt:
         st.session_state.messages.append({"role": "user", "content": prompt})
@@ -93,12 +101,19 @@ with col_chat:
                         json_str = texto.split("UPDATE_BATCH:")[1].strip()
                         data = json.loads(json_str)
                         for item in data:
-                            upd = {k: v for k, v in {"cantidad_actual": item.get("cantidad"), "umbral_minimo": item.get("umbral"), "categoria": item.get("categoria")}.items() if v is not None}
-                            supabase.table("items").update(upd).eq("id", item["id"]).execute()
-                        texto = texto.split("UPDATE_BATCH:")[0] + "\n\n✅ **Inventario actualizado por voz.**"
+                            # Mapeo seguro de campos
+                            upd = {}
+                            if "cantidad" in item: upd["cantidad_actual"] = item["cantidad"]
+                            if "umbral" in item: upd["umbral_minimo"] = item["umbral"]
+                            if "categoria" in item: upd["categoria"] = item["categoria"]
+                            
+                            if upd: # Solo si hay algo que actualizar
+                                supabase.table("items").update(upd).eq("id", item["id"]).execute()
+                        
+                        texto = texto.split("UPDATE_BATCH:")[0] + "\n\n✅ **Inventario actualizado.**"
                     
                     st.markdown(texto)
                     st.session_state.messages.append({"role": "assistant", "content": texto})
                     if "✅" in texto: st.rerun()
                 except Exception as e:
-                    st.error(f"Error: {e}")
+                    st.error(f"Error procesando: {e}")
