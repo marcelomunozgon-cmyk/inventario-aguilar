@@ -13,7 +13,7 @@ try:
     supabase = create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
     genai.configure(api_key=st.secrets["GENAI_KEY"])
 except:
-    st.error("Error de configuración en Secrets.")
+    st.error("Error en configuración de Secrets.")
     st.stop()
 
 @st.cache_resource
@@ -34,7 +34,6 @@ def aplicar_estilos(row):
     if cant <= umb: return ['background-color: #fff4cc; color: black'] * len(row)
     return [''] * len(row)
 
-# Carga de datos
 res = supabase.table("items").select("*").execute()
 df = pd.DataFrame(res.data)
 df['cantidad_actual'] = pd.to_numeric(df['cantidad_actual'], errors='coerce').fillna(0).astype(int)
@@ -49,7 +48,6 @@ with col_mon:
     busqueda = st.text_input("🔍 Buscar producto...", placeholder="Ej: Eppendorf")
     df_show = df[df['nombre'].str.contains(busqueda, case=False)] if busqueda else df
     
-    # RECUPERAMOS LOS ACORDEONES POR CATEGORÍA
     categorias = sorted(df_show['categoria'].fillna("GENERAL").unique())
     for cat in categorias:
         with st.expander(f"📁 {cat}"):
@@ -74,11 +72,11 @@ with col_chat:
         for m in st.session_state.messages:
             with st.chat_message(m["role"]): st.markdown(m["content"])
 
-    # --- BOTÓN DE VOZ CON AUTO-CIERRE ---
+    # --- BOTÓN DE VOZ ULTRA-REACTIVO ---
     st.write("🎙️ Dictado por voz:")
     
     scr = """
-    <button id="start-btn" style="width:100%; height:45px; border-radius:10px; border:none; background-color:#ff4b4b; color:white; font-weight:bold; cursor:pointer; font-size:16px;">
+    <button id="start-btn" style="width:100%; height:50px; border-radius:10px; border:none; background-color:#ff4b4b; color:white; font-weight:bold; cursor:pointer; font-size:16px;">
         🔴 Toca para hablar
     </button>
     <script>
@@ -88,8 +86,7 @@ with col_chat:
         if (SpeechRecognition) {
             const recognition = new SpeechRecognition();
             recognition.lang = 'es-CL';
-            recognition.continuous = false; // Detenerse automáticamente al dejar de hablar
-            recognition.interimResults = false;
+            recognition.continuous = false;
 
             btn.onclick = () => {
                 recognition.start();
@@ -99,35 +96,30 @@ with col_chat:
 
             recognition.onresult = (event) => {
                 const text = event.results[0][0].transcript;
-                // Redirigir con el texto en la URL para procesar
-                const url = new URL(window.parent.location.href);
-                url.searchParams.set('voice', text);
-                window.parent.location.href = url.href;
-            };
-
-            recognition.onspeechend = () => {
-                recognition.stop();
-                btn.innerText = "⌛ Procesando...";
+                btn.innerText = "⌛ Enviando...";
+                // Redirección forzada e inmediata
+                window.parent.location.assign(window.parent.location.origin + window.parent.location.pathname + "?voice=" + encodeURIComponent(text));
             };
 
             recognition.onerror = () => {
-                btn.innerText = "❌ Error (Reintenta)";
+                btn.innerText = "❌ Reintentar";
                 btn.style.backgroundColor = "#ff4b4b";
             };
         }
     </script>
     """
-    components.html(scr, height=60)
+    components.html(scr, height=65)
     
     # --- 4. PROCESAMIENTO ---
+    # Captura inmediata del parámetro de voz
     voice_command = st.query_params.get("voice")
-    manual_command = st.chat_input("O escribe aquí...")
+    manual_command = st.chat_input("Escribe aquí...")
     
     prompt = voice_command if voice_command else manual_command
 
     if prompt:
-        if voice_command:
-            st.query_params.clear() # Limpiar URL para evitar bucles
+        # Limpiar parámetros para que no se repita el comando al refrescar
+        st.query_params.clear()
             
         st.session_state.messages.append({"role": "user", "content": prompt})
         with chat_box:
@@ -135,12 +127,7 @@ with col_chat:
             with st.chat_message("assistant"):
                 try:
                     ctx = df[['id', 'nombre', 'cantidad_actual', 'unidad']].to_csv(index=False, sep="|")
-                    full_p = f"""
-                    Inventario: {ctx}
-                    Instrucción: "{prompt}"
-                    REGLA: Si la unidad es 'bolsas' y dicen 'agrega una bolsa', suma 1 a la cantidad. 
-                    Responde SIEMPRE al final con: UPDATE_BATCH: [{{"id": ID, "cantidad": NUEVA_CANTIDAD}}]
-                    """
+                    full_p = f"Inventario: {ctx}\nInstrucción: {prompt}\nREGLA: Si la unidad es 'bolsas' y dicen 'bolsa', suma 1. Responde con UPDATE_BATCH: [{{id:N, cantidad:N}}]"
                     res_ai = model.generate_content(full_p)
                     texto_ai = res_ai.text
                     
@@ -150,12 +137,4 @@ with col_chat:
                             for item in json.loads(match.group()):
                                 supabase.table("items").update({"cantidad_actual": int(item["cantidad"])}).eq("id", item["id"]).execute()
                             
-                            confirm = texto_ai.split("UPDATE_BATCH:")[0] + "\n\n✅ **Actualizado.**"
-                            st.markdown(confirm)
-                            st.session_state.messages.append({"role": "assistant", "content": confirm})
-                            st.rerun()
-                    else:
-                        st.markdown(texto_ai)
-                        st.session_state.messages.append({"role": "assistant", "content": texto_ai})
-                except Exception as e:
-                    st.error(f"Error: {e}")
+                            st.markdown("✅ **Inventario actualizado.**")
