@@ -26,11 +26,12 @@ try:
     supabase = create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
     genai.configure(api_key=st.secrets["GENAI_KEY"])
 except Exception as e:
-    st.error(f"Error en Secrets: {e}")
+    st.error(f"Error en Secrets: Verifica tus credenciales de Supabase y Gemini. Detalle: {e}")
     st.stop()
 
 @st.cache_resource
 def cargar_modelo_definitivo():
+    # Usamos el modelo PRO de tu cuenta facturada para máxima inteligencia
     return genai.GenerativeModel('gemini-2.5-pro')
 
 model = cargar_modelo_definitivo()
@@ -43,7 +44,7 @@ def crear_punto_restauracion(df_actual): st.session_state.backup_inventario = df
 zonas_lab_fijas = ["Mesón", "Refrigerador 1 (4°C)", "Refrigerador 2 (4°C)", "Freezer -20°C", "Freezer -80°C", "Estante Químicos", "Estante Plásticos", "Gabinete Inflamables", "Otro"]
 cajones = [f"Cajón {i}" for i in range(1, 42)]
 zonas_lab = zonas_lab_fijas + cajones
-unidades_list = ["unidades", "mL", "uL", "cajas", "kits", "g", "mg"]
+unidades_list = ["unidades", "mL", "uL", "cajas", "kits", "g", "mg", "bolsas"]
 
 def sugerir_ubicacion(nombre):
     n = str(nombre).lower()
@@ -65,6 +66,7 @@ def aplicar_estilos(row):
     if umb > 0 and cant <= umb: return ['background-color: #fff4cc; color: black'] * len(row)
     return [''] * len(row)
 
+# Cargar Tablas
 res_items = supabase.table("items").select("*").execute()
 df = pd.DataFrame(res_items.data)
 
@@ -94,6 +96,7 @@ with col_user:
 col_chat, col_mon = st.columns([1, 1.6], gap="large")
 
 with col_mon:
+    # Botón de Deshacer Global
     if st.session_state.backup_inventario is not None:
         if st.button("↩️ Deshacer Última Acción", type="secondary"):
             with st.spinner("Restaurando..."):
@@ -111,6 +114,7 @@ with col_mon:
 
     tab_inventario, tab_historial, tab_editar, tab_orden, tab_protocolos, tab_qr = st.tabs(["📦 Inv", "⏱️ Hist", "⚙️ Edit", "🗂️ Orden", "🧪 Prot", "🖨️ QR"])
     
+    # --- PESTAÑA: INVENTARIO ---
     with tab_inventario:
         busqueda = st.text_input("🔍 Buscar producto...", key="search")
         df_show = df[df['nombre'].str.contains(busqueda, case=False)] if busqueda else df
@@ -120,6 +124,7 @@ with col_mon:
                 subset_cat = df_show[df_show['categoria'] == cat]
                 st.dataframe(subset_cat[[c for c in subset_cat.columns if c not in ['id', 'categoria', 'subcategoria', 'created_at']]].style.apply(aplicar_estilos, axis=1), use_container_width=True, hide_index=True)
                 
+    # --- PESTAÑA: HISTORIAL ---
     with tab_historial:
         try:
             res_mov = supabase.table("movimiento").select("*").order("created_at", desc=True).limit(25).execute()
@@ -129,6 +134,7 @@ with col_mon:
                 st.dataframe(df_mov[['Fecha', 'usuario', 'nombre_item', 'tipo', 'cantidad_cambio']], use_container_width=True, hide_index=True)
         except: st.info("No hay movimientos registrados.")
 
+    # --- PESTAÑA: EDICIÓN MASIVA Y RADAR ---
     with tab_editar:
         st.markdown("### ✍️ Edición Masiva y Radar de Duplicados")
         cat_disp = ["Todas"] + sorted(df['categoria'].unique().tolist())
@@ -176,9 +182,9 @@ with col_mon:
                     if b1.button("🗑️ Borrar", key=f"d_{i}"): supabase.table("items").delete().eq("id", str(dup['eliminar_id'])).execute(); st.session_state.duplicados.pop(i); st.rerun()
                     if b2.button("❌ Son distintos", key=f"k_{i}"): st.session_state.duplicados.pop(i); st.rerun()
 
-    # --- EL NUEVO MODO ORDEN (Formulario Abierto 1 a 1) ---
+    # --- PESTAÑA: MODO ORDEN 1 A 1 ---
     with tab_orden:
-        st.markdown("### 🗂️ Modo Triage: Revisión 1 a 1 (Totalmente Editable)")
+        st.markdown("### 🗂️ Modo Triage: Revisión 1 a 1 (Editable)")
         
         if df.empty:
             st.info("No hay reactivos en el inventario.")
@@ -191,19 +197,16 @@ with col_mon:
             item_actual = df.iloc[st.session_state.index_orden]
             sug = sugerir_ubicacion(item_actual['nombre'])
             
-            # Encabezado rápido
             c_prog, c_skip = st.columns([3, 1])
             c_prog.progress(st.session_state.index_orden / len(df))
             c_prog.caption(f"Revisando {st.session_state.index_orden + 1} de {len(df)}")
             
-            # Botón rápido para saltar si todo está bien
             if c_skip.button("✅ ¡Todo Perfecto! \n(Siguiente)", type="primary", use_container_width=True):
                 st.session_state.index_orden += 1
                 st.rerun()
                 
             st.markdown("---")
 
-            # Formulario abierto y accesible
             with st.container(border=True):
                 st.markdown(f"#### Editando: **{item_actual['nombre']}**")
                 
@@ -215,7 +218,6 @@ with col_mon:
                     c3, c4 = st.columns(2)
                     n_lot = c3.text_input("Lote", value=item_actual['lote'])
                     
-                    # Manejo seguro de índices para selectbox
                     idx_ub = zonas_lab.index(item_actual['ubicacion']) if item_actual['ubicacion'] in zonas_lab else 0
                     n_ubi = c4.selectbox(f"Ubicación (Sugerencia IA: {sug})", zonas_lab, index=idx_ub)
                     
@@ -224,7 +226,6 @@ with col_mon:
                     idx_un = unidades_list.index(item_actual['unidad']) if item_actual['unidad'] in unidades_list else 0
                     n_uni = c6.selectbox("Unidad", unidades_list, index=idx_un)
                     
-                    # Al enviar el formulario, guarda los datos y avanza
                     if st.form_submit_button("💾 Guardar Cambios y Siguiente", use_container_width=True):
                         supabase.table("items").update({
                             "nombre": n_nom,
@@ -237,14 +238,37 @@ with col_mon:
                         st.session_state.index_orden += 1
                         st.rerun()
 
+    # --- PESTAÑA: PROTOCOLOS ---
     with tab_protocolos:
         st.markdown("### ▶️ Ejecución de Protocolos")
         c1, c2 = st.columns([2, 1])
         with c1: p_sel = st.selectbox("Protocolo:", df_prot['nombre'] if not df_prot.empty else ["Vacío"])
         with c2: n_muestras = st.number_input("N° Muestras:", min_value=1, value=1)
         if st.button("🚀 Ejecutar Protocolo", type="primary"):
-            st.info("Lógica de descuento de protocolo en segundo plano.")
+            if not df_prot.empty:
+                with st.spinner("Calculando..."):
+                    try:
+                        info_p = df_prot[df_prot['nombre'] == p_sel]['materiales_base'].values[0]
+                        lineas = info_p.split('\n')
+                        exitos = 0
+                        for linea in lineas:
+                            match = re.search(r'([^:-]+)[:\-]\s*(\d+)', linea)
+                            if match:
+                                nombre_b = match.group(1).strip()
+                                total_d = int(match.group(2)) * n_muestras
+                                item_db = df[df['nombre'].str.contains(nombre_b, case=False, na=False)]
+                                if not item_db.empty:
+                                    id_it = str(item_db.iloc[0]['id'])
+                                    nueva_c = int(item_db.iloc[0]['cantidad_actual']) - total_d
+                                    supabase.table("items").update({"cantidad_actual": nueva_c}).eq("id", id_it).execute()
+                                    supabase.table("movimiento").insert({"item_id": id_it, "nombre_item": item_db.iloc[0]['nombre'], "cantidad_cambio": -total_d, "tipo": "Salida", "usuario": usuario_actual}).execute()
+                                    exitos += 1
+                        if exitos > 0:
+                            st.success("¡Inventario descontado correctamente!")
+                            st.rerun()
+                    except Exception as e: st.error(f"Error: {e}")
 
+    # --- PESTAÑA: ETIQUETAS QR ---
     with tab_qr:
         st.markdown("### 🖨️ Etiquetas QR")
         item_para_qr = st.selectbox("Selecciona reactivo:", df['nombre'].tolist())
@@ -254,9 +278,11 @@ with col_mon:
             buf = io.BytesIO(); qr.make_image(fill_color="black", back_color="white").save(buf, format="PNG")
             st.image(buf, width=150)
 
-# --- PANEL DEL ASISTENTE Y CÁMARA ---
+# --- PANEL IZQUIERDO: CÁMARA Y ASISTENTE IA ---
 with col_chat:
-    with st.expander("📸 Escanear Nuevo Reactivo", expanded=False):
+    
+    # 1. ESCÁNER DE CÁMARA
+    with st.expander("📸 Escanear Nuevo Reactivo (Foto)", expanded=False):
         foto = st.camera_input("📸 Tomar foto") or st.file_uploader("📂 Galería", type=["jpg", "jpeg", "png"])
         if foto is not None:
             img = Image.open(foto).convert('RGB')
@@ -270,20 +296,91 @@ with col_chat:
                 ubicacion_val = st.selectbox("Ubicación *", zonas_lab, index=zonas_lab.index(sugerir_ubicacion(nombre_val)) if sugerir_ubicacion(nombre_val) in zonas_lab else 0)
                 cantidad_val = st.number_input("Cantidad *", min_value=1, value=1)
                 if st.form_submit_button("📥 Registrar", type="primary") and nombre_val:
-                    supabase.table("items").insert({"nombre": nombre_val, "ubicacion": ubicacion_val, "cantidad_actual": cantidad_val}).execute()
+                    res_insert = supabase.table("items").insert({"nombre": nombre_val, "ubicacion": ubicacion_val, "cantidad_actual": cantidad_val}).execute()
+                    if res_insert.data:
+                        id_real = str(res_insert.data[0]['id'])
+                        supabase.table("movimiento").insert({"item_id": id_real, "nombre_item": nombre_val, "cantidad_cambio": cantidad_val, "tipo": "Ingreso", "usuario": usuario_actual}).execute()
                     st.success("Guardado!"); st.rerun()
 
-    st.subheader("💬 Asistente IA")
-    if "messages" not in st.session_state: st.session_state.messages = [{"role": "assistant", "content": f"Hola {usuario_actual}. Listo para asistirte."}]
-    for m in st.session_state.messages: st.chat_message(m["role"]).markdown(m["content"])
+    # 2. SECRETARIO DE INVENTARIO (Chat / Voz)
+    st.subheader("💬 Secretario de Inventario")
     
-    prompt = st.chat_input("Escribe aquí...")
+    chat_box = st.container(height=450, border=True)
+    
+    if "messages" not in st.session_state:
+        st.session_state.messages = [
+            {"role": "assistant", "content": f"Hola {usuario_actual}. Dime qué tienes en frente y lo registro o corrijo de inmediato en la base de datos."}
+        ]
+
+    for m in st.session_state.messages:
+        with chat_box:
+            st.chat_message(m["role"]).markdown(m["content"])
+
+    v_in = speech_to_text(language='es-CL', start_prompt="🎤 Dictar", stop_prompt="🛑 Parar", just_once=True, key='voice_input')
+    prompt = v_in if v_in else st.chat_input("Ej: Hay 2 bolsas de eppendorf en el cajón 25")
+
     if prompt:
         st.session_state.messages.append({"role": "user", "content": prompt})
-        st.chat_message("user").markdown(prompt)
+        with chat_box:
+            st.chat_message("user").markdown(prompt)
+        
         with st.chat_message("assistant"):
             try:
-                res_ai = model.generate_content(f"Datos inv: {df[['nombre','cantidad_actual']].to_dict()}\nPregunta: {prompt}").text
-                st.markdown(res_ai)
-                st.session_state.messages.append({"role": "assistant", "content": res_ai})
-            except Exception as e: st.error(f"Error IA: {e}")
+                # Instrucciones estrictas para que sea un secretario obediente
+                contexto_instrucciones = f"""
+                Eres un secretario de inventario obediente. Tu REGLA DE ORO es: El usuario siempre tiene la razón sobre el mundo real.
+                Si el usuario dice que hay algo en una ubicación, tú ACTUALIZAS la base de datos con esa info.
+                
+                NO discutas cantidades antiguas ni digas que la info es incorrecta.
+                Tu trabajo es identificar:
+                1. Nombre del reactivo (ej. Eppendorf 1.5).
+                2. Cantidad (ej. 2).
+                3. Unidad/Formato (ej. bolsas).
+                4. Ubicación (ej. Cajón 25).
+                
+                Si falta algún dato (como la ubicación o cantidad), pregunta amablemente.
+                Si tienes todos los datos, responde SOLO con este formato JSON:
+                EJECUTAR_ACCION:{{"accion": "upsert", "nombre": "...", "cantidad": ..., "unidad": "...", "ubicacion": "..."}}
+                """
+                
+                res_ai = model.generate_content(f"{contexto_instrucciones}\nInventario actual: {df[['id','nombre','ubicacion']].to_dict()}\nUsuario: {prompt}").text
+                
+                if "EJECUTAR_ACCION:" in res_ai:
+                    m = re.search(r'\{.*\}', res_ai, re.DOTALL)
+                    if m:
+                        data = json.loads(m.group())
+                        
+                        # Buscar coincidencia flexible en la base de datos
+                        item_match = df[df['nombre'].str.contains(data['nombre'], case=False, na=False)]
+                        
+                        registro = {
+                            "nombre": data['nombre'],
+                            "cantidad_actual": data['cantidad'],
+                            "unidad": data['unidad'],
+                            "ubicacion": data['ubicacion']
+                        }
+                        
+                        if not item_match.empty:
+                            id_match = str(item_match.iloc[0]['id'])
+                            # Actualizar existente
+                            supabase.table("items").update(registro).eq("id", id_match).execute()
+                            # Registrar movimiento
+                            supabase.table("movimiento").insert({"item_id": id_match, "nombre_item": data['nombre'], "cantidad_cambio": data['cantidad'], "tipo": "Actualización IA", "usuario": usuario_actual}).execute()
+                            msg = f"✅ Entendido. He actualizado **{data['nombre']}**: ahora hay **{data['cantidad']} {data['unidad']}** en el **{data['ubicacion']}**."
+                        else:
+                            # Insertar nuevo
+                            res_insert = supabase.table("items").insert(registro).execute()
+                            if res_insert.data:
+                                id_nuevo = str(res_insert.data[0]['id'])
+                                supabase.table("movimiento").insert({"item_id": id_nuevo, "nombre_item": data['nombre'], "cantidad_cambio": data['cantidad'], "tipo": "Ingreso Nuevo IA", "usuario": usuario_actual}).execute()
+                            msg = f"📦 Nuevo registro: **{data['nombre']}** guardado en el **{data['ubicacion']}**."
+                        
+                        st.markdown(msg)
+                        st.session_state.messages.append({"role": "assistant", "content": msg})
+                        st.rerun()
+                else:
+                    st.markdown(res_ai)
+                    st.session_state.messages.append({"role": "assistant", "content": res_ai})
+                    
+            except Exception as e:
+                st.error(f"Error IA: {e}")
