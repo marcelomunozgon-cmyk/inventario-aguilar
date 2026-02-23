@@ -81,7 +81,6 @@ with col_user:
     usuarios_lab = ["Marcelo Muñoz", "Rodrigo Aguilar", "Tesista / Estudiante", "Otro"]
     usuario_actual = st.selectbox("👤 Usuario Activo:", usuarios_lab, index=0)
 
-# --- DISTRIBUCIÓN DE COLUMNAS (CHAT A LA DERECHA, PESTAÑAS A LA IZQUIERDA) ---
 col_chat, col_mon = st.columns([1, 1.6], gap="large")
 
 with col_mon:
@@ -100,7 +99,6 @@ with col_mon:
                     st.rerun()
                 except Exception as e: st.error(f"Error al restaurar: {e}")
 
-    # Eliminamos tab_camara de las pestañas principales para que la interfaz sea más limpia
     tab_inventario, tab_historial, tab_editar, tab_protocolos, tab_qr, tab_bioterio = st.tabs(["📦 Inventario", "⏱️ Historial", "⚙️ Editar", "🧪 Protocolos", "🖨️ QR", "❄️ Bioterio"])
     
     with tab_inventario:
@@ -152,7 +150,6 @@ with col_mon:
             for index, row in edited_df.iterrows():
                 row_dict = row.dropna().to_dict()
                 if 'id' in row_dict:
-                    # Adaptación para aceptar UUIDs largos sin que Python trate de convertirlos en números
                     if pd.isna(row_dict['id']) or str(row_dict['id']).strip() == "":
                         del row_dict['id'] 
                     else:
@@ -239,9 +236,7 @@ with col_mon:
             st.success("Muestras guardadas.")
             st.rerun()
 
-# --- PANEL DEL ASISTENTE Y CÁMARA (COLUMNA DERECHA EN PC / ARRIBA EN MÓVIL) ---
 with col_chat:
-    # NUEVA SECCIÓN: ESCÁNER PLEGABLE CERCA DEL ASISTENTE
     with st.expander("📸 Escanear Nuevo Reactivo (Click aquí)", expanded=False):
         opcion_foto = st.radio("Método de captura:", ["Subir desde la galería", "Usar Webcam"])
         
@@ -286,6 +281,9 @@ with col_chat:
                 cat_val = c1.text_input("Categoría", value=datos_ai.get("categoria", "Reactivo"))
                 lote_val = c2.text_input("Lote (Opcional)", value=datos_ai.get("lote", ""))
                 
+                # Se cargan los datos de la IA pero ahora lo que manda a la BD es lo que esté en estos cuadros de texto
+                venc_val = st.text_input("Fecha Vencimiento (YYYY-MM-DD)", value=datos_ai.get("fecha_vencimiento", ""))
+                
                 zonas_lab = ["Refrigerador 1 (4°C)", "Refrigerador 2 (4°C)", "Freezer -20°C", "Freezer -80°C", "Estante Químicos", "Estante Plásticos", "Mesada", "Otro"]
                 ubicacion_val = st.selectbox("Ubicación *", zonas_lab)
                 
@@ -298,9 +296,18 @@ with col_chat:
                 if st.form_submit_button("📥 Registrar", type="primary"):
                     if nombre_val:
                         try:
+                            # EL TRUCO PARA EVITAR EL ERROR DE DATE
+                            fecha_final = venc_val if venc_val.strip() != "" else None
+
                             nuevo_item = {
-                                "nombre": nombre_val, "categoria": cat_val, "lote": lote_val, "fecha_vencimiento": datos_ai.get("fecha_vencimiento", ""),
-                                "ubicacion": ubicacion_val, "cantidad_actual": int(cantidad_val), "unidad": unidad_val, "umbral_minimo": int(umb_val)
+                                "nombre": nombre_val, 
+                                "categoria": cat_val, 
+                                "lote": lote_val, 
+                                "fecha_vencimiento": fecha_final, # ¡Ahora envía None en vez de ""!
+                                "ubicacion": ubicacion_val, 
+                                "cantidad_actual": int(cantidad_val), 
+                                "unidad": unidad_val, 
+                                "umbral_minimo": int(umb_val)
                             }
                             res_insert = supabase.table("items").insert(nuevo_item).execute()
                             if res_insert.data:
