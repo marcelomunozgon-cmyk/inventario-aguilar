@@ -25,13 +25,15 @@ except Exception as e:
 @st.cache_resource
 def get_model():
     try:
-        # Buscamos dinámicamente el nombre correcto que Google acepta hoy
-        modelos_disponibles = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        nombre_correcto = next((m for m in modelos_disponibles if '1.5-flash' in m), 'gemini-1.5-flash-latest')
-        return genai.GenerativeModel(nombre_correcto)
-    except: 
-        # Respaldo en caso de que falle la búsqueda
-        return genai.GenerativeModel('gemini-1.5-flash-latest')
+        # Pide a Google TU lista exacta de modelos permitidos
+        modelos_permitidos = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        
+        # Busca el primer modelo "flash" disponible en tu cuenta. Si no hay, usa el primero de la lista.
+        modelo_elegido = next((m for m in modelos_permitidos if 'flash' in m), modelos_permitidos[0])
+        
+        return genai.GenerativeModel(modelo_elegido)
+    except Exception as e: 
+        return None
 
 model = get_model()
 
@@ -207,7 +209,10 @@ with col_mon:
                         raise ValueError("No se encontró estructura JSON en la respuesta.")
                         
                 except Exception as e:
-                    st.error(f"⚠️ Hubo un problema procesando los datos. Error interno: {e}")
+                    # Mensaje de error mejorado para saber si es cuota o lectura
+                    st.error(f"⚠️ Detalle técnico: {e}")
+                    if "429" in str(e) or "Quota" in str(e):
+                        st.error("❌ Llegaste al límite gratuito diario de escaneos de Google (20 por día). Deberás continuar mañana o usar otra cuenta de Google para generar una nueva API Key.")
                     if res_vision:
                         st.info(f"**Lo que la IA logró leer fue:**\n{res_vision}")
                     datos_ai = {}
