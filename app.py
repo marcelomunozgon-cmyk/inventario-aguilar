@@ -19,6 +19,9 @@ if 'model_initialized' not in st.session_state:
     st.cache_resource.clear()
     st.session_state.model_initialized = True
 
+if 'index_orden' not in st.session_state:
+    st.session_state.index_orden = 0
+
 try:
     supabase = create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
     genai.configure(api_key=st.secrets["GENAI_KEY"])
@@ -37,6 +40,27 @@ if "backup_inventario" not in st.session_state: st.session_state.backup_inventar
 def crear_punto_restauracion(df_actual): st.session_state.backup_inventario = df_actual.copy()
 
 # --- 2. LÓGICA DE DATOS Y ESTILOS ---
+# LISTA GLOBAL DE UBICACIONES (Incluye los 41 cajones)
+zonas_lab_fijas = ["Mesón", "Refrigerador 1 (4°C)", "Refrigerador 2 (4°C)", "Freezer -20°C", "Freezer -80°C", "Estante Químicos", "Estante Plásticos", "Gabinete Inflamables", "Otro"]
+cajones = [f"Cajón {i}" for i in range(1, 42)]
+zonas_lab = zonas_lab_fijas + cajones
+
+def sugerir_ubicacion(nombre):
+    n = str(nombre).lower()
+    # Regla para Sales -> Cajón 37
+    if any(sal in n for sal in ["cloruro", "sulfato", "fosfato", "sodio", "potasio", "nacl", "sal "]):
+        return "Cajón 37"
+    # Regla para Biología Molecular y ADNzimas
+    if any(bio in n for bio in ["primer", "oligo", "dnazima", "dna", "rna", "taq", "polimerasa"]):
+        return "Freezer -20°C"
+    # Regla para Solventes
+    if any(solv in n for solv in ["alcohol", "etanol", "metanol", "isopropanol", "fenol", "cloroformo"]):
+        return "Gabinete Inflamables"
+    # Regla para Proteínas/Anticuerpos
+    if any(prot in n for prot in ["anticuerpo", "bsa", "suero", "fbs"]):
+        return "Refrigerador 1 (4°C)"
+    return "Mesón" # Ubicación por defecto
+
 def aplicar_estilos(row):
     cant = row.get('cantidad_actual', 0)
     umb = row.get('umbral_minimo', 0) if pd.notnull(row.get('umbral_minimo', 0)) else 0
@@ -93,7 +117,7 @@ with col_mon:
                     st.rerun()
                 except Exception as e: st.error(f"Error al restaurar: {e}")
 
-    tab_inventario, tab_historial, tab_editar, tab_protocolos, tab_qr, tab_bioterio = st.tabs(["📦 Inventario", "⏱️ Historial", "⚙️ Editar", "🧪 Protocolos", "🖨️ QR", "❄️ Bioterio"])
+    tab_inventario, tab_historial, tab_editar, tab_orden, tab_protocolos, tab_qr = st.tabs(["📦 Inv", "⏱️ Hist", "⚙️ Edit", "🗂️ Orden", "🧪 Prot", "🖨️ QR"])
     
     with tab_inventario:
         df_criticos = df[(df['cantidad_actual'] <= df['umbral_minimo']) & (df['umbral_minimo'] > 0)]
@@ -143,7 +167,7 @@ with col_mon:
         st.info("💡 Para borrar un reactivo, marca la casilla roja 'Eliminar' y presiona Guardar.")
         edited_df = st.data_editor(
             df_edit_view[columnas_finales].copy(), 
-            column_config={"id": st.column_config.TextColumn("ID", disabled=True)}, 
+            column_config={"id": st.column_config.TextColumn("ID", disabled=True), "ubicacion": st.column_config.SelectboxColumn("Ubicación", options=zonas_lab)}, 
             use_container_width=True, 
             hide_index=True, 
             num_rows="dynamic"
@@ -172,78 +196,57 @@ with col_mon:
             st.success("Base de datos actualizada correctamente.")
             st.rerun()
 
-        st.markdown("---")
-        st.markdown("### 🤖 Radar de Duplicados (Inteligencia Artificial)")
-        st.write("Deja que Gemini busque reactivos repetidos o ingresados dos veces por error.")
+    # --- NUEVA PESTAÑA: MODO ORDEN ---
+    with tab_orden:
+        st.markdown("### 🗂️ Modo Organización (1 a 1)")
         
-        if st.button("🔎 Analizar Inventario"):
-            with st.spinner("🧠 Leyendo y comparando todos los reactivos..."):
-                try:
-                    if df.empty:
-                        st.warning("El inventario está vacío.")
-                    else:
-                        datos_para_ia = df[['id', 'nombre', 'categoria', 'lote', 'ubicacion']].to_json(orient='records')
-                        prompt_dup = f"""
-                        Eres un experto gestor de laboratorio. Analiza esta lista de reactivos y detecta duplicados reales.
-                        Busca nombres muy similares (ej: 'PBS' y 'PBS 1X'), lotes idénticos repetidos, etc.
-                        Si notas que uno es 1X y otro 10X, o tienen distinto lote, NO son duplicados.
-                        Responde EXCLUSIVAMENTE con un JSON con esta estructura exacta. Si no hay duplicados, responde [].
-                        [
-                          {{
-                            "mantener_id": "id_del_que_se_queda_aqui",
-                            "eliminar_id": "id_del_que_se_borra_aqui",
-                            "razon": "explicación de por qué son lo mismo"
-                          }}
-                        ]
-                        Lista: {datos_para_ia}
-                        """
-                        res_dup = model.generate_content(prompt_dup).text
-                        match = re.search(r'\[.*\]', res_dup, re.DOTALL)
-                        if match:
-                            st.session_state.duplicados = json.loads(match.group())
-                        else:
-                            st.session_state.duplicados = []
-                except Exception as e:
-                    st.error(f"Error de IA: {e}")
+        if df.empty:
+            st.info("No hay reactivos en el inventario para ordenar.")
+        elif st.session_state.index_orden >= len(df):
+            st.success("🎉 ¡Felicidades! Has revisado todos los reactivos del inventario.")
+            if st.button("🔄 Volver a empezar"):
+                st.session_state.index_orden = 0
+                st.rerun()
+        else:
+            item_actual = df.iloc[st.session_state.index_orden]
+            total_items = len(df)
+            
+            # Barra de progreso
+            progreso = st.session_state.index_orden / total_items
+            st.progress(progreso)
+            st.write(f"**Revisando:** {st.session_state.index_orden + 1} de {total_items}")
+            st.markdown("---")
+            
+            c_info, c_acc = st.columns([1.5, 1])
+            
+            with c_info:
+                st.markdown(f"## 🧪 {item_actual['nombre']}")
+                st.markdown(f"**Categoría:** {item_actual['categoria']} | **Lote:** {item_actual['lote']}")
+                st.markdown(f"📍 **Ubicación Actual:** `{item_actual['ubicacion']}`")
+                
+                # Inteligencia del radar
+                sugerencia = sugerir_ubicacion(item_actual['nombre'])
+                st.info(f"💡 **Sugerencia del sistema:** {sugerencia}")
 
-        # Mostrar resultados del radar de duplicados con OPCIÓN DE MANTENER AMBOS
-        if "duplicados" in st.session_state:
-            if st.session_state.duplicados:
-                st.warning("⚠️ **Se detectaron posibles duplicados:**")
-                # Iteramos copiando la lista para evitar errores al modificarla mientras se dibuja
-                for i, dup in enumerate(list(st.session_state.duplicados)):
-                    item_m = df[df['id'].astype(str) == str(dup['mantener_id'])]
-                    item_e = df[df['id'].astype(str) == str(dup['eliminar_id'])]
-                    
-                    if not item_m.empty and not item_e.empty:
-                        im = item_m.iloc[0]
-                        ie = item_e.iloc[0]
-                        
-                        st.info(f"**Motivo IA:** {dup.get('razon', 'Parecen ser el mismo reactivo.')}")
-                        c_m, c_e = st.columns(2)
-                        with c_m:
-                            st.success(f"✅ **Se MANTENDRÁ:**\n- {im['nombre']}\n- Ubicación: {im['ubicacion']}\n- Lote: {im['lote']}")
-                        with c_e:
-                            st.error(f"🗑️ **Se ELIMINARÁ:**\n- {ie['nombre']}\n- Ubicación: {ie['ubicacion']}\n- Lote: {ie['lote']}")
-                        
-                        # Agregamos dos botones para que el usuario decida
-                        col_btn1, col_btn2 = st.columns(2)
-                        with col_btn1:
-                            if st.button(f"🗑️ Confirmar eliminación", key=f"del_dup_{i}", type="primary", use_container_width=True):
-                                crear_punto_restauracion(df)
-                                supabase.table("items").delete().eq("id", str(dup['eliminar_id'])).execute()
-                                st.session_state.duplicados.pop(i)
-                                st.success("¡Duplicado eliminado! Si fue un error, usa el botón Deshacer arriba.")
-                                st.rerun()
-                        with col_btn2:
-                            if st.button(f"❌ Son distintos (Mantener ambos)", key=f"keep_dup_{i}", use_container_width=True):
-                                # Solo borramos la sugerencia de la memoria de la pantalla
-                                st.session_state.duplicados.pop(i)
-                                st.rerun()
-                                
-                        st.markdown("---")
-            else:
-                st.success("✅ La IA analizó el inventario y no encontró (o ya resolviste) los reactivos duplicados. ¡Todo en orden!")
+            with c_acc:
+                st.markdown("#### ¿Qué hacemos?")
+                
+                if st.button("✅ Está bien (Siguiente)", type="primary", use_container_width=True):
+                    st.session_state.index_orden += 1
+                    st.rerun()
+                
+                st.markdown("O muévelo a:")
+                
+                # Preseleccionar la sugerencia si existe en la lista
+                idx_sug = zonas_lab.index(sugerencia) if sugerencia in zonas_lab else 0
+                nueva_ub = st.selectbox("Nueva Ubicación:", zonas_lab, index=idx_sug, label_visibility="collapsed")
+                
+                if st.button("💾 Mover y Siguiente", use_container_width=True):
+                    # Guardar el cambio en la BD
+                    supabase.table("items").update({"ubicacion": nueva_ub}).eq("id", str(item_actual['id'])).execute()
+                    st.session_state.index_orden += 1
+                    st.success(f"Movido a {nueva_ub}")
+                    st.rerun()
 
     with tab_protocolos:
         st.markdown("### ▶️ Ejecución Rápida (Sin Chat)")
@@ -276,21 +279,6 @@ with col_mon:
                                 st.rerun()
                         except Exception as e: st.error(f"Error: {e}")
 
-        st.markdown("---")
-        st.markdown("### 🤖 Cargar PDF de Kit")
-        file = st.file_uploader("Arrastra manual PDF", type=["pdf"])
-        if file and st.button("✨ Analizar PDF"):
-            with st.spinner("Analizando..."):
-                try:
-                    read = PyPDF2.PdfReader(file)
-                    txt = "".join([read.pages[i].extract_text() for i in range(min(len(read.pages), 10))])
-                    prompt_pdf = f"Extrae los reactivos de este kit en formato 'Reactivo: Cantidad'.\nTexto: {txt[:20000]}"
-                    res_p = model.generate_content(prompt_pdf).text
-                    supabase.table("protocolos").insert({"nombre": file.name, "materiales_base": res_p}).execute()
-                    st.success("Guardado.")
-                    st.rerun()
-                except Exception as e: st.error(f"Error: {e}")
-
     with tab_qr:
         st.markdown("### 🖨️ Generador de Etiquetas QR")
         item_para_qr = st.selectbox("Selecciona un reactivo:", df['nombre'].tolist())
@@ -305,23 +293,6 @@ with col_mon:
             with col_img: st.image(buf, width=200)
             with col_info:
                 st.download_button(label="⬇️ Descargar", data=buf.getvalue(), file_name=f"QR_{fila_item['nombre']}.png", mime="image/png")
-
-    with tab_bioterio:
-        st.markdown("### ❄️ Muestroteca y Almacenamiento")
-        df_m_edit = df_muestras[['id', 'codigo_muestra', 'tipo', 'ubicacion', 'fecha_creacion', 'notas']].copy() if not df_muestras.empty else pd.DataFrame(columns=["id", "codigo_muestra", "tipo", "ubicacion", "fecha_creacion", "notas"])
-        edited_muestras = st.data_editor(df_m_edit, column_config={"id": st.column_config.NumberColumn("ID", disabled=True)}, use_container_width=True, hide_index=True, num_rows="dynamic")
-        if st.button("💾 Guardar Muestras"):
-            edited_muestras = edited_muestras.replace({np.nan: None})
-            for index, row in edited_muestras.iterrows():
-                row_dict = row.dropna().to_dict()
-                if 'id' in row_dict:
-                    if pd.isna(row_dict['id']) or str(row_dict['id']).strip() == "":
-                        del row_dict['id']
-                    else:
-                        row_dict['id'] = str(row_dict['id'])
-                supabase.table("muestras").upsert(row_dict).execute()
-            st.success("Muestras guardadas.")
-            st.rerun()
 
 # --- PANEL DEL ASISTENTE Y CÁMARA ---
 with col_chat:
@@ -375,8 +346,11 @@ with col_chat:
                 
                 venc_val = st.text_input("Fecha Vencimiento (YYYY-MM-DD)", value=datos_ai.get("fecha_vencimiento", ""))
                 
-                zonas_lab = ["Refrigerador 1 (4°C)", "Refrigerador 2 (4°C)", "Freezer -20°C", "Freezer -80°C", "Estante Químicos", "Estante Plásticos", "Mesada", "Otro"]
-                ubicacion_val = st.selectbox("Ubicación *", zonas_lab)
+                # Aplicamos la misma inteligencia al crear uno nuevo
+                sug_nuevo = sugerir_ubicacion(nombre_val)
+                idx_nuevo = zonas_lab.index(sug_nuevo) if sug_nuevo in zonas_lab else 0
+                
+                ubicacion_val = st.selectbox("Ubicación *", zonas_lab, index=idx_nuevo)
                 
                 c3, c4 = st.columns(2)
                 cantidad_val = c3.number_input("Cantidad *", min_value=1, value=1)
