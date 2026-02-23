@@ -10,6 +10,7 @@ import numpy as np
 import PyPDF2
 import io
 import qrcode
+from PIL import Image # LIBRERÍA NUEVA PARA LA CÁMARA
 
 # --- 1. CONFIGURACIÓN ---
 st.set_page_config(page_title="Lab Aguilar OS", layout="wide", page_icon="🔬")
@@ -53,7 +54,8 @@ for col in ['cantidad_actual', 'umbral_minimo']:
     if col not in df.columns: df[col] = 0
     df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype(int)
 
-for col in ['categoria', 'subcategoria', 'link_proveedor', 'lote', 'fecha_vencimiento']:
+# Aseguramos la nueva columna 'ubicacion' en el DataFrame
+for col in ['categoria', 'subcategoria', 'link_proveedor', 'lote', 'fecha_vencimiento', 'ubicacion', 'unidad']:
     if col not in df.columns: df[col] = ""
     df[col] = df[col].fillna("").astype(str)
 
@@ -90,7 +92,8 @@ with col_mon:
                     st.rerun()
                 except Exception as e: st.error(f"Error al restaurar: {e}")
 
-    tab_inventario, tab_historial, tab_editar, tab_protocolos, tab_qr, tab_bioterio = st.tabs(["📦 Inventario", "⏱️ Historial", "⚙️ Editar", "🧪 Protocolos", "🖨️ QR", "❄️ Bioterio"])
+    # --- PESTAÑAS (INCLUYENDO LA NUEVA CÁMARA) ---
+    tab_inventario, tab_historial, tab_editar, tab_camara, tab_protocolos, tab_qr, tab_bioterio = st.tabs(["📦 Inventario", "⏱️ Historial", "⚙️ Editar", "📸 Escáner", "🧪 Protocolos", "🖨️ QR", "❄️ Bioterio"])
     
     with tab_inventario:
         df_criticos = df[(df['cantidad_actual'] <= df['umbral_minimo']) & (df['umbral_minimo'] > 0)]
@@ -127,10 +130,10 @@ with col_mon:
     with tab_editar:
         st.markdown("### ✍️ Edición Manual de Inventario")
         cat_disp = ["Todas"] + sorted(df['categoria'].unique().tolist())
-        filtro_cat = st.selectbox("📍 Filtrar por Categoría (Ideal para reconteo):", cat_disp)
+        filtro_cat = st.selectbox("📍 Filtrar por Categoría:", cat_disp)
         df_filtro = df if filtro_cat == "Todas" else df[df['categoria'] == filtro_cat]
         
-        columnas_visibles = st.multiselect("Columnas:", options=df.columns.tolist(), default=['nombre', 'categoria', 'cantidad_actual', 'umbral_minimo', 'unidad'])
+        columnas_visibles = st.multiselect("Columnas:", options=df.columns.tolist(), default=['nombre', 'cantidad_actual', 'unidad', 'ubicacion', 'umbral_minimo'])
         if 'id' not in columnas_visibles: columnas_visibles.insert(0, 'id')
         
         edited_df = st.data_editor(df_filtro[columnas_visibles].copy(), column_config={"id": st.column_config.NumberColumn("ID", disabled=True)}, use_container_width=True, hide_index=True, num_rows="dynamic")
@@ -148,6 +151,78 @@ with col_mon:
                 supabase.table("items").upsert(row_dict).execute()
             st.success("Cambios guardados.")
             st.rerun()
+
+    # --- NUEVA PESTAÑA: ESCÁNER DE REACTIVOS ---
+    with tab_camara:
+        st.markdown("### 📸 Ingreso Inteligente de Reactivos")
+        st.info("Apunta la cámara a la etiqueta del frasco o caja. La IA extraerá el nombre y tú solo le indicas dónde guardarlo.")
+        
+        foto = st.camera_input("Tomar foto al reactivo")
+        
+        if foto is not None:
+            img = Image.open(foto)
+            
+            with st.spinner("🧠 La IA está leyendo la etiqueta..."):
+                try:
+                    # Le pedimos a la IA que lea la imagen y devuelva un JSON
+                    prompt_vision = "Lee la etiqueta de este reactivo de laboratorio. Extrae los datos y responde SOLO en un JSON válido con estas llaves exactas en minúscula: 'nombre' (nombre del reactivo o kit), 'categoria' (ej: Reactivo, Kit, Medio Cultivo, Plástico), 'lote' (si aparece, si no pon un string vacio ''), 'fecha_vencimiento' (si aparece, si no pon ''). No uses markdown."
+                    res_vision = model.generate_content([prompt_vision, img]).text
+                    
+                    match = re.search(r'\{.*\}', res_vision, re.DOTALL)
+                    datos_ai = json.loads(match.group()) if match else {}
+                except Exception as e:
+                    st.warning("No se pudo leer automáticamente la etiqueta. Por favor, rellena los datos a mano.")
+                    datos_ai = {}
+            
+            with st.form("form_nuevo_reactivo"):
+                st.markdown("#### 📝 Verifica y Completa")
+                
+                c1, c2 = st.columns(2)
+                nombre_val = c1.text_input("Nombre del Reactivo *", value=datos_ai.get("nombre", ""))
+                cat_val = c2.text_input("Categoría", value=datos_ai.get("categoria", "Reactivo"))
+                
+                c3, c4 = st.columns(2)
+                lote_val = c3.text_input("Lote (Opcional)", value=datos_ai.get("lote", ""))
+                venc_val = c4.text_input("Fecha Vencimiento (YYYY-MM-DD)", value=datos_ai.get("fecha_vencimiento", ""))
+                
+                st.markdown("---")
+                st.markdown("#### 📍 Logística")
+                col_u1, col_u2, col_u3 = st.columns(3)
+                
+                # Lista predefinida de zonas del lab (puedes cambiar los nombres después)
+                zonas_lab = ["Refrigerador 1 (4°C)", "Refrigerador 2 (4°C)", "Freezer -20°C (Pasillo)", "Freezer -80°C", "Estante Químicos A", "Estante Plásticos B", "Mesada Principal", "Gabinete Inflamables", "Otro"]
+                ubicacion_val = col_u1.selectbox("¿Dónde lo vas a ubicar? *", zonas_lab)
+                cantidad_val = col_u2.number_input("¿Cuántos ingresan? *", min_value=1, value=1)
+                unidad_val = col_u3.selectbox("Unidad de medida *", ["unidades", "mL", "uL", "cajas", "preps", "kits", "g", "mg"])
+                
+                umb_val = st.number_input("Umbral mínimo para activar alarma de correo", min_value=0, value=1)
+                
+                submit_nuevo = st.form_submit_button("📥 Registrar en el Inventario", type="primary")
+                
+                if submit_nuevo:
+                    if nombre_val:
+                        nuevo_item = {
+                            "nombre": nombre_val,
+                            "categoria": cat_val,
+                            "lote": lote_val,
+                            "fecha_vencimiento": venc_val,
+                            "ubicacion": ubicacion_val,
+                            "cantidad_actual": int(cantidad_val),
+                            "unidad": unidad_val,
+                            "umbral_minimo": int(umb_val)
+                        }
+                        supabase.table("items").insert(nuevo_item).execute()
+                        supabase.table("movimientos").insert({
+                            "item_id": 0, # Genérico para ingresos
+                            "nombre_item": nombre_val,
+                            "cantidad_cambio": int(cantidad_val),
+                            "tipo": "Ingreso (Nuevo)",
+                            "usuario": usuario_actual
+                        }).execute()
+                        st.success(f"✅ ¡{nombre_val} registrado correctamente en {ubicacion_val}!")
+                        st.rerun()
+                    else:
+                        st.error("⚠️ El nombre del reactivo es obligatorio.")
 
     with tab_protocolos:
         st.markdown("### ▶️ Ejecución Rápida (Sin Chat)")
