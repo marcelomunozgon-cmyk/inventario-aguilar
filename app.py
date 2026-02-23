@@ -25,11 +25,17 @@ except Exception as e:
 @st.cache_resource
 def get_model():
     try:
-        modelos_disponibles = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        nombre_correcto = next((m for m in modelos_disponibles if '1.5-flash' in m), 'gemini-1.5-flash-latest')
-        return genai.GenerativeModel(nombre_correcto)
-    except: 
-        return genai.GenerativeModel('gemini-1.5-flash-latest')
+        # ¡MOTOR INTELIGENTE! Busca el modelo exacto que tu cuenta tiene habilitado hoy
+        modelos = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        modelo_flash = next((m for m in modelos if 'flash' in m), None)
+        
+        if modelo_flash:
+            nombre_limpio = modelo_flash.replace('models/', '')
+            return genai.GenerativeModel(nombre_limpio)
+        else:
+            return genai.GenerativeModel(modelos[0].replace('models/', ''))
+    except Exception as e:
+        return None
 
 model = get_model()
 
@@ -180,19 +186,19 @@ with col_mon:
                 res_vision = ""
                 try:
                     if model is None:
-                        raise ValueError("No se pudo conectar con el modelo de IA. Revisa tus límites de cuota o clave de API.")
+                        raise ValueError("No se pudo conectar con el modelo de IA. Revisa tus claves.")
                         
                     prompt_vision = """
                     Analiza la etiqueta de este reactivo de laboratorio. 
-                    Extrae los datos y responde EXCLUSIVAMENTE en formato JSON. No incluyas texto antes ni después. No uses etiquetas markdown como ```json.
-                    Debes usar EXACTAMENTE esta estructura:
+                    Extrae los datos y responde EXCLUSIVAMENTE en formato JSON. No incluyas texto antes ni después. No uses markdown.
+                    Estructura EXACTA:
                     {
                       "nombre": "Nombre principal del producto",
                       "categoria": "Reactivo",
-                      "lote": "Numero de lote aqui",
+                      "lote": "Numero de lote",
                       "fecha_vencimiento": "YYYY-MM-DD"
                     }
-                    Si no encuentras un dato, déjalo vacío "".
+                    Si no encuentras algo, déjalo así "".
                     """
                     
                     response = model.generate_content([prompt_vision, img])
@@ -205,10 +211,9 @@ with col_mon:
                         raise ValueError("No se encontró estructura JSON en la respuesta.")
                         
                 except Exception as e:
-                    # AQUÍ ESTÁ LA CORRECCIÓN CLAVE
-                    st.error(f"⚠️ Error técnico real de Gemini: {e}")
+                    st.error(f"⚠️ Hubo un problema procesando la imagen por parte de la IA. Detalle: {e}")
                     if res_vision:
-                        st.info(f"**Lo que la IA intentó responder fue:**\n{res_vision}")
+                        st.info(f"Lo que la IA leyó fue: {res_vision}")
                     datos_ai = {}
             
             with st.form("form_nuevo_reactivo"):
@@ -252,7 +257,6 @@ with col_mon:
                             
                             if res_insert.data:
                                 id_real = res_insert.data[0]['id']
-                                
                                 supabase.table("movimientos").insert({
                                     "item_id": id_real, 
                                     "nombre_item": nombre_val,
@@ -265,7 +269,7 @@ with col_mon:
                                 st.rerun()
                         except Exception as error_db:
                             st.error(f"🛑 Error de Base de Datos al guardar: {error_db}")
-                            st.info("💡 Consejo: Asegúrate de que las columnas 'ubicacion' y 'unidad' existan en la tabla 'items' de tu panel de Supabase y estén escritas exactamente así.")
+                            st.info("💡 Consejo: Asegúrate de que las columnas 'ubicacion' y 'unidad' existan en tu panel de Supabase y estén escritas con minúscula.")
                     else:
                         st.error("⚠️ El nombre del reactivo es obligatorio.")
 
