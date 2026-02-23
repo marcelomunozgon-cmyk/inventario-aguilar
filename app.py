@@ -26,7 +26,6 @@ except Exception as e:
     st.error(f"Error en Secrets: {e}")
     st.stop()
 
-# ¡MOTOR FINAL! Usando exactamente el modelo PRO de tu lista VIP
 @st.cache_resource
 def cargar_modelo_definitivo():
     return genai.GenerativeModel('gemini-2.5-pro')
@@ -90,7 +89,7 @@ with col_mon:
                             row_dict['id'] = str(row_dict['id'])
                             supabase.table("items").upsert(row_dict).execute()
                     st.session_state.backup_inventario = None
-                    st.success("¡Inventario restaurado!")
+                    st.success("¡Inventario restaurado con éxito!")
                     st.rerun()
                 except Exception as e: st.error(f"Error al restaurar: {e}")
 
@@ -129,20 +128,39 @@ with col_mon:
         except: st.info("No hay movimientos registrados.")
 
     with tab_editar:
-        st.markdown("### ✍️ Edición Manual de Inventario")
+        st.markdown("### ✍️ Edición y Eliminación Rápida")
         cat_disp = ["Todas"] + sorted(df['categoria'].unique().tolist())
         filtro_cat = st.selectbox("📍 Filtrar por Categoría:", cat_disp)
         df_filtro = df if filtro_cat == "Todas" else df[df['categoria'] == filtro_cat]
         
-        columnas_visibles = st.multiselect("Columnas:", options=df.columns.tolist(), default=['nombre', 'cantidad_actual', 'unidad', 'ubicacion', 'umbral_minimo'])
-        if 'id' not in columnas_visibles: columnas_visibles.insert(0, 'id')
+        df_edit_view = df_filtro.copy()
+        df_edit_view['❌ Eliminar'] = False
         
-        edited_df = st.data_editor(df_filtro[columnas_visibles].copy(), column_config={"id": st.column_config.NumberColumn("ID", disabled=True)}, use_container_width=True, hide_index=True, num_rows="dynamic")
+        columnas_visibles = st.multiselect("Columnas:", options=[c for c in df.columns if c != 'id'], default=['nombre', 'cantidad_actual', 'unidad', 'ubicacion'])
+        
+        columnas_finales = ['❌ Eliminar', 'id'] + columnas_visibles
+        
+        st.info("💡 Para borrar un reactivo, marca la casilla roja 'Eliminar' y presiona Guardar.")
+        edited_df = st.data_editor(
+            df_edit_view[columnas_finales].copy(), 
+            column_config={"id": st.column_config.TextColumn("ID", disabled=True)}, 
+            use_container_width=True, 
+            hide_index=True, 
+            num_rows="dynamic"
+        )
         
         if st.button("💾 Guardar Cambios"):
             crear_punto_restauracion(df)
             edited_df = edited_df.replace({np.nan: None})
-            for index, row in edited_df.iterrows():
+            
+            eliminados = edited_df[edited_df['❌ Eliminar'] == True]
+            modificados = edited_df[edited_df['❌ Eliminar'] == False].drop(columns=['❌ Eliminar'])
+            
+            for index, row in eliminados.iterrows():
+                if pd.notna(row['id']) and str(row['id']).strip() != "":
+                    supabase.table("items").delete().eq("id", str(row['id'])).execute()
+            
+            for index, row in modificados.iterrows():
                 row_dict = row.dropna().to_dict()
                 if 'id' in row_dict:
                     if pd.isna(row_dict['id']) or str(row_dict['id']).strip() == "":
@@ -150,8 +168,82 @@ with col_mon:
                     else:
                         row_dict['id'] = str(row_dict['id'])
                 supabase.table("items").upsert(row_dict).execute()
-            st.success("Cambios guardados exitosamente.")
+                
+            st.success("Base de datos actualizada correctamente.")
             st.rerun()
+
+        st.markdown("---")
+        st.markdown("### 🤖 Radar de Duplicados (Inteligencia Artificial)")
+        st.write("Deja que Gemini busque reactivos repetidos o ingresados dos veces por error.")
+        
+        if st.button("🔎 Analizar Inventario"):
+            with st.spinner("🧠 Leyendo y comparando todos los reactivos..."):
+                try:
+                    if df.empty:
+                        st.warning("El inventario está vacío.")
+                    else:
+                        datos_para_ia = df[['id', 'nombre', 'categoria', 'lote', 'ubicacion']].to_json(orient='records')
+                        prompt_dup = f"""
+                        Eres un experto gestor de laboratorio. Analiza esta lista de reactivos y detecta duplicados reales.
+                        Busca nombres muy similares (ej: 'PBS' y 'PBS 1X'), lotes idénticos repetidos, etc.
+                        Si notas que uno es 1X y otro 10X, o tienen distinto lote, NO son duplicados.
+                        Responde EXCLUSIVAMENTE con un JSON con esta estructura exacta. Si no hay duplicados, responde [].
+                        [
+                          {{
+                            "mantener_id": "id_del_que_se_queda_aqui",
+                            "eliminar_id": "id_del_que_se_borra_aqui",
+                            "razon": "explicación de por qué son lo mismo"
+                          }}
+                        ]
+                        Lista: {datos_para_ia}
+                        """
+                        res_dup = model.generate_content(prompt_dup).text
+                        match = re.search(r'\[.*\]', res_dup, re.DOTALL)
+                        if match:
+                            st.session_state.duplicados = json.loads(match.group())
+                        else:
+                            st.session_state.duplicados = []
+                except Exception as e:
+                    st.error(f"Error de IA: {e}")
+
+        # Mostrar resultados del radar de duplicados con OPCIÓN DE MANTENER AMBOS
+        if "duplicados" in st.session_state:
+            if st.session_state.duplicados:
+                st.warning("⚠️ **Se detectaron posibles duplicados:**")
+                # Iteramos copiando la lista para evitar errores al modificarla mientras se dibuja
+                for i, dup in enumerate(list(st.session_state.duplicados)):
+                    item_m = df[df['id'].astype(str) == str(dup['mantener_id'])]
+                    item_e = df[df['id'].astype(str) == str(dup['eliminar_id'])]
+                    
+                    if not item_m.empty and not item_e.empty:
+                        im = item_m.iloc[0]
+                        ie = item_e.iloc[0]
+                        
+                        st.info(f"**Motivo IA:** {dup.get('razon', 'Parecen ser el mismo reactivo.')}")
+                        c_m, c_e = st.columns(2)
+                        with c_m:
+                            st.success(f"✅ **Se MANTENDRÁ:**\n- {im['nombre']}\n- Ubicación: {im['ubicacion']}\n- Lote: {im['lote']}")
+                        with c_e:
+                            st.error(f"🗑️ **Se ELIMINARÁ:**\n- {ie['nombre']}\n- Ubicación: {ie['ubicacion']}\n- Lote: {ie['lote']}")
+                        
+                        # Agregamos dos botones para que el usuario decida
+                        col_btn1, col_btn2 = st.columns(2)
+                        with col_btn1:
+                            if st.button(f"🗑️ Confirmar eliminación", key=f"del_dup_{i}", type="primary", use_container_width=True):
+                                crear_punto_restauracion(df)
+                                supabase.table("items").delete().eq("id", str(dup['eliminar_id'])).execute()
+                                st.session_state.duplicados.pop(i)
+                                st.success("¡Duplicado eliminado! Si fue un error, usa el botón Deshacer arriba.")
+                                st.rerun()
+                        with col_btn2:
+                            if st.button(f"❌ Son distintos (Mantener ambos)", key=f"keep_dup_{i}", use_container_width=True):
+                                # Solo borramos la sugerencia de la memoria de la pantalla
+                                st.session_state.duplicados.pop(i)
+                                st.rerun()
+                                
+                        st.markdown("---")
+            else:
+                st.success("✅ La IA analizó el inventario y no encontró (o ya resolviste) los reactivos duplicados. ¡Todo en orden!")
 
     with tab_protocolos:
         st.markdown("### ▶️ Ejecución Rápida (Sin Chat)")
