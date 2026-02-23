@@ -76,11 +76,12 @@ except: df_muestras = pd.DataFrame(columns=["id", "codigo_muestra", "tipo", "ubi
 
 # --- 3. INTERFAZ SUPERIOR ---
 col_logo, col_user = st.columns([3, 1])
-with col_logo: st.markdown("## 🔬 Lab Aguilar: Control de Inventario")
+with col_logo: st.markdown("## 🔬 Lab Aguilar OS")
 with col_user:
     usuarios_lab = ["Marcelo Muñoz", "Rodrigo Aguilar", "Tesista / Estudiante", "Otro"]
     usuario_actual = st.selectbox("👤 Usuario Activo:", usuarios_lab, index=0)
 
+# --- DISTRIBUCIÓN DE COLUMNAS (CHAT A LA DERECHA, PESTAÑAS A LA IZQUIERDA) ---
 col_chat, col_mon = st.columns([1, 1.6], gap="large")
 
 with col_mon:
@@ -92,14 +93,15 @@ with col_mon:
                     for index, row in backup_df.iterrows():
                         row_dict = row.dropna().to_dict()
                         if 'id' in row_dict and row_dict['id'] is not None:
-                            row_dict['id'] = int(row_dict['id'])
+                            row_dict['id'] = str(row_dict['id'])
                             supabase.table("items").upsert(row_dict).execute()
                     st.session_state.backup_inventario = None
                     st.success("¡Inventario restaurado!")
                     st.rerun()
                 except Exception as e: st.error(f"Error al restaurar: {e}")
 
-    tab_inventario, tab_historial, tab_editar, tab_camara, tab_protocolos, tab_qr, tab_bioterio = st.tabs(["📦 Inventario", "⏱️ Historial", "⚙️ Editar", "📸 Escáner", "🧪 Protocolos", "🖨️ QR", "❄️ Bioterio"])
+    # Eliminamos tab_camara de las pestañas principales para que la interfaz sea más limpia
+    tab_inventario, tab_historial, tab_editar, tab_protocolos, tab_qr, tab_bioterio = st.tabs(["📦 Inventario", "⏱️ Historial", "⚙️ Editar", "🧪 Protocolos", "🖨️ QR", "❄️ Bioterio"])
     
     with tab_inventario:
         df_criticos = df[(df['cantidad_actual'] <= df['umbral_minimo']) & (df['umbral_minimo'] > 0)]
@@ -125,7 +127,6 @@ with col_mon:
                 
     with tab_historial:
         try:
-            # CORREGIDO: "movimiento" en singular
             res_mov = supabase.table("movimiento").select("*").order("created_at", desc=True).limit(25).execute()
             if res_mov.data:
                 df_mov = pd.DataFrame(res_mov.data)
@@ -151,128 +152,14 @@ with col_mon:
             for index, row in edited_df.iterrows():
                 row_dict = row.dropna().to_dict()
                 if 'id' in row_dict:
-                    try:
-                        row_dict['id'] = int(float(row_dict['id']))
-                    except (ValueError, TypeError):
+                    # Adaptación para aceptar UUIDs largos sin que Python trate de convertirlos en números
+                    if pd.isna(row_dict['id']) or str(row_dict['id']).strip() == "":
                         del row_dict['id'] 
+                    else:
+                        row_dict['id'] = str(row_dict['id'])
                 supabase.table("items").upsert(row_dict).execute()
-            st.success("Cambios guardados.")
+            st.success("Cambios guardados exitosamente.")
             st.rerun()
-
-    with tab_camara:
-        st.markdown("### 📸 Ingreso Inteligente de Reactivos")
-        st.info("Sube una foto clara de la etiqueta. La IA extraerá los datos automáticamente.")
-        
-        opcion_foto = st.radio("Método de captura:", ["Subir foto desde la galería", "Tomar foto ahora (Webcam)"])
-        
-        foto = None
-        if opcion_foto == "Tomar foto ahora (Webcam)":
-            foto = st.camera_input("📸 Tomar foto")
-        else:
-            foto = st.file_uploader("📂 Selecciona la foto del frasco", type=["jpg", "jpeg", "png"])
-        
-        if foto is not None:
-            img = Image.open(foto).convert('RGB')
-            
-            ancho, alto = img.size
-            if ancho < 500 or alto < 500:
-                st.warning(f"⚠️ Alerta: El navegador comprimió la imagen a {ancho}x{alto} píxeles. Intenta subirla en 'Tamaño Original'.")
-            else:
-                st.success(f"✅ Resolución óptima recibida: {ancho}x{alto} píxeles.")
-            
-            st.image(img, width=250, caption="Preview de la imagen") 
-            
-            with st.spinner("🧠 La IA está escaneando los textos de la etiqueta..."):
-                res_vision = ""
-                try:
-                    if model is None:
-                        raise ValueError("No se pudo conectar con el modelo de IA. Revisa tus claves.")
-                        
-                    prompt_vision = """
-                    Analiza la etiqueta de este reactivo de laboratorio. 
-                    Extrae los datos y responde EXCLUSIVAMENTE en formato JSON. No incluyas texto antes ni después. No uses markdown.
-                    Estructura EXACTA:
-                    {
-                      "nombre": "Nombre principal del producto",
-                      "categoria": "Reactivo",
-                      "lote": "Numero de lote",
-                      "fecha_vencimiento": "YYYY-MM-DD"
-                    }
-                    Si no encuentras algo, déjalo así "".
-                    """
-                    
-                    response = model.generate_content([prompt_vision, img])
-                    res_vision = response.text
-                    
-                    match = re.search(r'\{.*\}', res_vision, re.DOTALL)
-                    if match:
-                        datos_ai = json.loads(match.group())
-                    else:
-                        raise ValueError("No se encontró estructura JSON en la respuesta.")
-                        
-                except Exception as e:
-                    st.error(f"⚠️ Hubo un problema procesando la imagen por parte de la IA. Detalle: {e}")
-                    if res_vision:
-                        st.info(f"Lo que la IA leyó fue: {res_vision}")
-                    datos_ai = {}
-            
-            with st.form("form_nuevo_reactivo"):
-                st.markdown("#### 📝 Verifica y Completa")
-                
-                c1, c2 = st.columns(2)
-                nombre_val = c1.text_input("Nombre del Reactivo *", value=datos_ai.get("nombre", ""))
-                cat_val = c2.text_input("Categoría", value=datos_ai.get("categoria", "Reactivo"))
-                
-                c3, c4 = st.columns(2)
-                lote_val = c3.text_input("Lote (Opcional)", value=datos_ai.get("lote", ""))
-                venc_val = c4.text_input("Fecha Vencimiento (YYYY-MM-DD)", value=datos_ai.get("fecha_vencimiento", ""))
-                
-                st.markdown("---")
-                st.markdown("#### 📍 Logística")
-                col_u1, col_u2, col_u3 = st.columns(3)
-                
-                zonas_lab = ["Refrigerador 1 (4°C)", "Refrigerador 2 (4°C)", "Freezer -20°C (Pasillo)", "Freezer -80°C", "Estante Químicos A", "Estante Plásticos B", "Mesada Principal", "Gabinete Inflamables", "Otro"]
-                ubicacion_val = col_u1.selectbox("¿Dónde lo vas a ubicar? *", zonas_lab)
-                cantidad_val = col_u2.number_input("¿Cuántos ingresan? *", min_value=1, value=1)
-                unidad_val = col_u3.selectbox("Unidad de medida *", ["unidades", "mL", "uL", "cajas", "preps", "kits", "g", "mg"])
-                
-                umb_val = st.number_input("Umbral mínimo para activar alerta", min_value=0, value=1)
-                
-                submit_nuevo = st.form_submit_button("📥 Registrar en el Inventario", type="primary")
-                
-                if submit_nuevo:
-                    if nombre_val:
-                        try:
-                            nuevo_item = {
-                                "nombre": nombre_val,
-                                "categoria": cat_val,
-                                "lote": lote_val,
-                                "fecha_vencimiento": venc_val,
-                                "ubicacion": ubicacion_val,
-                                "cantidad_actual": int(cantidad_val),
-                                "unidad": unidad_val,
-                                "umbral_minimo": int(umb_val)
-                            }
-                            res_insert = supabase.table("items").insert(nuevo_item).execute()
-                            
-                            if res_insert.data:
-                                id_real = res_insert.data[0]['id']
-                                # CORREGIDO: "movimiento" en singular
-                                supabase.table("movimiento").insert({
-                                    "item_id": id_real, 
-                                    "nombre_item": nombre_val,
-                                    "cantidad_cambio": int(cantidad_val),
-                                    "tipo": "Ingreso (Nuevo)",
-                                    "usuario": usuario_actual
-                                }).execute()
-                                
-                                st.success(f"✅ ¡{nombre_val} registrado correctamente en {ubicacion_val}!")
-                                st.rerun()
-                        except Exception as error_db:
-                            st.error(f"🛑 Error de Base de Datos al guardar: {error_db}")
-                            st.info("💡 Consejo: Asegúrate de que las columnas 'ubicacion' y 'unidad' existan en tu panel de Supabase y estén escritas con minúscula.")
-                    else:
-                        st.error("⚠️ El nombre del reactivo es obligatorio.")
 
     with tab_protocolos:
         st.markdown("### ▶️ Ejecución Rápida (Sin Chat)")
@@ -295,10 +182,9 @@ with col_mon:
                                     total_d = int(match.group(2)) * n_muestras
                                     item_db = df[df['nombre'].str.contains(nombre_b, case=False, na=False)]
                                     if not item_db.empty:
-                                        id_it = int(item_db.iloc[0]['id'])
+                                        id_it = str(item_db.iloc[0]['id'])
                                         nueva_c = int(item_db.iloc[0]['cantidad_actual']) - total_d
                                         supabase.table("items").update({"cantidad_actual": nueva_c}).eq("id", id_it).execute()
-                                        # CORREGIDO: "movimiento" en singular
                                         supabase.table("movimiento").insert({"item_id": id_it, "nombre_item": item_db.iloc[0]['nombre'], "cantidad_cambio": -total_d, "tipo": "Salida", "usuario": usuario_actual}).execute()
                                         exitos += 1
                             if exitos > 0:
@@ -345,16 +231,92 @@ with col_mon:
             for index, row in edited_muestras.iterrows():
                 row_dict = row.dropna().to_dict()
                 if 'id' in row_dict:
-                    try:
-                        row_dict['id'] = int(float(row_dict['id']))
-                    except (ValueError, TypeError):
+                    if pd.isna(row_dict['id']) or str(row_dict['id']).strip() == "":
                         del row_dict['id']
+                    else:
+                        row_dict['id'] = str(row_dict['id'])
                 supabase.table("muestras").upsert(row_dict).execute()
             st.success("Muestras guardadas.")
             st.rerun()
 
+# --- PANEL DEL ASISTENTE Y CÁMARA (COLUMNA DERECHA EN PC / ARRIBA EN MÓVIL) ---
 with col_chat:
-    st.subheader("💬 Asistente")
+    # NUEVA SECCIÓN: ESCÁNER PLEGABLE CERCA DEL ASISTENTE
+    with st.expander("📸 Escanear Nuevo Reactivo (Click aquí)", expanded=False):
+        opcion_foto = st.radio("Método de captura:", ["Subir desde la galería", "Usar Webcam"])
+        
+        foto = None
+        if opcion_foto == "Usar Webcam":
+            foto = st.camera_input("📸 Tomar foto")
+        else:
+            foto = st.file_uploader("📂 Selecciona la foto", type=["jpg", "jpeg", "png"])
+        
+        if foto is not None:
+            img = Image.open(foto).convert('RGB')
+            
+            with st.spinner("🧠 Leyendo etiqueta..."):
+                res_vision = ""
+                try:
+                    if model is None: raise ValueError("Error de conexión con IA.")
+                    prompt_vision = """
+                    Analiza la etiqueta de este reactivo de laboratorio. 
+                    Extrae los datos y responde EXCLUSIVAMENTE en formato JSON. No incluyas texto extra.
+                    Estructura EXACTA:
+                    {
+                      "nombre": "Nombre del producto",
+                      "categoria": "Reactivo",
+                      "lote": "Lote",
+                      "fecha_vencimiento": "YYYY-MM-DD"
+                    }
+                    Si no encuentras algo, déjalo así "".
+                    """
+                    response = model.generate_content([prompt_vision, img])
+                    res_vision = response.text
+                    match = re.search(r'\{.*\}', res_vision, re.DOTALL)
+                    if match: datos_ai = json.loads(match.group())
+                    else: raise ValueError("Formato JSON no encontrado.")
+                except Exception as e:
+                    st.error("⚠️ Problema procesando la imagen.")
+                    datos_ai = {}
+            
+            with st.form("form_nuevo_reactivo_chat"):
+                st.markdown("#### 📝 Completar Registro")
+                nombre_val = st.text_input("Nombre del Reactivo *", value=datos_ai.get("nombre", ""))
+                c1, c2 = st.columns(2)
+                cat_val = c1.text_input("Categoría", value=datos_ai.get("categoria", "Reactivo"))
+                lote_val = c2.text_input("Lote (Opcional)", value=datos_ai.get("lote", ""))
+                
+                zonas_lab = ["Refrigerador 1 (4°C)", "Refrigerador 2 (4°C)", "Freezer -20°C", "Freezer -80°C", "Estante Químicos", "Estante Plásticos", "Mesada", "Otro"]
+                ubicacion_val = st.selectbox("Ubicación *", zonas_lab)
+                
+                c3, c4 = st.columns(2)
+                cantidad_val = c3.number_input("Cantidad *", min_value=1, value=1)
+                unidad_val = c4.selectbox("Unidad *", ["unidades", "mL", "uL", "cajas", "kits", "g", "mg"])
+                
+                umb_val = st.number_input("Umbral de alerta por correo", min_value=0, value=1)
+                
+                if st.form_submit_button("📥 Registrar", type="primary"):
+                    if nombre_val:
+                        try:
+                            nuevo_item = {
+                                "nombre": nombre_val, "categoria": cat_val, "lote": lote_val, "fecha_vencimiento": datos_ai.get("fecha_vencimiento", ""),
+                                "ubicacion": ubicacion_val, "cantidad_actual": int(cantidad_val), "unidad": unidad_val, "umbral_minimo": int(umb_val)
+                            }
+                            res_insert = supabase.table("items").insert(nuevo_item).execute()
+                            if res_insert.data:
+                                id_real = str(res_insert.data[0]['id'])
+                                supabase.table("movimiento").insert({
+                                    "item_id": id_real, "nombre_item": nombre_val, "cantidad_cambio": int(cantidad_val),
+                                    "tipo": "Ingreso (Nuevo)", "usuario": usuario_actual
+                                }).execute()
+                                st.success(f"✅ ¡Guardado en {ubicacion_val}!")
+                                st.rerun()
+                        except Exception as error_db:
+                            st.error(f"🛑 Error de BD: {error_db}")
+                    else:
+                        st.error("⚠️ El nombre es obligatorio.")
+
+    st.subheader("💬 Asistente IA")
     chat_box = st.container(height=400, border=True)
     if "messages" not in st.session_state: st.session_state.messages = [{"role": "assistant", "content": f"Hola {usuario_actual}. Listo para asistirte."}]
 
@@ -362,7 +324,7 @@ with col_chat:
         for m in st.session_state.messages: st.chat_message(m["role"]).markdown(m["content"])
 
     v_in = speech_to_text(language='es-CL', start_prompt="🎤 Hablar", stop_prompt="🛑 Enviar", just_once=True, key='voice')
-    prompt = v_in if v_in else st.chat_input("Escribe aquí...")
+    prompt = v_in if v_in else st.chat_input("Escribe aquí o presiona el micrófono...")
 
     if prompt:
         st.session_state.messages.append({"role": "user", "content": prompt})
@@ -377,10 +339,9 @@ with col_chat:
                         crear_punto_restauracion(df)
                         m = re.search(r'\[.*\]', res_ai, re.DOTALL)
                         for it in json.loads(m.group().replace("'", '"')):
-                            supabase.table("items").update({"cantidad_actual": it["cantidad_final"]}).eq("id", it["id"]).execute()
-                            # CORREGIDO: "movimiento" en singular
-                            supabase.table("movimiento").insert({"item_id": it["id"], "nombre_item": it["nombre"], "cantidad_cambio": it["diferencia"], "tipo": "Salida", "usuario": usuario_actual}).execute()
-                        st.markdown("✅ **Actualizado.**")
+                            supabase.table("items").update({"cantidad_actual": it["cantidad_final"]}).eq("id", str(it["id"])).execute()
+                            supabase.table("movimiento").insert({"item_id": str(it["id"]), "nombre_item": it["nombre"], "cantidad_cambio": it["diferencia"], "tipo": "Salida", "usuario": usuario_actual}).execute()
+                        st.markdown("✅ **Inventario actualizado.**")
                     elif "INSERT_MUESTRA:" in res_ai:
                         m = re.search(r'\{.*\}', res_ai, re.DOTALL)
                         new_m = json.loads(m.group().replace("'", '"'))
