@@ -12,8 +12,12 @@ import io
 import qrcode
 from PIL import Image
 
-# --- 1. CONFIGURACIÓN ---
+# --- 1. CONFIGURACIÓN Y LIMPIEZA ---
 st.set_page_config(page_title="Lab Aguilar OS", layout="wide", page_icon="🔬")
+
+if 'model_initialized' not in st.session_state:
+    st.cache_resource.clear()
+    st.session_state.model_initialized = True
 
 try:
     supabase = create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
@@ -24,21 +28,9 @@ except Exception as e:
 
 @st.cache_resource
 def get_model():
-    try:
-        # 1. Pedimos la lista exacta de modelos que TU API Key tiene permitidos hoy
-        modelos = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        
-        # 2. Buscamos los que son rápidos ('flash') pero BLOQUEAMOS el '2.5' para no agotar la cuota de 20
-        modelos_seguros = [m for m in modelos if 'flash' in m and '2.5' not in m]
-        
-        if modelos_seguros:
-            # 3. Usamos el primero de la lista segura (ej: gemini-2.0-flash)
-            nombre_limpio = modelos_seguros[0].replace('models/', '')
-            return genai.GenerativeModel(nombre_limpio)
-        else:
-            return genai.GenerativeModel('gemini-2.0-flash')
-    except Exception as e:
-        return None
+    # ¡NUEVO MOTOR SIMPLE Y ESTABLE!
+    # Usamos directamente la versión PRO, que es experta en leer imágenes complejas
+    return genai.GenerativeModel('gemini-1.5-pro')
 
 model = get_model()
 
@@ -242,7 +234,7 @@ with col_mon:
 
 # --- PANEL DEL ASISTENTE Y CÁMARA ---
 with col_chat:
-    with st.expander("📸 Escanear Nuevo Reactivo (Click aquí)", expanded=False):
+    with st.expander("📸 Escanear Nuevo Reactivo", expanded=False):
         opcion_foto = st.radio("Método de captura:", ["Subir desde la galería", "Usar Webcam"])
         
         foto = None
