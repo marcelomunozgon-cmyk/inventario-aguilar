@@ -25,15 +25,20 @@ except Exception as e:
 @st.cache_resource
 def get_model():
     try:
-        # ¡MOTOR AJUSTADO PARA EVITAR EL LÍMITE DE 20 USOS!
-        # Buscamos explícitamente la versión 1.5 que da 1500 usos diarios gratis
+        # 1. Pedimos la lista exacta de modelos que TU API Key tiene permitidos hoy
         modelos = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        modelo_15 = next((m for m in modelos if '1.5-flash' in m), 'gemini-1.5-flash')
         
-        nombre_limpio = modelo_15.replace('models/', '')
-        return genai.GenerativeModel(nombre_limpio)
+        # 2. Buscamos los que son rápidos ('flash') pero BLOQUEAMOS el '2.5' para no agotar la cuota de 20
+        modelos_seguros = [m for m in modelos if 'flash' in m and '2.5' not in m]
+        
+        if modelos_seguros:
+            # 3. Usamos el primero de la lista segura (ej: gemini-2.0-flash)
+            nombre_limpio = modelos_seguros[0].replace('models/', '')
+            return genai.GenerativeModel(nombre_limpio)
+        else:
+            return genai.GenerativeModel('gemini-2.0-flash')
     except Exception as e:
-        return genai.GenerativeModel('gemini-1.5-flash')
+        return None
 
 model = get_model()
 
