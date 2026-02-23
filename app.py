@@ -25,15 +25,11 @@ except Exception as e:
 @st.cache_resource
 def get_model():
     try:
-        # Pide a Google TU lista exacta de modelos permitidos
-        modelos_permitidos = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        
-        # Busca el primer modelo "flash" disponible en tu cuenta. Si no hay, usa el primero de la lista.
-        modelo_elegido = next((m for m in modelos_permitidos if 'flash' in m), modelos_permitidos[0])
-        
-        return genai.GenerativeModel(modelo_elegido)
-    except Exception as e: 
-        return None
+        modelos_disponibles = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        nombre_correcto = next((m for m in modelos_disponibles if '1.5-flash' in m), 'gemini-1.5-flash-latest')
+        return genai.GenerativeModel(nombre_correcto)
+    except: 
+        return genai.GenerativeModel('gemini-1.5-flash-latest')
 
 model = get_model()
 
@@ -183,11 +179,8 @@ with col_mon:
             with st.spinner("🧠 La IA está escaneando los textos de la etiqueta..."):
                 res_vision = ""
                 try:
-                    if model is None:
-                        raise ValueError("No se pudo conectar con el modelo de IA. Revisa tus límites de cuota o clave de API.")
-                        
                     prompt_vision = """
-                    Analiza la etiqueta de este reactivo de laboratorio (incluso si la foto está rotada). 
+                    Analiza la etiqueta de este reactivo de laboratorio. 
                     Extrae los datos y responde EXCLUSIVAMENTE en formato JSON. No incluyas texto antes ni después. No uses etiquetas markdown como ```json.
                     Debes usar EXACTAMENTE esta estructura:
                     {
@@ -209,12 +202,7 @@ with col_mon:
                         raise ValueError("No se encontró estructura JSON en la respuesta.")
                         
                 except Exception as e:
-                    # Mensaje de error mejorado para saber si es cuota o lectura
-                    st.error(f"⚠️ Detalle técnico: {e}")
-                    if "429" in str(e) or "Quota" in str(e):
-                        st.error("❌ Llegaste al límite gratuito diario de escaneos de Google (20 por día). Deberás continuar mañana o usar otra cuenta de Google para generar una nueva API Key.")
-                    if res_vision:
-                        st.info(f"**Lo que la IA logró leer fue:**\n{res_vision}")
+                    st.error(f"⚠️ Hubo un problema procesando la imagen por parte de la IA.")
                     datos_ai = {}
             
             with st.form("form_nuevo_reactivo"):
@@ -243,26 +231,38 @@ with col_mon:
                 
                 if submit_nuevo:
                     if nombre_val:
-                        nuevo_item = {
-                            "nombre": nombre_val,
-                            "categoria": cat_val,
-                            "lote": lote_val,
-                            "fecha_vencimiento": venc_val,
-                            "ubicacion": ubicacion_val,
-                            "cantidad_actual": int(cantidad_val),
-                            "unidad": unidad_val,
-                            "umbral_minimo": int(umb_val)
-                        }
-                        supabase.table("items").insert(nuevo_item).execute()
-                        supabase.table("movimientos").insert({
-                            "item_id": 0, 
-                            "nombre_item": nombre_val,
-                            "cantidad_cambio": int(cantidad_val),
-                            "tipo": "Ingreso (Nuevo)",
-                            "usuario": usuario_actual
-                        }).execute()
-                        st.success(f"✅ ¡{nombre_val} registrado correctamente en {ubicacion_val}!")
-                        st.rerun()
+                        try:
+                            nuevo_item = {
+                                "nombre": nombre_val,
+                                "categoria": cat_val,
+                                "lote": lote_val,
+                                "fecha_vencimiento": venc_val,
+                                "ubicacion": ubicacion_val,
+                                "cantidad_actual": int(cantidad_val),
+                                "unidad": unidad_val,
+                                "umbral_minimo": int(umb_val)
+                            }
+                            # PASO 1: Guardar el reactivo y extraer el ID real que le dio Supabase
+                            res_insert = supabase.table("items").insert(nuevo_item).execute()
+                            
+                            if res_insert.data:
+                                id_real = res_insert.data[0]['id']
+                                
+                                # PASO 2: Guardar en el historial usando el ID correcto
+                                supabase.table("movimientos").insert({
+                                    "item_id": id_real, 
+                                    "nombre_item": nombre_val,
+                                    "cantidad_cambio": int(cantidad_val),
+                                    "tipo": "Ingreso (Nuevo)",
+                                    "usuario": usuario_actual
+                                }).execute()
+                                
+                                st.success(f"✅ ¡{nombre_val} registrado correctamente en {ubicacion_val}!")
+                                st.rerun()
+                        except Exception as error_db:
+                            # ESCUDO ANTI-CAÍDAS: Nos dirá exactamente qué columna falta
+                            st.error(f"🛑 Error de Base de Datos al guardar: {error_db}")
+                            st.info("💡 Consejo: Asegúrate de que las columnas 'ubicacion' y 'unidad' existan en la tabla 'items' de tu panel de Supabase y estén escritas exactamente así.")
                     else:
                         st.error("⚠️ El nombre del reactivo es obligatorio.")
 
