@@ -163,36 +163,47 @@ with col_mon:
             foto = st.file_uploader("📂 Selecciona la foto del frasco", type=["jpg", "jpeg", "png"])
         
         if foto is not None:
-            # Procesamiento robusto de imagen
             img = Image.open(foto).convert('RGB')
             
-            # DIAGNÓSTICO DE RESOLUCIÓN
             ancho, alto = img.size
             if ancho < 500 or alto < 500:
-                st.warning(f"⚠️ Alerta: El navegador comprimió la imagen a {ancho}x{alto} píxeles. Es posible que la IA no pueda leer letras pequeñas. Intenta subirla en 'Tamaño Original'.")
+                st.warning(f"⚠️ Alerta: El navegador comprimió la imagen a {ancho}x{alto} píxeles. Intenta subirla en 'Tamaño Original'.")
             else:
                 st.success(f"✅ Resolución óptima recibida: {ancho}x{alto} píxeles.")
             
-            # Mostramos un preview pequeño en la interfaz, pero mandamos la imagen grande a la IA
             st.image(img, width=250, caption="Preview de la imagen") 
             
             with st.spinner("🧠 La IA está escaneando los textos de la etiqueta..."):
+                res_vision = "" # Variable vacía por si falla antes de llamar al modelo
                 try:
-                    # Prompt más estricto y guiado
-                    prompt_vision = """Lee detalladamente la etiqueta de este reactivo químico, biológico o kit de laboratorio. 
-                    Extrae los datos y responde ÚNICAMENTE con un JSON válido usando estas llaves exactas en minúscula: 
-                    "nombre": (Nombre principal del producto, reactivo o anticuerpo), 
-                    "categoria": (Clasifícalo en una sola palabra clave: Reactivo, Kit, Medio, Buffer, Plástico, Droga, Anticuerpo), 
-                    "lote": (El número de Lote o Lot. Si no hay, pon ""), 
-                    "fecha_vencimiento": (La fecha de caducidad o Exp Date en formato YYYY-MM-DD. Si no hay, pon ""). 
-                    No incluyas formato Markdown ni texto extra."""
+                    # PROMPT BLINDADO
+                    prompt_vision = """
+                    Analiza la etiqueta de este reactivo de laboratorio (incluso si la foto está rotada). 
+                    Extrae los datos y responde EXCLUSIVAMENTE en formato JSON. No incluyas texto antes ni después. No uses etiquetas markdown como ```json.
+                    Debes usar EXACTAMENTE esta estructura:
+                    {
+                      "nombre": "Nombre principal del producto",
+                      "categoria": "Reactivo",
+                      "lote": "Numero de lote aqui",
+                      "fecha_vencimiento": "YYYY-MM-DD"
+                    }
+                    Si no encuentras un dato, déjalo vacío "".
+                    """
                     
-                    res_vision = model.generate_content([prompt_vision, img]).text
+                    response = model.generate_content([prompt_vision, img])
+                    res_vision = response.text
                     
                     match = re.search(r'\{.*\}', res_vision, re.DOTALL)
-                    datos_ai = json.loads(match.group()) if match else {}
+                    if match:
+                        datos_ai = json.loads(match.group())
+                    else:
+                        raise ValueError("No se encontró estructura JSON en la respuesta.")
+                        
                 except Exception as e:
-                    st.error("⚠️ La IA no encontró texto legible en la imagen. Por favor, rellena los datos manualmente.")
+                    st.error(f"⚠️ Hubo un problema procesando los datos. Error interno: {e}")
+                    # ESTO ES LA MAGIA: Nos dirá qué vio realmente la IA
+                    if res_vision:
+                        st.info(f"**Lo que la IA logró leer fue:**\n{res_vision}")
                     datos_ai = {}
             
             with st.form("form_nuevo_reactivo"):
