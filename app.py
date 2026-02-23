@@ -26,13 +26,13 @@ except Exception as e:
     st.error(f"Error en Secrets: {e}")
     st.stop()
 
+# ¡TRUCO ANTI-CACHÉ! Le cambiamos el nombre a la función para que Streamlit olvide el error
 @st.cache_resource
-def get_model():
-    # ¡NUEVO MOTOR SIMPLE Y ESTABLE!
-    # Usamos directamente la versión PRO, que es experta en leer imágenes complejas
+def cargar_modelo_definitivo():
+    # Apuntamos directo a la versión Pro con tus nuevos créditos
     return genai.GenerativeModel('gemini-1.5-pro')
 
-model = get_model()
+model = cargar_modelo_definitivo()
 
 if "backup_inventario" not in st.session_state: st.session_state.backup_inventario = None
 
@@ -246,7 +246,7 @@ with col_chat:
         if foto is not None:
             img = Image.open(foto).convert('RGB')
             
-            with st.spinner("🧠 Leyendo etiqueta..."):
+            with st.spinner("🧠 Leyendo etiqueta con Gemini Pro..."):
                 res_vision = ""
                 datos_ai = {}
                 try:
