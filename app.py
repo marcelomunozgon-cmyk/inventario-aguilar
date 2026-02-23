@@ -179,6 +179,9 @@ with col_mon:
             with st.spinner("🧠 La IA está escaneando los textos de la etiqueta..."):
                 res_vision = ""
                 try:
+                    if model is None:
+                        raise ValueError("No se pudo conectar con el modelo de IA. Revisa tus límites de cuota o clave de API.")
+                        
                     prompt_vision = """
                     Analiza la etiqueta de este reactivo de laboratorio. 
                     Extrae los datos y responde EXCLUSIVAMENTE en formato JSON. No incluyas texto antes ni después. No uses etiquetas markdown como ```json.
@@ -202,7 +205,10 @@ with col_mon:
                         raise ValueError("No se encontró estructura JSON en la respuesta.")
                         
                 except Exception as e:
-                    st.error(f"⚠️ Hubo un problema procesando la imagen por parte de la IA.")
+                    # AQUÍ ESTÁ LA CORRECCIÓN CLAVE
+                    st.error(f"⚠️ Error técnico real de Gemini: {e}")
+                    if res_vision:
+                        st.info(f"**Lo que la IA intentó responder fue:**\n{res_vision}")
                     datos_ai = {}
             
             with st.form("form_nuevo_reactivo"):
@@ -242,13 +248,11 @@ with col_mon:
                                 "unidad": unidad_val,
                                 "umbral_minimo": int(umb_val)
                             }
-                            # PASO 1: Guardar el reactivo y extraer el ID real que le dio Supabase
                             res_insert = supabase.table("items").insert(nuevo_item).execute()
                             
                             if res_insert.data:
                                 id_real = res_insert.data[0]['id']
                                 
-                                # PASO 2: Guardar en el historial usando el ID correcto
                                 supabase.table("movimientos").insert({
                                     "item_id": id_real, 
                                     "nombre_item": nombre_val,
@@ -260,7 +264,6 @@ with col_mon:
                                 st.success(f"✅ ¡{nombre_val} registrado correctamente en {ubicacion_val}!")
                                 st.rerun()
                         except Exception as error_db:
-                            # ESCUDO ANTI-CAÍDAS: Nos dirá exactamente qué columna falta
                             st.error(f"🛑 Error de Base de Datos al guardar: {error_db}")
                             st.info("💡 Consejo: Asegúrate de que las columnas 'ubicacion' y 'unidad' existan en la tabla 'items' de tu panel de Supabase y estén escritas exactamente así.")
                     else:
