@@ -25,16 +25,15 @@ except Exception as e:
 @st.cache_resource
 def get_model():
     try:
+        # ¡MOTOR AJUSTADO PARA EVITAR EL LÍMITE DE 20 USOS!
+        # Buscamos explícitamente la versión 1.5 que da 1500 usos diarios gratis
         modelos = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        modelo_flash = next((m for m in modelos if 'flash' in m), None)
+        modelo_15 = next((m for m in modelos if '1.5-flash' in m), 'gemini-1.5-flash')
         
-        if modelo_flash:
-            nombre_limpio = modelo_flash.replace('models/', '')
-            return genai.GenerativeModel(nombre_limpio)
-        else:
-            return genai.GenerativeModel(modelos[0].replace('models/', ''))
+        nombre_limpio = modelo_15.replace('models/', '')
+        return genai.GenerativeModel(nombre_limpio)
     except Exception as e:
-        return None
+        return genai.GenerativeModel('gemini-1.5-flash')
 
 model = get_model()
 
@@ -81,7 +80,6 @@ with col_user:
     usuarios_lab = ["Marcelo Muñoz", "Rodrigo Aguilar", "Tesista / Estudiante", "Otro"]
     usuario_actual = st.selectbox("👤 Usuario Activo:", usuarios_lab, index=0)
 
-# --- DISTRIBUCIÓN DE COLUMNAS ---
 col_chat, col_mon = st.columns([1, 1.6], gap="large")
 
 with col_mon:
@@ -276,7 +274,6 @@ with col_chat:
                     else: 
                         raise ValueError("Formato JSON no encontrado.")
                 except Exception as e:
-                    # AQUÍ ESTÁ EL MODO DEPURADOR REACTIVADO
                     st.error(f"⚠️ Problema procesando la imagen. Detalle: {e}")
                     if res_vision != "":
                         st.info(f"Lo que la IA respondió fue:\n{res_vision}")
