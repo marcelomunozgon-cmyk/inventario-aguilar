@@ -81,6 +81,7 @@ with col_user:
     usuarios_lab = ["Marcelo Muñoz", "Rodrigo Aguilar", "Tesista / Estudiante", "Otro"]
     usuario_actual = st.selectbox("👤 Usuario Activo:", usuarios_lab, index=0)
 
+# --- DISTRIBUCIÓN DE COLUMNAS ---
 col_chat, col_mon = st.columns([1, 1.6], gap="large")
 
 with col_mon:
@@ -236,6 +237,7 @@ with col_mon:
             st.success("Muestras guardadas.")
             st.rerun()
 
+# --- PANEL DEL ASISTENTE Y CÁMARA ---
 with col_chat:
     with st.expander("📸 Escanear Nuevo Reactivo (Click aquí)", expanded=False):
         opcion_foto = st.radio("Método de captura:", ["Subir desde la galería", "Usar Webcam"])
@@ -251,6 +253,7 @@ with col_chat:
             
             with st.spinner("🧠 Leyendo etiqueta..."):
                 res_vision = ""
+                datos_ai = {}
                 try:
                     if model is None: raise ValueError("Error de conexión con IA.")
                     prompt_vision = """
@@ -268,11 +271,15 @@ with col_chat:
                     response = model.generate_content([prompt_vision, img])
                     res_vision = response.text
                     match = re.search(r'\{.*\}', res_vision, re.DOTALL)
-                    if match: datos_ai = json.loads(match.group())
-                    else: raise ValueError("Formato JSON no encontrado.")
+                    if match: 
+                        datos_ai = json.loads(match.group())
+                    else: 
+                        raise ValueError("Formato JSON no encontrado.")
                 except Exception as e:
-                    st.error("⚠️ Problema procesando la imagen.")
-                    datos_ai = {}
+                    # AQUÍ ESTÁ EL MODO DEPURADOR REACTIVADO
+                    st.error(f"⚠️ Problema procesando la imagen. Detalle: {e}")
+                    if res_vision != "":
+                        st.info(f"Lo que la IA respondió fue:\n{res_vision}")
             
             with st.form("form_nuevo_reactivo_chat"):
                 st.markdown("#### 📝 Completar Registro")
@@ -281,7 +288,6 @@ with col_chat:
                 cat_val = c1.text_input("Categoría", value=datos_ai.get("categoria", "Reactivo"))
                 lote_val = c2.text_input("Lote (Opcional)", value=datos_ai.get("lote", ""))
                 
-                # Se cargan los datos de la IA pero ahora lo que manda a la BD es lo que esté en estos cuadros de texto
                 venc_val = st.text_input("Fecha Vencimiento (YYYY-MM-DD)", value=datos_ai.get("fecha_vencimiento", ""))
                 
                 zonas_lab = ["Refrigerador 1 (4°C)", "Refrigerador 2 (4°C)", "Freezer -20°C", "Freezer -80°C", "Estante Químicos", "Estante Plásticos", "Mesada", "Otro"]
@@ -296,14 +302,13 @@ with col_chat:
                 if st.form_submit_button("📥 Registrar", type="primary"):
                     if nombre_val:
                         try:
-                            # EL TRUCO PARA EVITAR EL ERROR DE DATE
                             fecha_final = venc_val if venc_val.strip() != "" else None
 
                             nuevo_item = {
                                 "nombre": nombre_val, 
                                 "categoria": cat_val, 
                                 "lote": lote_val, 
-                                "fecha_vencimiento": fecha_final, # ¡Ahora envía None en vez de ""!
+                                "fecha_vencimiento": fecha_final,
                                 "ubicacion": ubicacion_val, 
                                 "cantidad_actual": int(cantidad_val), 
                                 "unidad": unidad_val, 
