@@ -68,13 +68,15 @@ def aplicar_estilos(row):
 res_items = supabase.table("items").select("*").execute()
 df = pd.DataFrame(res_items.data)
 
+# SEGURO ANTI-VACÍO: Forzamos que las columnas existan aunque no haya datos
+columnas_texto = ['id', 'nombre', 'categoria', 'subcategoria', 'link_proveedor', 'lote', 'fecha_vencimiento', 'ubicacion', 'unidad']
+for col in columnas_texto:
+    if col not in df.columns:
+        df[col] = ""
+
 for col in ['cantidad_actual', 'umbral_minimo']:
     if col not in df.columns: df[col] = 0
     df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype(int)
-
-for col in ['categoria', 'subcategoria', 'link_proveedor', 'lote', 'fecha_vencimiento', 'ubicacion', 'unidad']:
-    if col not in df.columns: df[col] = ""
-    df[col] = df[col].fillna("").astype(str)
 
 df['categoria'] = df['categoria'].replace("", "GENERAL")
 
@@ -85,7 +87,6 @@ except: df_prot = pd.DataFrame(columns=["id", "nombre", "materiales_base"])
 col_logo, col_user = st.columns([3, 1])
 with col_logo: st.markdown("## 🔬 Lab Aguilar OS")
 
-# AQUÍ SE DEFINE EL USUARIO PARA QUE NO DE ERROR
 with col_user:
     usuarios_lab = ["Marcelo Muñoz", "Rodrigo Aguilar", "Tesista / Estudiante", "Otro"]
     usuario_actual = st.selectbox("👤 Usuario Activo:", usuarios_lab, index=0)
@@ -100,7 +101,7 @@ with col_mon:
                     backup_df = st.session_state.backup_inventario.replace({np.nan: None})
                     for index, row in backup_df.iterrows():
                         row_dict = row.dropna().to_dict()
-                        if 'id' in row_dict and row_dict['id'] is not None:
+                        if 'id' in row_dict and row_dict['id'] is not None and str(row_dict['id']).strip() != "":
                             row_dict['id'] = str(row_dict['id'])
                             supabase.table("items").upsert(row_dict).execute()
                     st.session_state.backup_inventario = None
@@ -117,12 +118,15 @@ with col_mon:
             st.session_state.auto_search = busqueda
             
         df_show = df[df['nombre'].str.contains(busqueda, case=False)] if busqueda else df
-        categorias = sorted(df_show['categoria'].unique())
+        categorias = sorted([c for c in df_show['categoria'].unique() if str(c).strip() != ""])
         
-        for cat in categorias:
-            with st.expander(f"📁 {cat}"):
-                subset_cat = df_show[df_show['categoria'] == cat].sort_values(by='nombre', key=lambda col: col.str.lower())
-                st.dataframe(subset_cat[[c for c in subset_cat.columns if c not in ['id', 'categoria', 'subcategoria', 'created_at']]].style.apply(aplicar_estilos, axis=1), use_container_width=True, hide_index=True)
+        if df.empty or len(df) == 0:
+            st.info("El inventario está completamente vacío. Ve a la pestaña '📥 Importar' para subir tu Excel.")
+        else:
+            for cat in categorias:
+                with st.expander(f"📁 {cat}"):
+                    subset_cat = df_show[df_show['categoria'] == cat].sort_values(by='nombre', key=lambda col: col.str.lower())
+                    st.dataframe(subset_cat[[c for c in subset_cat.columns if c not in ['id', 'categoria', 'subcategoria', 'created_at']]].style.apply(aplicar_estilos, axis=1), use_container_width=True, hide_index=True)
                 
     # --- PESTAÑA: HISTORIAL ---
     with tab_historial:
@@ -137,35 +141,60 @@ with col_mon:
     # --- PESTAÑA: EDICIÓN MASIVA ---
     with tab_editar:
         st.markdown("### ✍️ Edición Masiva y Radar de Duplicados")
-        cat_disp = ["Todas"] + sorted(df['categoria'].unique().tolist())
-        filtro_cat = st.selectbox("📍 Filtrar por Categoría:", cat_disp)
-        df_filtro = df if filtro_cat == "Todas" else df[df['categoria'] == filtro_cat]
         
-        df_edit_view = df_filtro.copy()
-        df_edit_view['❌ Eliminar'] = False
-        cols_finales = ['❌ Eliminar', 'id', 'nombre', 'cantidad_actual', 'unidad', 'ubicacion', 'lote']
-        
-        st.info("💡 Marca la casilla roja 'Eliminar' y presiona Guardar para borrar reactivos.")
-        edited_df = st.data_editor(df_edit_view[cols_finales].copy(), column_config={"id": st.column_config.TextColumn("ID", disabled=True)}, use_container_width=True, hide_index=True, num_rows="dynamic")
-        
-        if st.button("💾 Guardar Cambios Generales"):
-            crear_punto_restauracion(df)
-            edited_df = edited_df.replace({np.nan: None})
-            eliminados = edited_df[edited_df['❌ Eliminar'] == True]
-            modificados = edited_df[edited_df['❌ Eliminar'] == False].drop(columns=['❌ Eliminar'])
-            for _, row in eliminados.iterrows():
-                if pd.notna(row['id']) and str(row['id']).strip() != "": supabase.table("items").delete().eq("id", str(row['id'])).execute()
-            for _, row in modificados.iterrows():
-                d = row.dropna().to_dict()
-                if 'id' in d and str(d['id']).strip() != "": supabase.table("items").upsert(d).execute()
-            st.success("Guardado exitoso.")
-            st.session_state.auto_search = ""
-            st.rerun()
+        if df.empty or len(df) == 0:
+            st.info("No hay datos para editar todavía.")
+        else:
+            cat_disp = ["Todas"] + sorted([c for c in df['categoria'].unique() if str(c).strip() != ""])
+            filtro_cat = st.selectbox("📍 Filtrar por Categoría:", cat_disp)
+            df_filtro = df if filtro_cat == "Todas" else df[df['categoria'] == filtro_cat]
+            
+            df_edit_view = df_filtro.copy()
+            df_edit_view['❌ Eliminar'] = False
+            cols_finales = ['❌ Eliminar', 'id', 'nombre', 'cantidad_actual', 'unidad', 'ubicacion', 'lote']
+            
+            st.info("💡 Marca la casilla roja 'Eliminar' y presiona Guardar para borrar reactivos.")
+            edited_df = st.data_editor(df_edit_view[cols_finales].copy(), column_config={"id": st.column_config.TextColumn("ID", disabled=True)}, use_container_width=True, hide_index=True, num_rows="dynamic")
+            
+            if st.button("💾 Guardar Cambios Generales"):
+                crear_punto_restauracion(df)
+                edited_df = edited_df.replace({np.nan: None})
+                eliminados = edited_df[edited_df['❌ Eliminar'] == True]
+                modificados = edited_df[edited_df['❌ Eliminar'] == False].drop(columns=['❌ Eliminar'])
+                for _, row in eliminados.iterrows():
+                    if pd.notna(row['id']) and str(row['id']).strip() != "": supabase.table("items").delete().eq("id", str(row['id'])).execute()
+                for _, row in modificados.iterrows():
+                    d = row.dropna().to_dict()
+                    if 'id' in d and str(d['id']).strip() != "": supabase.table("items").upsert(d).execute()
+                st.success("Guardado exitoso.")
+                st.session_state.auto_search = ""
+                st.rerun()
+
+            st.markdown("---")
+            if st.button("🔎 Radar de Duplicados (IA)"):
+                with st.spinner("🧠 Buscando duplicados..."):
+                    try:
+                        prompt_dup = f"Analiza: {df[['id', 'nombre', 'lote', 'ubicacion']].to_json(orient='records')}. Extrae duplicados reales (no 1X vs 10X). JSON: [{{'mantener_id':'id1', 'eliminar_id':'id2', 'razon':'...txt...'}}]"
+                        res_dup = model.generate_content(prompt_dup).text
+                        st.session_state.duplicados = json.loads(re.search(r'\[.*\]', res_dup, re.DOTALL).group())
+                    except: st.session_state.duplicados = []
+            if "duplicados" in st.session_state and st.session_state.duplicados:
+                for i, dup in enumerate(list(st.session_state.duplicados)):
+                    im = df[df['id'].astype(str) == str(dup['mantener_id'])].iloc[0] if not df[df['id'].astype(str) == str(dup['mantener_id'])].empty else None
+                    ie = df[df['id'].astype(str) == str(dup['eliminar_id'])].iloc[0] if not df[df['id'].astype(str) == str(dup['eliminar_id'])].empty else None
+                    if im is not None and ie is not None:
+                        st.warning(f"**Detectado:** {dup.get('razon')}")
+                        c1, c2 = st.columns(2)
+                        c1.success(f"✅ MANTENER: {im['nombre']} ({im['lote']})")
+                        c2.error(f"🗑️ ELIMINAR: {ie['nombre']} ({ie['lote']})")
+                        b1, b2 = st.columns(2)
+                        if b1.button("🗑️ Borrar", key=f"d_{i}"): supabase.table("items").delete().eq("id", str(dup['eliminar_id'])).execute(); st.session_state.duplicados.pop(i); st.rerun()
+                        if b2.button("❌ Son distintos", key=f"k_{i}"): st.session_state.duplicados.pop(i); st.rerun()
 
     # --- PESTAÑA: MODO ORDEN 1 A 1 ---
     with tab_orden:
         st.markdown("### 🗂️ Modo Triage: Revisión 1 a 1")
-        if df.empty:
+        if df.empty or len(df) == 0:
             st.info("No hay reactivos en el inventario.")
         elif st.session_state.index_orden >= len(df):
             st.success("🎉 ¡Felicidades! Has revisado todo el inventario.")
@@ -198,7 +227,8 @@ with col_mon:
                     n_uni = c6.selectbox("Unidad", unidades_list, index=idx_un)
                     
                     if st.form_submit_button("💾 Guardar Cambios y Siguiente", use_container_width=True):
-                        supabase.table("items").update({"nombre": n_nom, "categoria": n_cat, "lote": n_lot, "ubicacion": n_ubi, "cantidad_actual": n_can, "unidad": n_uni}).eq("id", str(item_actual['id'])).execute()
+                        if str(item_actual['id']).strip() != "":
+                            supabase.table("items").update({"nombre": n_nom, "categoria": n_cat, "lote": n_lot, "ubicacion": n_ubi, "cantidad_actual": n_can, "unidad": n_uni}).eq("id", str(item_actual['id'])).execute()
                         st.session_state.index_orden += 1; st.rerun()
 
     # --- NUEVA PESTAÑA: IMPORTAR EXCEL ---
@@ -272,9 +302,10 @@ with col_mon:
         item_para_qr = st.selectbox("Selecciona reactivo:", df['nombre'].tolist()) if not df.empty else None
         if item_para_qr:
             fila_item = df[df['nombre'] == item_para_qr].iloc[0]
-            qr = qrcode.QRCode(version=1, box_size=8, border=2); qr.add_data(f"LAB_ID:{fila_item['id']}"); qr.make(fit=True)
-            buf = io.BytesIO(); qr.make_image(fill_color="black", back_color="white").save(buf, format="PNG")
-            st.image(buf, width=150)
+            if str(fila_item['id']).strip() != "":
+                qr = qrcode.QRCode(version=1, box_size=8, border=2); qr.add_data(f"LAB_ID:{fila_item['id']}"); qr.make(fit=True)
+                buf = io.BytesIO(); qr.make_image(fill_color="black", back_color="white").save(buf, format="PNG")
+                st.image(buf, width=150)
 
 # --- PANEL IZQUIERDO: CÁMARA Y ASISTENTE IA ---
 with col_chat:
