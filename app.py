@@ -25,7 +25,6 @@ except Exception as e:
 @st.cache_resource
 def get_model():
     try:
-        # ¡MOTOR INTELIGENTE! Busca el modelo exacto que tu cuenta tiene habilitado hoy
         modelos = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
         modelo_flash = next((m for m in modelos if 'flash' in m), None)
         
@@ -126,7 +125,8 @@ with col_mon:
                 
     with tab_historial:
         try:
-            res_mov = supabase.table("movimientos").select("*").order("created_at", desc=True).limit(25).execute()
+            # CORREGIDO: "movimiento" en singular
+            res_mov = supabase.table("movimiento").select("*").order("created_at", desc=True).limit(25).execute()
             if res_mov.data:
                 df_mov = pd.DataFrame(res_mov.data)
                 df_mov['Fecha'] = pd.to_datetime(df_mov['created_at']).dt.strftime('%d-%m-%Y %H:%M')
@@ -257,7 +257,8 @@ with col_mon:
                             
                             if res_insert.data:
                                 id_real = res_insert.data[0]['id']
-                                supabase.table("movimientos").insert({
+                                # CORREGIDO: "movimiento" en singular
+                                supabase.table("movimiento").insert({
                                     "item_id": id_real, 
                                     "nombre_item": nombre_val,
                                     "cantidad_cambio": int(cantidad_val),
@@ -297,7 +298,8 @@ with col_mon:
                                         id_it = int(item_db.iloc[0]['id'])
                                         nueva_c = int(item_db.iloc[0]['cantidad_actual']) - total_d
                                         supabase.table("items").update({"cantidad_actual": nueva_c}).eq("id", id_it).execute()
-                                        supabase.table("movimientos").insert({"item_id": id_it, "nombre_item": item_db.iloc[0]['nombre'], "cantidad_cambio": -total_d, "tipo": "Salida", "usuario": usuario_actual}).execute()
+                                        # CORREGIDO: "movimiento" en singular
+                                        supabase.table("movimiento").insert({"item_id": id_it, "nombre_item": item_db.iloc[0]['nombre'], "cantidad_cambio": -total_d, "tipo": "Salida", "usuario": usuario_actual}).execute()
                                         exitos += 1
                             if exitos > 0:
                                 st.success("¡Inventario descontado correctamente!")
@@ -376,7 +378,8 @@ with col_chat:
                         m = re.search(r'\[.*\]', res_ai, re.DOTALL)
                         for it in json.loads(m.group().replace("'", '"')):
                             supabase.table("items").update({"cantidad_actual": it["cantidad_final"]}).eq("id", it["id"]).execute()
-                            supabase.table("movimientos").insert({"item_id": it["id"], "nombre_item": it["nombre"], "cantidad_cambio": it["diferencia"], "tipo": "Salida", "usuario": usuario_actual}).execute()
+                            # CORREGIDO: "movimiento" en singular
+                            supabase.table("movimiento").insert({"item_id": it["id"], "nombre_item": it["nombre"], "cantidad_cambio": it["diferencia"], "tipo": "Salida", "usuario": usuario_actual}).execute()
                         st.markdown("✅ **Actualizado.**")
                     elif "INSERT_MUESTRA:" in res_ai:
                         m = re.search(r'\{.*\}', res_ai, re.DOTALL)
