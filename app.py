@@ -68,11 +68,13 @@ def aplicar_estilos(row):
 res_items = supabase.table("items").select("*").execute()
 df = pd.DataFrame(res_items.data)
 
-# SEGURO ANTI-VACÍO
+# SEGURO ANTI-VACÍO Y ANTI-TIPOS MEZCLADOS
 columnas_texto = ['id', 'nombre', 'categoria', 'subcategoria', 'link_proveedor', 'lote', 'fecha_vencimiento', 'ubicacion', 'unidad']
 for col in columnas_texto:
     if col not in df.columns:
         df[col] = ""
+    # Forzamos todo a string limpio para evitar errores de ordenamiento
+    df[col] = df[col].astype(str).replace(["nan", "None"], "")
 
 for col in ['cantidad_actual', 'umbral_minimo']:
     if col not in df.columns: df[col] = 0
@@ -118,14 +120,17 @@ with col_mon:
             st.session_state.auto_search = busqueda
             
         df_show = df[df['nombre'].str.contains(busqueda, case=False)] if busqueda else df
-        categorias = sorted([c for c in df_show['categoria'].unique() if str(c).strip() != ""])
+        
+        # BLINDAJE: Filtramos vacíos y forzamos strings puros antes de ordenar
+        categorias = sorted(list(set([str(c).strip() for c in df_show['categoria'].unique() if str(c).strip() not in ["", "nan", "None"]])))
         
         if df.empty or len(df) == 0:
             st.info("El inventario está completamente vacío. Ve a la pestaña '📥 Importar' para subir tu Excel.")
         else:
             for cat in categorias:
                 with st.expander(f"📁 {cat}"):
-                    subset_cat = df_show[df_show['categoria'] == cat].sort_values(by='nombre', key=lambda col: col.str.lower())
+                    # Filtramos asegurándonos de que ambos lados son strings limpios
+                    subset_cat = df_show[df_show['categoria'].astype(str).str.strip() == cat].sort_values(by='nombre', key=lambda col: col.str.lower())
                     st.dataframe(subset_cat[[c for c in subset_cat.columns if c not in ['id', 'categoria', 'subcategoria', 'created_at']]].style.apply(aplicar_estilos, axis=1), use_container_width=True, hide_index=True)
                 
     # --- PESTAÑA: HISTORIAL ---
@@ -145,9 +150,12 @@ with col_mon:
         if df.empty or len(df) == 0:
             st.info("No hay datos para editar todavía.")
         else:
-            cat_disp = ["Todas"] + sorted([c for c in df['categoria'].unique() if str(c).strip() != ""])
+            # BLINDAJE IGUAL QUE ARRIBA
+            categorias_edit = sorted(list(set([str(c).strip() for c in df['categoria'].unique() if str(c).strip() not in ["", "nan", "None"]])))
+            cat_disp = ["Todas"] + categorias_edit
+            
             filtro_cat = st.selectbox("📍 Filtrar por Categoría:", cat_disp)
-            df_filtro = df if filtro_cat == "Todas" else df[df['categoria'] == filtro_cat]
+            df_filtro = df if filtro_cat == "Todas" else df[df['categoria'].astype(str).str.strip() == filtro_cat]
             
             df_edit_view = df_filtro.copy()
             df_edit_view['❌ Eliminar'] = False
@@ -280,8 +288,7 @@ with col_mon:
                         
                         df_a_subir = df_a_subir[["nombre", "unidad", "cantidad_actual", "lote", "ubicacion", "categoria"]]
                         
-                        # --- EL ESCUDO ANTI-TEXTO EN CANTIDADES ---
-                        # Extrae el primer número entero que encuentre en la celda. Si no hay, pone 0.
+                        # Escudo anti-texto en cantidades
                         df_a_subir['cantidad_actual'] = df_a_subir['cantidad_actual'].astype(str).str.extract(r'(\d+)')[0].fillna(0).astype(int)
                         
                         df_a_subir = df_a_subir.replace({np.nan: None})
