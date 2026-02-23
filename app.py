@@ -68,7 +68,7 @@ def aplicar_estilos(row):
 res_items = supabase.table("items").select("*").execute()
 df = pd.DataFrame(res_items.data)
 
-# SEGURO ANTI-VACÍO: Forzamos que las columnas existan aunque no haya datos
+# SEGURO ANTI-VACÍO
 columnas_texto = ['id', 'nombre', 'categoria', 'subcategoria', 'link_proveedor', 'lote', 'fecha_vencimiento', 'ubicacion', 'unidad']
 for col in columnas_texto:
     if col not in df.columns:
@@ -268,7 +268,7 @@ with col_mon:
                 st.dataframe(df_nuevo.head(5))
                 
                 if st.button("🚀 Subir todo al Inventario", type="primary"):
-                    with st.spinner("Guardando en la base de datos..."):
+                    with st.spinner("Limpiando números y guardando en la base de datos..."):
                         df_a_subir = df_nuevo.rename(columns={
                             "Nombre": "nombre",
                             "Formato": "unidad",
@@ -279,6 +279,11 @@ with col_mon:
                         })
                         
                         df_a_subir = df_a_subir[["nombre", "unidad", "cantidad_actual", "lote", "ubicacion", "categoria"]]
+                        
+                        # --- EL ESCUDO ANTI-TEXTO EN CANTIDADES ---
+                        # Extrae el primer número entero que encuentre en la celda. Si no hay, pone 0.
+                        df_a_subir['cantidad_actual'] = df_a_subir['cantidad_actual'].astype(str).str.extract(r'(\d+)')[0].fillna(0).astype(int)
+                        
                         df_a_subir = df_a_subir.replace({np.nan: None})
                         
                         records = df_a_subir.to_dict(orient="records")
