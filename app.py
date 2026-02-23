@@ -20,6 +20,9 @@ if 'model_initialized' not in st.session_state:
 
 if 'index_orden' not in st.session_state: st.session_state.index_orden = 0
 if 'auto_search' not in st.session_state: st.session_state.auto_search = ""
+# Estados para la nueva IA visual del Modo Orden
+if 'triage_foto_procesada' not in st.session_state: st.session_state.triage_foto_procesada = -1
+if 'triage_datos_ia' not in st.session_state: st.session_state.triage_datos_ia = {}
 
 try:
     supabase = create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
@@ -68,12 +71,9 @@ def aplicar_estilos(row):
 res_items = supabase.table("items").select("*").execute()
 df = pd.DataFrame(res_items.data)
 
-# SEGURO ANTI-VACÍO Y ANTI-TIPOS MEZCLADOS
 columnas_texto = ['id', 'nombre', 'categoria', 'subcategoria', 'link_proveedor', 'lote', 'fecha_vencimiento', 'ubicacion', 'unidad']
 for col in columnas_texto:
-    if col not in df.columns:
-        df[col] = ""
-    # Forzamos todo a string limpio para evitar errores de ordenamiento
+    if col not in df.columns: df[col] = ""
     df[col] = df[col].astype(str).replace(["nan", "None"], "")
 
 for col in ['cantidad_actual', 'umbral_minimo']:
@@ -81,9 +81,6 @@ for col in ['cantidad_actual', 'umbral_minimo']:
     df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype(int)
 
 df['categoria'] = df['categoria'].replace("", "GENERAL")
-
-try: res_prot = supabase.table("protocolos").select("*").execute(); df_prot = pd.DataFrame(res_prot.data)
-except: df_prot = pd.DataFrame(columns=["id", "nombre", "materiales_base"])
 
 # --- 3. INTERFAZ SUPERIOR ---
 col_logo, col_user = st.columns([3, 1])
@@ -111,7 +108,7 @@ with col_mon:
                     st.rerun()
                 except Exception as e: st.error(f"Error al restaurar: {e}")
 
-    tab_inventario, tab_historial, tab_editar, tab_orden, tab_importar, tab_qr = st.tabs(["📦 Inv", "⏱️ Hist", "⚙️ Edit", "🗂️ Orden", "📥 Importar", "🖨️ QR"])
+    tab_inventario, tab_historial, tab_editar, tab_orden, tab_importar, tab_qr = st.tabs(["📦 Inv", "⏱️ Hist", "⚙️ Edit", "🗂️ Orden Auto", "📥 Importar", "🖨️ QR"])
     
     # --- PESTAÑA: INVENTARIO ---
     with tab_inventario:
@@ -120,8 +117,6 @@ with col_mon:
             st.session_state.auto_search = busqueda
             
         df_show = df[df['nombre'].str.contains(busqueda, case=False)] if busqueda else df
-        
-        # BLINDAJE: Filtramos vacíos y forzamos strings puros antes de ordenar
         categorias = sorted(list(set([str(c).strip() for c in df_show['categoria'].unique() if str(c).strip() not in ["", "nan", "None"]])))
         
         if df.empty or len(df) == 0:
@@ -129,7 +124,6 @@ with col_mon:
         else:
             for cat in categorias:
                 with st.expander(f"📁 {cat}"):
-                    # Filtramos asegurándonos de que ambos lados son strings limpios
                     subset_cat = df_show[df_show['categoria'].astype(str).str.strip() == cat].sort_values(by='nombre', key=lambda col: col.str.lower())
                     st.dataframe(subset_cat[[c for c in subset_cat.columns if c not in ['id', 'categoria', 'subcategoria', 'created_at']]].style.apply(aplicar_estilos, axis=1), use_container_width=True, hide_index=True)
                 
@@ -150,7 +144,6 @@ with col_mon:
         if df.empty or len(df) == 0:
             st.info("No hay datos para editar todavía.")
         else:
-            # BLINDAJE IGUAL QUE ARRIBA
             categorias_edit = sorted(list(set([str(c).strip() for c in df['categoria'].unique() if str(c).strip() not in ["", "nan", "None"]])))
             cat_disp = ["Todas"] + categorias_edit
             
@@ -199,9 +192,10 @@ with col_mon:
                         if b1.button("🗑️ Borrar", key=f"d_{i}"): supabase.table("items").delete().eq("id", str(dup['eliminar_id'])).execute(); st.session_state.duplicados.pop(i); st.rerun()
                         if b2.button("❌ Son distintos", key=f"k_{i}"): st.session_state.duplicados.pop(i); st.rerun()
 
-    # --- PESTAÑA: MODO ORDEN 1 A 1 ---
+    # --- PESTAÑA: MODO ORDEN (NUEVO CON ESCÁNER IA INTEGRADO) ---
     with tab_orden:
-        st.markdown("### 🗂️ Modo Triage: Revisión 1 a 1")
+        st.markdown("### 📸 Modo Orden Automático")
+        
         if df.empty or len(df) == 0:
             st.info("No hay reactivos en el inventario.")
         elif st.session_state.index_orden >= len(df):
@@ -209,35 +203,103 @@ with col_mon:
             if st.button("🔄 Volver a empezar"): st.session_state.index_orden = 0; st.rerun()
         else:
             item_actual = df.iloc[st.session_state.index_orden]
-            sug = sugerir_ubicacion(item_actual['nombre'])
             
-            c_prog, c_skip = st.columns([3, 1])
-            c_prog.progress(st.session_state.index_orden / len(df))
-            c_prog.caption(f"Revisando {st.session_state.index_orden + 1} de {len(df)}")
+            # Si pasamos a un reactivo nuevo, reseteamos los datos de la IA para cargar los de la base de datos
+            if st.session_state.triage_foto_procesada != st.session_state.index_orden:
+                st.session_state.triage_datos_ia = item_actual.to_dict()
             
-            if c_skip.button("✅ ¡Todo Perfecto! \n(Siguiente)", type="primary", use_container_width=True):
-                st.session_state.index_orden += 1; st.rerun()
+            # Barra de progreso
+            st.progress(st.session_state.index_orden / len(df))
+            st.caption(f"Revisando Reactivo {st.session_state.index_orden + 1} de {len(df)}")
+            
+            st.markdown(f"#### 🧪 Validando: **{item_actual['nombre']}**")
+            
+            # Layout: Izquierda Foto / Derecha Formulario
+            col_foto, col_datos = st.columns([1, 1.2], gap="large")
+            
+            with col_foto:
+                st.info("Tómale una foto a la etiqueta para autocompletar la info:")
+                foto_orden = st.camera_input("Capturar", key=f"cam_orden_{st.session_state.index_orden}")
                 
-            st.markdown("---")
-            with st.container(border=True):
-                st.markdown(f"#### Editando: **{item_actual['nombre']}**")
-                with st.form(f"form_orden_abierto_{st.session_state.index_orden}"):
-                    c1, c2 = st.columns(2)
-                    n_nom = c1.text_input("Nombre del Reactivo", value=item_actual['nombre'])
-                    n_cat = c2.text_input("Categoría", value=item_actual['categoria'])
-                    c3, c4 = st.columns(2)
-                    n_lot = c3.text_input("Lote", value=item_actual['lote'])
-                    idx_ub = zonas_lab.index(item_actual['ubicacion']) if item_actual['ubicacion'] in zonas_lab else 0
-                    n_ubi = c4.selectbox(f"Ubicación (Sugerencia IA: {sug})", zonas_lab, index=idx_ub)
-                    c5, c6 = st.columns(2)
-                    n_can = c5.number_input("Cantidad Actual", value=int(item_actual['cantidad_actual']))
-                    idx_un = unidades_list.index(item_actual['unidad']) if item_actual['unidad'] in unidades_list else 0
-                    n_uni = c6.selectbox("Unidad", unidades_list, index=idx_un)
+                # Botón de saltar por si no se quiere tomar foto o editar
+                if st.button("⏭️ Saltar sin cambios", use_container_width=True):
+                    st.session_state.index_orden += 1
+                    st.rerun()
+
+                if foto_orden and st.session_state.triage_foto_procesada != st.session_state.index_orden:
+                    img = Image.open(foto_orden).convert('RGB')
+                    with st.spinner("🧠 Extrayendo datos de la etiqueta..."):
+                        try:
+                            prompt_vision = f"""
+                            Analiza la etiqueta de este reactivo químico/biológico. Su nombre en sistema es: '{item_actual['nombre']}'.
+                            Busca en la imagen y extrae: 
+                            1. categoria (Ej. Sal, Solvente, Anticuerpo).
+                            2. lote (A veces dice LOT o Batch).
+                            3. unidad (mL, g, L, uL).
+                            4. cantidad_actual (solo el número asociado a la unidad).
+                            Responde EXCLUSIVAMENTE en JSON estricto:
+                            {{"categoria": "", "lote": "", "unidad": "", "cantidad_actual": 0}}
+                            Si no encuentras un dato, déjalo vacío ("" o 0).
+                            """
+                            res_vision = model.generate_content([prompt_vision, img]).text
+                            datos_extraidos = json.loads(re.search(r'\{.*\}', res_vision, re.DOTALL).group())
+                            
+                            # Actualizamos solo lo que la IA logró encontrar
+                            for key, val in datos_extraidos.items():
+                                if val and str(val).strip() not in ["", "0", "None"]:
+                                    st.session_state.triage_datos_ia[key] = val
+                                    
+                            st.session_state.triage_foto_procesada = st.session_state.index_orden
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"La IA no pudo leer la etiqueta con claridad.")
+
+            with col_datos:
+                datos_form = st.session_state.triage_datos_ia
+                sug_ia = sugerir_ubicacion(datos_form.get('nombre', ''))
+                
+                # LA IA PREGUNTA SI FALTA ALGO
+                faltan = []
+                if not datos_form.get('ubicacion') or str(datos_form.get('ubicacion')).strip() in ["", "Mesón", "None"]:
+                    faltan.append("Ubicación")
+                if not datos_form.get('lote') or str(datos_form.get('lote')).strip() == "":
+                    faltan.append("Lote")
                     
-                    if st.form_submit_button("💾 Guardar Cambios y Siguiente", use_container_width=True):
+                if st.session_state.triage_foto_procesada == st.session_state.index_orden:
+                    if faltan:
+                        st.warning(f"🤖 **IA:** Leí la etiqueta y actualicé los datos, pero me falta: **{', '.join(faltan)}**. ¡Por favor complétalo abajo!")
+                    else:
+                        st.success("🤖 **IA:** ¡Todo claro! Revisa el formulario y guarda.")
+                else:
+                    st.info("✍️ Edita directamente o usa la cámara.")
+
+                with st.form(f"form_triage_{st.session_state.index_orden}"):
+                    n_nom = st.text_input("Nombre", value=datos_form.get('nombre', ''))
+                    c1, c2 = st.columns(2)
+                    n_cat = c1.text_input("Categoría", value=datos_form.get('categoria', ''))
+                    n_lot = c2.text_input("Lote", value=datos_form.get('lote', ''))
+                    
+                    # Ubicación obligatoria si la pide la IA
+                    idx_ub = zonas_lab.index(datos_form.get('ubicacion')) if datos_form.get('ubicacion') in zonas_lab else zonas_lab.index("Mesón")
+                    n_ubi = st.selectbox(f"Ubicación (Te sugiero: {sug_ia})", zonas_lab, index=idx_ub)
+                    
+                    c3, c4 = st.columns(2)
+                    n_can = c3.number_input("Cantidad", value=int(datos_form.get('cantidad_actual', 0)))
+                    
+                    uni_val = datos_form.get('unidad', 'unidades')
+                    idx_un = unidades_list.index(uni_val) if uni_val in unidades_list else 0
+                    n_uni = c4.selectbox("Unidad", unidades_list, index=idx_un)
+                    
+                    if st.form_submit_button("💾 Guardar y Pasar al Siguiente", type="primary", use_container_width=True):
+                        # Se guarda en la base de datos
                         if str(item_actual['id']).strip() != "":
-                            supabase.table("items").update({"nombre": n_nom, "categoria": n_cat, "lote": n_lot, "ubicacion": n_ubi, "cantidad_actual": n_can, "unidad": n_uni}).eq("id", str(item_actual['id'])).execute()
-                        st.session_state.index_orden += 1; st.rerun()
+                            supabase.table("items").update({
+                                "nombre": n_nom, "categoria": n_cat, "lote": n_lot, 
+                                "ubicacion": n_ubi, "cantidad_actual": n_can, "unidad": n_uni
+                            }).eq("id", str(item_actual['id'])).execute()
+                            
+                        st.session_state.index_orden += 1
+                        st.rerun()
 
     # --- NUEVA PESTAÑA: IMPORTAR EXCEL ---
     with tab_importar:
@@ -259,8 +321,6 @@ with col_mon:
         st.divider()
         st.markdown("### 📥 Importación Masiva desde Excel")
         st.info("Sube tu archivo `.xlsx`. La aplicación leerá automáticamente tus columnas.")
-        
-        st.markdown("**Columnas requeridas en tu Excel:** `Nombre`, `Formato`, `cantidad`, `Detalle`, `ubicación`, `categoria`")
         
         archivo_excel = st.file_uploader("Arrastra tu Excel aquí", type=["xlsx", "csv"])
         
@@ -287,10 +347,7 @@ with col_mon:
                         })
                         
                         df_a_subir = df_a_subir[["nombre", "unidad", "cantidad_actual", "lote", "ubicacion", "categoria"]]
-                        
-                        # Escudo anti-texto en cantidades
                         df_a_subir['cantidad_actual'] = df_a_subir['cantidad_actual'].astype(str).str.extract(r'(\d+)')[0].fillna(0).astype(int)
-                        
                         df_a_subir = df_a_subir.replace({np.nan: None})
                         
                         records = df_a_subir.to_dict(orient="records")
