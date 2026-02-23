@@ -2,6 +2,7 @@ streamlit
 google-generativeai
 supabase
 pandas
+openpyxl
+qrcode
+pillow
 streamlit-mic-recorder
-PyPDF2
-qrcode[pil]
