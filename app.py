@@ -15,7 +15,6 @@ from PIL import Image
 # --- 1. CONFIGURACIÓN Y LIMPIEZA ---
 st.set_page_config(page_title="Lab Aguilar OS", layout="wide", page_icon="🔬")
 
-# Forzamos la limpieza absoluta de memoria
 if 'model_initialized' not in st.session_state:
     st.cache_resource.clear()
     st.session_state.model_initialized = True
@@ -27,10 +26,10 @@ except Exception as e:
     st.error(f"Error en Secrets: {e}")
     st.stop()
 
-# Usamos el nombre y apellido oficial del modelo PRO
+# ¡MOTOR FINAL! Usando exactamente el modelo PRO de tu lista VIP
 @st.cache_resource
 def cargar_modelo_definitivo():
-    return genai.GenerativeModel('gemini-1.5-pro-latest')
+    return genai.GenerativeModel('gemini-2.5-pro')
 
 model = cargar_modelo_definitivo()
 
@@ -246,7 +245,7 @@ with col_chat:
         if foto is not None:
             img = Image.open(foto).convert('RGB')
             
-            with st.spinner("🧠 Leyendo etiqueta con Gemini Pro..."):
+            with st.spinner("🧠 Leyendo etiqueta con Gemini 2.5 Pro..."):
                 res_vision = ""
                 datos_ai = {}
                 try:
@@ -271,13 +270,9 @@ with col_chat:
                     else: 
                         raise ValueError("Formato JSON no encontrado.")
                 except Exception as e:
-                    st.error(f"⚠️ El modelo falló al conectar. Error: {e}")
-                    # ESTA ES LA PARTE DETECTIVE:
-                    try:
-                        lista_real_modelos = [m.name for m in genai.list_models()]
-                        st.info(f"💡 Diagnóstico: Estos son los nombres exactos que tu llave VIP permite usar: {lista_real_modelos}")
-                    except Exception as error_lista:
-                        st.error(f"🚨 La llave no tiene permisos. Verifica que la API esté habilitada en Google Cloud. Error: {error_lista}")
+                    st.error(f"⚠️ Hubo un problema procesando la imagen. Detalle: {e}")
+                    if res_vision != "":
+                        st.info(f"Lo que la IA respondió fue:\n{res_vision}")
             
             with st.form("form_nuevo_reactivo_chat"):
                 st.markdown("#### 📝 Completar Registro")
