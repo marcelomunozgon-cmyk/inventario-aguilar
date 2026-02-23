@@ -80,29 +80,39 @@ with col_mon:
             st.warning("El inventario está vacío. Ve a la pestaña de 'Carga Año Cero'.")
 
     # TAB: CARGA Y RESET (LO QUE PEDISTE)
+   # --- PESTAÑA: IMPORTAR Y ELIMINAR TODO ---
     with tab_import:
         st.subheader("🧹 Limpieza y Reinicio")
         with st.container(border=True):
             st.write("⚠️ **Zona de Peligro:** Esta acción es irreversible.")
             check_borrado = st.checkbox("Entiendo que esto eliminará TODOS los registros actuales.")
-            if st.button("🗑️ BORRAR TODO EL INVENTARIO", type="primary", disabled=not check_borrado):
-                with st.spinner("Vaciando base de datos..."):
-                    # Borramos movimientos primero, luego items (por integridad)
-                    supabase.table("movimiento").delete().neq("id", "00000000-0000-0000-0000-000000000000").execute()
-                    supabase.table("items").delete().neq("id", "00000000-0000-0000-0000-000000000000").execute()
-                    st.success("Base de datos reseteada.")
-                    st.rerun()
+            
+            if st.button("🗑️ ELIMINAR TODO EL INVENTARIO", type="primary", disabled=not check_borrado):
+                with st.spinner("Vaciando base de datos (Esto puede tomar unos segundos)..."):
+                    try:
+                        # SOLUCIÓN: Usamos columnas de texto para evitar el error de formato numérico del ID
+                        supabase.table("movimiento").delete().neq("tipo", "BORRADO_SEGURO").execute()
+                        supabase.table("items").delete().neq("nombre", "BORRADO_SEGURO").execute()
+                        
+                        st.success("✅ ¡Base de datos reseteada completamente! Está lista para recibir el Excel.")
+                        st.rerun()
+                    except Exception as err_borrado:
+                        st.error(f"Fallo al borrar la base de datos. Detalle técnico: {err_borrado}")
 
         st.divider()
         st.subheader("📥 Cargar Nuevo Inventario (Excel)")
         archivo = st.file_uploader("Sube tu archivo .xlsx", type=["xlsx"])
         if archivo:
             try:
-                df_excel = pd.read_excel(archivo)
+                # Motor openpyxl activado para evitar errores de lectura
+                df_excel = pd.read_excel(archivo, engine='openpyxl')
                 st.write("Vista previa de columnas detectadas:", df_excel.columns.tolist())
                 
-                if st.button("🚀 Procesar e Importar"):
-                    # Mapeo de columnas según tu especificación
+                # Limpieza por si hay espacios invisibles en tu Excel
+                df_excel.columns = df_excel.columns.str.strip()
+                
+                if st.button("🚀 Iniciar Carga Masiva", type="primary"):
+                    # Mapeo exacto basado en tu lista: Nombre, Formato, cantidad, Detalle, ubicación, categoria
                     df_prep = df_excel.rename(columns={
                         "Nombre": "nombre",
                         "Formato": "unidad",
@@ -112,12 +122,22 @@ with col_mon:
                         "categoria": "categoria"
                     }).replace({np.nan: None})
                     
-                    data_dict = df_prep[["nombre", "unidad", "cantidad_actual", "lote", "ubicacion", "categoria"]].to_dict(orient="records")
+                    # Validar que las columnas necesarias existan
+                    cols_necesarias = ["nombre", "unidad", "cantidad_actual", "lote", "ubicacion", "categoria"]
+                    data_dict = df_prep[cols_necesarias].to_dict(orient="records")
                     
-                    with st.spinner("Insertando registros..."):
+                    with st.spinner("Insertando registros en Supabase..."):
                         supabase.table("items").insert(data_dict).execute()
-                        registrar_movimiento(None, "Carga Masiva", len(data_dict), "IMPORT", usuario_activo)
-                        st.success(f"¡Se han cargado {len(data_dict)} artículos con éxito!")
+                        
+                        # Guardar el registro de la acción
+                        supabase.table("movimiento").insert({
+                            "nombre_item": "Múltiples Reactivos", 
+                            "cantidad_cambio": len(data_dict), 
+                            "tipo": "Carga Masiva Excel Año Cero", 
+                            "usuario": usuario_actual
+                        }).execute()
+                        
+                        st.success(f"¡Carga completada! {len(data_dict)} artículos añadidos a tu Lab OS.")
                         st.rerun()
             except Exception as e:
                 st.error(f"Error procesando el Excel: {e}")
