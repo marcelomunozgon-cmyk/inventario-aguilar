@@ -26,11 +26,22 @@ except Exception as e:
     st.error(f"Error en Secrets: {e}")
     st.stop()
 
-# ¡TRUCO ANTI-CACHÉ! Le cambiamos el nombre a la función para que Streamlit olvide el error
+# ¡MOTOR INMORTAL! Busca dinámicamente el mejor modelo disponible en tu llave
 @st.cache_resource
 def cargar_modelo_definitivo():
-    # Apuntamos directo a la versión Pro con tus nuevos créditos
-    return genai.GenerativeModel('gemini-1.5-pro')
+    try:
+        modelos = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        
+        # 1. Intentamos buscar el modelo PRO (el más inteligente)
+        modelo_pro = next((m for m in modelos if '1.5-pro' in m), None)
+        if modelo_pro:
+            return genai.GenerativeModel(modelo_pro.replace('models/', ''))
+            
+        # 2. Si no hay PRO, buscamos el modelo FLASH estable (evitando el problemático 2.5)
+        modelo_flash = next((m for m in modelos if '1.5-flash' in m and '2.5' not in m and '8b' not in m), 'gemini-1.5-flash')
+        return genai.GenerativeModel(modelo_flash.replace('models/', ''))
+    except Exception as e:
+        return genai.GenerativeModel('gemini-1.5-flash')
 
 model = cargar_modelo_definitivo()
 
@@ -246,7 +257,7 @@ with col_chat:
         if foto is not None:
             img = Image.open(foto).convert('RGB')
             
-            with st.spinner("🧠 Leyendo etiqueta con Gemini Pro..."):
+            with st.spinner("🧠 Leyendo etiqueta con IA..."):
                 res_vision = ""
                 datos_ai = {}
                 try:
