@@ -15,6 +15,7 @@ from PIL import Image
 # --- 1. CONFIGURACIÓN Y LIMPIEZA ---
 st.set_page_config(page_title="Lab Aguilar OS", layout="wide", page_icon="🔬")
 
+# Forzamos la limpieza absoluta de memoria
 if 'model_initialized' not in st.session_state:
     st.cache_resource.clear()
     st.session_state.model_initialized = True
@@ -26,22 +27,10 @@ except Exception as e:
     st.error(f"Error en Secrets: {e}")
     st.stop()
 
-# ¡MOTOR INMORTAL! Busca dinámicamente el mejor modelo disponible en tu llave
+# Usamos el nombre y apellido oficial del modelo PRO
 @st.cache_resource
 def cargar_modelo_definitivo():
-    try:
-        modelos = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        
-        # 1. Intentamos buscar el modelo PRO (el más inteligente)
-        modelo_pro = next((m for m in modelos if '1.5-pro' in m), None)
-        if modelo_pro:
-            return genai.GenerativeModel(modelo_pro.replace('models/', ''))
-            
-        # 2. Si no hay PRO, buscamos el modelo FLASH estable (evitando el problemático 2.5)
-        modelo_flash = next((m for m in modelos if '1.5-flash' in m and '2.5' not in m and '8b' not in m), 'gemini-1.5-flash')
-        return genai.GenerativeModel(modelo_flash.replace('models/', ''))
-    except Exception as e:
-        return genai.GenerativeModel('gemini-1.5-flash')
+    return genai.GenerativeModel('gemini-1.5-pro-latest')
 
 model = cargar_modelo_definitivo()
 
@@ -257,7 +246,7 @@ with col_chat:
         if foto is not None:
             img = Image.open(foto).convert('RGB')
             
-            with st.spinner("🧠 Leyendo etiqueta con IA..."):
+            with st.spinner("🧠 Leyendo etiqueta con Gemini Pro..."):
                 res_vision = ""
                 datos_ai = {}
                 try:
@@ -282,9 +271,13 @@ with col_chat:
                     else: 
                         raise ValueError("Formato JSON no encontrado.")
                 except Exception as e:
-                    st.error(f"⚠️ Problema procesando la imagen. Detalle: {e}")
-                    if res_vision != "":
-                        st.info(f"Lo que la IA respondió fue:\n{res_vision}")
+                    st.error(f"⚠️ El modelo falló al conectar. Error: {e}")
+                    # ESTA ES LA PARTE DETECTIVE:
+                    try:
+                        lista_real_modelos = [m.name for m in genai.list_models()]
+                        st.info(f"💡 Diagnóstico: Estos son los nombres exactos que tu llave VIP permite usar: {lista_real_modelos}")
+                    except Exception as error_lista:
+                        st.error(f"🚨 La llave no tiene permisos. Verifica que la API esté habilitada en Google Cloud. Error: {error_lista}")
             
             with st.form("form_nuevo_reactivo_chat"):
                 st.markdown("#### 📝 Completar Registro")
