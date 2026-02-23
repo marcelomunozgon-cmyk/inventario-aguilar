@@ -25,8 +25,13 @@ except Exception as e:
 @st.cache_resource
 def get_model():
     try:
-        return genai.GenerativeModel('gemini-1.5-flash')
-    except: return None
+        # Buscamos dinámicamente el nombre correcto que Google acepta hoy
+        modelos_disponibles = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        nombre_correcto = next((m for m in modelos_disponibles if '1.5-flash' in m), 'gemini-1.5-flash-latest')
+        return genai.GenerativeModel(nombre_correcto)
+    except: 
+        # Respaldo en caso de que falle la búsqueda
+        return genai.GenerativeModel('gemini-1.5-flash-latest')
 
 model = get_model()
 
@@ -174,9 +179,11 @@ with col_mon:
             st.image(img, width=250, caption="Preview de la imagen") 
             
             with st.spinner("🧠 La IA está escaneando los textos de la etiqueta..."):
-                res_vision = "" # Variable vacía por si falla antes de llamar al modelo
+                res_vision = ""
                 try:
-                    # PROMPT BLINDADO
+                    if model is None:
+                        raise ValueError("No se pudo conectar con el modelo de IA. Revisa tus límites de cuota o clave de API.")
+                        
                     prompt_vision = """
                     Analiza la etiqueta de este reactivo de laboratorio (incluso si la foto está rotada). 
                     Extrae los datos y responde EXCLUSIVAMENTE en formato JSON. No incluyas texto antes ni después. No uses etiquetas markdown como ```json.
@@ -201,7 +208,6 @@ with col_mon:
                         
                 except Exception as e:
                     st.error(f"⚠️ Hubo un problema procesando los datos. Error interno: {e}")
-                    # ESTO ES LA MAGIA: Nos dirá qué vio realmente la IA
                     if res_vision:
                         st.info(f"**Lo que la IA logró leer fue:**\n{res_vision}")
                     datos_ai = {}
