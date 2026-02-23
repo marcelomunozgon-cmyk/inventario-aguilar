@@ -150,33 +150,49 @@ with col_mon:
             st.success("Cambios guardados.")
             st.rerun()
 
-    # --- PESTAÑA ESCÁNER MEJORADA ---
     with tab_camara:
         st.markdown("### 📸 Ingreso Inteligente de Reactivos")
-        st.info("Apunta la cámara a la etiqueta o sube una foto de tu galería. La IA extraerá los datos.")
+        st.info("Sube una foto clara de la etiqueta. La IA extraerá los datos automáticamente.")
         
-        # Opciones para subir imagen
-        opcion_foto = st.radio("Método de captura:", ["Tomar foto ahora (Webcam)", "Subir desde la galería (Recomendado para celular)"])
+        opcion_foto = st.radio("Método de captura:", ["Subir foto desde la galería", "Tomar foto ahora (Webcam)"])
         
         foto = None
         if opcion_foto == "Tomar foto ahora (Webcam)":
-            foto = st.camera_input("📸 Tomar foto al reactivo")
+            foto = st.camera_input("📸 Tomar foto")
         else:
-            foto = st.file_uploader("📂 Sube la foto del frasco", type=["jpg", "jpeg", "png"])
+            foto = st.file_uploader("📂 Selecciona la foto del frasco", type=["jpg", "jpeg", "png"])
         
         if foto is not None:
-            img = Image.open(foto)
-            st.image(img, width=250, caption="Imagen a procesar") # Muestra la foto para que veas si está nítida
+            # Procesamiento robusto de imagen
+            img = Image.open(foto).convert('RGB')
             
-            with st.spinner("🧠 La IA está leyendo la etiqueta..."):
+            # DIAGNÓSTICO DE RESOLUCIÓN
+            ancho, alto = img.size
+            if ancho < 500 or alto < 500:
+                st.warning(f"⚠️ Alerta: El navegador comprimió la imagen a {ancho}x{alto} píxeles. Es posible que la IA no pueda leer letras pequeñas. Intenta subirla en 'Tamaño Original'.")
+            else:
+                st.success(f"✅ Resolución óptima recibida: {ancho}x{alto} píxeles.")
+            
+            # Mostramos un preview pequeño en la interfaz, pero mandamos la imagen grande a la IA
+            st.image(img, width=250, caption="Preview de la imagen") 
+            
+            with st.spinner("🧠 La IA está escaneando los textos de la etiqueta..."):
                 try:
-                    prompt_vision = "Lee la etiqueta de este reactivo de laboratorio. Extrae los datos y responde SOLO en un JSON válido con estas llaves exactas en minúscula: 'nombre' (nombre del reactivo o kit), 'categoria' (ej: Reactivo, Kit, Medio Cultivo, Plástico), 'lote' (si aparece, si no pon un string vacio ''), 'fecha_vencimiento' (si aparece formato YYYY-MM-DD, si no pon ''). No uses markdown."
+                    # Prompt más estricto y guiado
+                    prompt_vision = """Lee detalladamente la etiqueta de este reactivo químico, biológico o kit de laboratorio. 
+                    Extrae los datos y responde ÚNICAMENTE con un JSON válido usando estas llaves exactas en minúscula: 
+                    "nombre": (Nombre principal del producto, reactivo o anticuerpo), 
+                    "categoria": (Clasifícalo en una sola palabra clave: Reactivo, Kit, Medio, Buffer, Plástico, Droga, Anticuerpo), 
+                    "lote": (El número de Lote o Lot. Si no hay, pon ""), 
+                    "fecha_vencimiento": (La fecha de caducidad o Exp Date en formato YYYY-MM-DD. Si no hay, pon ""). 
+                    No incluyas formato Markdown ni texto extra."""
+                    
                     res_vision = model.generate_content([prompt_vision, img]).text
                     
                     match = re.search(r'\{.*\}', res_vision, re.DOTALL)
                     datos_ai = json.loads(match.group()) if match else {}
                 except Exception as e:
-                    st.warning("⚠️ No se pudo leer automáticamente. Asegúrate de que la foto esté nítida y bien iluminada. Rellena los datos a mano.")
+                    st.error("⚠️ La IA no encontró texto legible en la imagen. Por favor, rellena los datos manualmente.")
                     datos_ai = {}
             
             with st.form("form_nuevo_reactivo"):
