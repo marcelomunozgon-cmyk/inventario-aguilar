@@ -10,7 +10,7 @@ import numpy as np
 import PyPDF2
 import io
 import qrcode
-from PIL import Image # LIBRERÍA NUEVA PARA LA CÁMARA
+from PIL import Image
 
 # --- 1. CONFIGURACIÓN ---
 st.set_page_config(page_title="Lab Aguilar OS", layout="wide", page_icon="🔬")
@@ -54,7 +54,6 @@ for col in ['cantidad_actual', 'umbral_minimo']:
     if col not in df.columns: df[col] = 0
     df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype(int)
 
-# Aseguramos la nueva columna 'ubicacion' en el DataFrame
 for col in ['categoria', 'subcategoria', 'link_proveedor', 'lote', 'fecha_vencimiento', 'ubicacion', 'unidad']:
     if col not in df.columns: df[col] = ""
     df[col] = df[col].fillna("").astype(str)
@@ -92,7 +91,6 @@ with col_mon:
                     st.rerun()
                 except Exception as e: st.error(f"Error al restaurar: {e}")
 
-    # --- PESTAÑAS (INCLUYENDO LA NUEVA CÁMARA) ---
     tab_inventario, tab_historial, tab_editar, tab_camara, tab_protocolos, tab_qr, tab_bioterio = st.tabs(["📦 Inventario", "⏱️ Historial", "⚙️ Editar", "📸 Escáner", "🧪 Protocolos", "🖨️ QR", "❄️ Bioterio"])
     
     with tab_inventario:
@@ -152,26 +150,33 @@ with col_mon:
             st.success("Cambios guardados.")
             st.rerun()
 
-    # --- NUEVA PESTAÑA: ESCÁNER DE REACTIVOS ---
+    # --- PESTAÑA ESCÁNER MEJORADA ---
     with tab_camara:
         st.markdown("### 📸 Ingreso Inteligente de Reactivos")
-        st.info("Apunta la cámara a la etiqueta del frasco o caja. La IA extraerá el nombre y tú solo le indicas dónde guardarlo.")
+        st.info("Apunta la cámara a la etiqueta o sube una foto de tu galería. La IA extraerá los datos.")
         
-        foto = st.camera_input("Tomar foto al reactivo")
+        # Opciones para subir imagen
+        opcion_foto = st.radio("Método de captura:", ["Tomar foto ahora (Webcam)", "Subir desde la galería (Recomendado para celular)"])
+        
+        foto = None
+        if opcion_foto == "Tomar foto ahora (Webcam)":
+            foto = st.camera_input("📸 Tomar foto al reactivo")
+        else:
+            foto = st.file_uploader("📂 Sube la foto del frasco", type=["jpg", "jpeg", "png"])
         
         if foto is not None:
             img = Image.open(foto)
+            st.image(img, width=250, caption="Imagen a procesar") # Muestra la foto para que veas si está nítida
             
             with st.spinner("🧠 La IA está leyendo la etiqueta..."):
                 try:
-                    # Le pedimos a la IA que lea la imagen y devuelva un JSON
-                    prompt_vision = "Lee la etiqueta de este reactivo de laboratorio. Extrae los datos y responde SOLO en un JSON válido con estas llaves exactas en minúscula: 'nombre' (nombre del reactivo o kit), 'categoria' (ej: Reactivo, Kit, Medio Cultivo, Plástico), 'lote' (si aparece, si no pon un string vacio ''), 'fecha_vencimiento' (si aparece, si no pon ''). No uses markdown."
+                    prompt_vision = "Lee la etiqueta de este reactivo de laboratorio. Extrae los datos y responde SOLO en un JSON válido con estas llaves exactas en minúscula: 'nombre' (nombre del reactivo o kit), 'categoria' (ej: Reactivo, Kit, Medio Cultivo, Plástico), 'lote' (si aparece, si no pon un string vacio ''), 'fecha_vencimiento' (si aparece formato YYYY-MM-DD, si no pon ''). No uses markdown."
                     res_vision = model.generate_content([prompt_vision, img]).text
                     
                     match = re.search(r'\{.*\}', res_vision, re.DOTALL)
                     datos_ai = json.loads(match.group()) if match else {}
                 except Exception as e:
-                    st.warning("No se pudo leer automáticamente la etiqueta. Por favor, rellena los datos a mano.")
+                    st.warning("⚠️ No se pudo leer automáticamente. Asegúrate de que la foto esté nítida y bien iluminada. Rellena los datos a mano.")
                     datos_ai = {}
             
             with st.form("form_nuevo_reactivo"):
@@ -189,13 +194,12 @@ with col_mon:
                 st.markdown("#### 📍 Logística")
                 col_u1, col_u2, col_u3 = st.columns(3)
                 
-                # Lista predefinida de zonas del lab (puedes cambiar los nombres después)
                 zonas_lab = ["Refrigerador 1 (4°C)", "Refrigerador 2 (4°C)", "Freezer -20°C (Pasillo)", "Freezer -80°C", "Estante Químicos A", "Estante Plásticos B", "Mesada Principal", "Gabinete Inflamables", "Otro"]
                 ubicacion_val = col_u1.selectbox("¿Dónde lo vas a ubicar? *", zonas_lab)
                 cantidad_val = col_u2.number_input("¿Cuántos ingresan? *", min_value=1, value=1)
                 unidad_val = col_u3.selectbox("Unidad de medida *", ["unidades", "mL", "uL", "cajas", "preps", "kits", "g", "mg"])
                 
-                umb_val = st.number_input("Umbral mínimo para activar alarma de correo", min_value=0, value=1)
+                umb_val = st.number_input("Umbral mínimo para activar alerta", min_value=0, value=1)
                 
                 submit_nuevo = st.form_submit_button("📥 Registrar en el Inventario", type="primary")
                 
@@ -213,7 +217,7 @@ with col_mon:
                         }
                         supabase.table("items").insert(nuevo_item).execute()
                         supabase.table("movimientos").insert({
-                            "item_id": 0, # Genérico para ingresos
+                            "item_id": 0, 
                             "nombre_item": nombre_val,
                             "cantidad_cambio": int(cantidad_val),
                             "tipo": "Ingreso (Nuevo)",
