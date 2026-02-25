@@ -39,10 +39,11 @@ except Exception as e:
     st.stop()
 
 @st.cache_resource
-def cargar_modelo_definitivo():
-    return genai.GenerativeModel('gemini-2.5-pro')
+def cargar_modelo_rapido():
+    # CAMBIO A MODO TURBO (1.5 Flash es casi instantáneo para el chat)
+    return genai.GenerativeModel('gemini-1.5-flash')
 
-model = cargar_modelo_definitivo()
+model = cargar_modelo_rapido()
 
 if "backup_inventario" not in st.session_state: st.session_state.backup_inventario = None
 
@@ -111,7 +112,6 @@ def estilo_alerta_editor(row):
 res_items = supabase.table("items").select("*").execute()
 df = pd.DataFrame(res_items.data)
 
-# Añadimos 'posicion_caja' al sistema
 columnas_texto = ['id', 'nombre', 'categoria', 'subcategoria', 'link_proveedor', 'lote', 'fecha_vencimiento', 'ubicacion', 'posicion_caja', 'unidad']
 for col in columnas_texto:
     if col not in df.columns: df[col] = ""
@@ -140,23 +140,19 @@ with col_user:
 col_chat, col_mon = st.columns([1, 1.6], gap="large")
 
 with col_mon:
-    # --- EL BOTÓN DE DESHACER BLINDADO ---
     if st.session_state.backup_inventario is not None:
         if st.button("↩️ Deshacer Última Acción", type="secondary"):
-            with st.spinner("Restaurando con limpieza de formatos..."):
+            with st.spinner("Restaurando..."):
                 try:
                     backup_df = st.session_state.backup_inventario.replace({np.nan: None})
                     for index, row in backup_df.iterrows():
                         row_dict = row.to_dict()
-                        # LIMPIEZA: Si hay campos vacíos que molestan a Supabase, los volvemos Nulos reales
                         for key, value in row_dict.items():
                             if pd.isna(value) or str(value).strip() == "":
                                 row_dict[key] = None
-                                
                         if 'id' in row_dict and row_dict['id'] is not None:
                             row_dict['id'] = str(row_dict['id'])
                             supabase.table("items").upsert(row_dict).execute()
-                            
                     st.session_state.backup_inventario = None
                     st.success("¡Inventario restaurado con éxito!")
                     st.rerun()
@@ -164,7 +160,6 @@ with col_mon:
 
     tab_inventario, tab_protocolos, tab_editar, tab_orden, tab_importar = st.tabs(["📦 Inv", "🧪 Protocolos", "⚙️ Edit", "🗂️ Orden Auto", "📥 Carga"])
     
-    # --- PESTAÑA: INVENTARIO ---
     with tab_inventario:
         df_criticos = df[(df['cantidad_actual'] <= df['umbral_minimo']) & (df['umbral_minimo'] > 0)]
         if not df_criticos.empty:
@@ -189,14 +184,11 @@ with col_mon:
             for cat in categorias:
                 with st.expander(f"📁 {cat}"):
                     subset_cat = df_show[df_show['categoria'].astype(str).str.strip() == cat].sort_values(by='nombre', key=lambda col: col.str.lower())
-                    # Añadimos posicion_caja a la vista principal
                     columnas_ver = ['nombre', 'cantidad_actual', 'unidad', 'ubicacion', 'posicion_caja', 'lote']
                     st.dataframe(subset_cat[columnas_ver].style.apply(aplicar_estilos_inv, axis=1), use_container_width=True, hide_index=True)
 
-    # --- NUEVA PESTAÑA: PROTOCOLOS (KITS Y DESCUENTO MASIVO) ---
     with tab_protocolos:
         st.markdown("### 🧬 Ejecución de Protocolos y Kits")
-        
         tab_ejecutar, tab_crear = st.tabs(["🚀 Ejecutar Corrida", "📝 Crear/Editar Protocolo"])
         
         with tab_ejecutar:
@@ -219,7 +211,6 @@ with col_mon:
                                 cant_por_tubo = float(partes[1].strip())
                                 total_a_descontar = cant_por_tubo * n_muestras
                                 
-                                # Buscar el reactivo en la base de datos
                                 item_db = df[df['nombre'].str.contains(nombre_b, case=False, na=False)]
                                 if not item_db.empty:
                                     stock_actual = item_db.iloc[0]['cantidad_actual']
@@ -259,7 +250,6 @@ with col_mon:
                     except Exception as e:
                         st.error(f"Error al guardar. ¿Creaste la tabla 'protocolos' en Supabase? Detalle: {e}")
 
-    # --- PESTAÑA: EDICIÓN MASIVA ---
     with tab_editar:
         st.markdown("### ✍️ Edición Masiva")
         if not df.empty:
@@ -270,8 +260,6 @@ with col_mon:
             
             df_edit_view = df_filtro.copy()
             df_edit_view['❌ Eliminar'] = False
-            
-            # Incorporamos la posición de caja a la edición
             cols_finales = ['❌ Eliminar', 'id', 'nombre', 'cantidad_actual', 'umbral_minimo', 'unidad', 'ubicacion', 'posicion_caja']
             
             df_to_edit = df_edit_view[cols_finales].copy()
@@ -292,7 +280,6 @@ with col_mon:
                 st.session_state.auto_search = ""
                 st.rerun()
 
-    # --- PESTAÑA: MODO ORDEN AUTO ---
     with tab_orden:
         st.markdown("### 📸 Modo Orden Automático")
         if df.empty or len(df) == 0:
@@ -341,7 +328,6 @@ with col_mon:
                 with st.form(f"form_triage_{st.session_state.index_orden}"):
                     n_nom = st.text_input("Nombre", value=datos_form.get('nombre', ''))
                     
-                    # Layout para ubicaciones exactas (Batalla Naval)
                     c_ub1, c_ub2 = st.columns([1.5, 1])
                     idx_ub = zonas_lab.index(datos_form.get('ubicacion')) if datos_form.get('ubicacion') in zonas_lab else zonas_lab.index("Mesón")
                     n_ubi = c_ub1.selectbox(f"Zona", zonas_lab, index=idx_ub)
@@ -364,7 +350,6 @@ with col_mon:
                         st.query_params['index'] = st.session_state.index_orden
                         st.rerun()
 
-    # --- PESTAÑA: IMPORTAR EXCEL ---
     with tab_importar:
         st.subheader("🧹 Limpieza y Carga")
         with st.container(border=True):
@@ -387,7 +372,6 @@ with col_mon:
                 if st.button("🚀 Subir al Inventario", type="primary"):
                     with st.spinner("Guardando..."):
                         df_a_subir = df_nuevo.rename(columns={"Nombre": "nombre", "Formato": "unidad", "cantidad": "cantidad_actual", "Detalle": "lote", "ubicación": "ubicacion", "categoria": "categoria"})
-                        # Si tu excel tiene 'posicion_caja', lo toma. Si no, crea la columna vacía.
                         if 'posicion_caja' not in df_a_subir.columns: df_a_subir['posicion_caja'] = ""
                         df_a_subir = df_a_subir[["nombre", "unidad", "cantidad_actual", "lote", "ubicacion", "posicion_caja", "categoria"]]
                         df_a_subir['cantidad_actual'] = df_a_subir['cantidad_actual'].astype(str).str.extract(r'(\d+)')[0].fillna(0).astype(int)
@@ -397,19 +381,27 @@ with col_mon:
                         st.rerun()
             except Exception as e: st.error(f"Error: {e}")
 
-# --- PANEL IZQUIERDO: CÁMARA Y ASISTENTE IA ---
+# --- PANEL IZQUIERDO: ASISTENTE IA ULTRARRÁPIDO ---
 with col_chat:
     st.subheader("💬 Secretario de Inventario")
     chat_box = st.container(height=500, border=True)
     
     if "messages" not in st.session_state:
-        st.session_state.messages = [{"role": "assistant", "content": f"Hola {usuario_actual}. Dime qué hacemos y confirmaré el cambio."}]
+        st.session_state.messages = [{"role": "assistant", "content": f"Hola {usuario_actual}. Dime qué hacemos y lo registraré rápido."}]
 
     for m in st.session_state.messages:
         with chat_box:
             st.chat_message(m["role"]).markdown(m["content"])
 
-    v_in = speech_to_text(language='es-CL', start_prompt="🎤 Dictar", stop_prompt="🛑 Parar", just_once=True, key='voice_input')
+    # --- BOTÓN DE VOZ TIPO WHATSAPP ---
+    v_in = speech_to_text(
+        language='es-CL', 
+        start_prompt="🎙️ Toca para grabar", 
+        stop_prompt="⏹️ Detener y enviar", 
+        just_once=True, 
+        key='voice_input'
+    )
+    
     prompt = v_in if v_in else st.chat_input("Ej: Saqué 2 de Taq Polimerasa de la Caja A")
 
     if prompt:
@@ -418,16 +410,16 @@ with col_chat:
             st.chat_message("user").markdown(prompt)
         
         with st.chat_message("assistant"):
-            with st.spinner("Procesando y guardando..."):
+            with st.spinner("Procesando..."):
                 try:
                     datos_para_ia = df[['id', 'nombre', 'cantidad_actual', 'ubicacion', 'posicion_caja']].to_json(orient='records') if not df.empty else "[]"
                     
                     contexto_instrucciones = f"""
-                    Eres el Secretario IA. REGLA: El usuario manda.
+                    Eres el Secretario IA. Usa la menor cantidad de tokens posibles para pensar rápido.
                     Inventario actual: {datos_para_ia}
-                    Si el reactivo existe, extrae su 'id'. Si NO existe, usa "NUEVO".
+                    Extrae el id del inventario si existe, si no usa "NUEVO".
                     Identifica: id, nombre, cantidad, unidad, ubicacion, posicion_caja.
-                    Responde SOLO JSON estricto:
+                    Responde SOLO con este JSON:
                     EJECUTAR_ACCION:{{"id": "...", "nombre": "...", "cantidad": ..., "unidad": "...", "ubicacion": "...", "posicion_caja": "..."}}
                     """
                     
