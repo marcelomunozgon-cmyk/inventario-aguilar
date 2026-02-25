@@ -40,8 +40,8 @@ except Exception as e:
 
 @st.cache_resource
 def cargar_modelo_rapido():
-    # CAMBIO A MODO TURBO (1.5 Flash es casi instantáneo para el chat)
-    return genai.GenerativeModel('gemini-1.5-flash')
+    # Usamos la versión Flash de la familia 2.5 que tu API ya tiene autorizada
+    return genai.GenerativeModel('gemini-2.5-flash')
 
 model = cargar_modelo_rapido()
 
