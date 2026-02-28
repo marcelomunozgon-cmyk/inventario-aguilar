@@ -187,7 +187,7 @@ except: df_prot = pd.DataFrame(columns=["id", "nombre", "materiales_base"])
 col_logo, col_user = st.columns([3, 1])
 with col_logo: st.markdown("## 🔬 Stck")
 with col_user: 
-    st.info(f"👤 {usuario_actual} ({st.session_state.rol})")
+    st.info(f"👤 {usuario_actual} ({st.session_state.get('rol', 'Cargando...')})")
     if st.button("🚪 Cerrar Sesión"):
         st.session_state.usuario_autenticado = None
         st.session_state.lab_id = None
