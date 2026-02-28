@@ -12,7 +12,7 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
-# --- 1. CONFIGURACIÓN Y ESTÉTICA ---
+# --- 1. CONFIGURACIÓN Y ESTÉTICA MEJORADA ---
 st.set_page_config(page_title="Stck", layout="wide", page_icon="🔬")
 
 st.markdown("""
@@ -22,8 +22,15 @@ st.markdown("""
     html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
     div[data-testid="stContainer"] { border-radius: 10px; border-color: #f0f0f0; }
     .stTabs [data-baseweb="tab-list"] { gap: 15px; border-bottom: 1px solid #f0f0f0; }
-    .stTabs [data-baseweb="tab"] { height: 50px; background-color: transparent; border-radius: 4px 4px 0px 0px; color: #666; font-weight: 500; }
-    .stTabs [aria-selected="true"] { color: #000; border-bottom: 2px solid #000 !important; }
+    .stTabs [data-baseweb="tab"] { height: 50px; background-color: transparent; border-radius: 4px 4px 0px 0px; color: #888; font-weight: 500; }
+    
+    /* FIX DE COLOR DE PESTAÑAS: Fondo negro, letra blanca obligatoria */
+    .stTabs [aria-selected="true"] { 
+        color: #ffffff !important; 
+        background-color: #1a1a1a !important; 
+        border-bottom: 2px solid #1a1a1a !important; 
+    }
+    
     .stButton>button { border-radius: 8px; font-weight: 500; }
 </style>
 """, unsafe_allow_html=True)
@@ -39,7 +46,7 @@ except Exception as e:
 def cargar_modelo_rapido(): return genai.GenerativeModel('gemini-2.5-flash')
 model = cargar_modelo_rapido()
 
-# --- 2. SISTEMA DE AUTENTICACIÓN MULTI-ROL ---
+# --- 2. SISTEMA DE AUTENTICACIÓN (CON AUTO-LOGIN) ---
 if "usuario_autenticado" not in st.session_state:
     st.session_state.usuario_autenticado = None
     st.session_state.user_uid = None
@@ -53,13 +60,12 @@ if st.session_state.usuario_autenticado is None:
     
     col_espacio1, col_login, col_espacio2 = st.columns([1, 2, 1])
     with col_login:
-        # PESTAÑAS UNIFICADAS
         tab_login, tab_reg = st.tabs(["🔐 Iniciar Sesión", "🏢 Crear Cuenta"])
         
         with tab_login:
             with st.container(border=True):
-                email_login = st.text_input("Correo corporativo")
-                pass_login = st.text_input("Contraseña", type="password")
+                email_login = st.text_input("Correo corporativo", key="log_email")
+                pass_login = st.text_input("Contraseña", type="password", key="log_pass")
                 if st.button("Acceder a Stck", type="primary", use_container_width=True):
                     with st.spinner("Autenticando..."):
                         try:
@@ -81,40 +87,55 @@ if st.session_state.usuario_autenticado is None:
                             
         with tab_reg:
             with st.container(border=True):
-                # SELECTOR DE TIPO DE CUENTA
                 tipo_cuenta = st.radio("¿Qué tipo de cuenta deseas crear?", ["Laboratorio", "Proveedor (Ventas)"], horizontal=True)
                 st.markdown("---")
                 
                 if tipo_cuenta == "Laboratorio":
-                    st.info("Laboratorios: Completa tu perfil científico.")
                     nombre_reg = st.text_input("Nombre y Apellido")
                     perfil_reg = st.selectbox("Perfil Académico", ["Pregrado", "Doctorado/Postdoc", "PI", "Lab Manager", "CEO", "Otro"])
                     inst_reg = st.text_input("Universidad o Empresa")
                     email_reg = st.text_input("Nuevo Correo")
                     pass_reg = st.text_input("Crear Contraseña", type="password")
                     
-                    if st.button("Crear Cuenta de Laboratorio", type="primary", use_container_width=True):
+                    if st.button("Crear Cuenta y Entrar", type="primary", use_container_width=True):
                         if not nombre_reg: st.warning("Falta el nombre.")
                         else:
                             try:
-                                res = supabase.auth.sign_up({"email": email_reg.strip(), "password": pass_reg})
+                                # Registro
+                                supabase.auth.sign_up({"email": email_reg.strip(), "password": pass_reg})
                                 supabase.table("equipo").insert({"email": email_reg.strip().lower(), "nombre": nombre_reg, "perfil_academico": perfil_reg, "institucion": inst_reg, "rol": "espera"}).execute()
-                                st.success("¡Cuenta creada! Tu administrador ya puede darte acceso.")
+                                
+                                # Auto-Login automático
+                                res_login = supabase.auth.sign_in_with_password({"email": email_reg.strip(), "password": pass_reg})
+                                st.session_state.usuario_autenticado = res_login.user.email
+                                st.session_state.user_uid = res_login.user.id
+                                st.session_state.lab_id = "PENDIENTE"
+                                st.session_state.rol = "espera"
+                                st.session_state.nombre_usuario = nombre_reg
+                                st.rerun()
                             except Exception as e: st.error(f"Error: {e}")
                 
                 else:
-                    st.info("Proveedores: Únete para ofrecer tu catálogo a la red Stck.")
                     empresa_prov = st.text_input("Nombre de la Empresa / Marca")
                     email_prov = st.text_input("Correo de Ventas")
                     pass_prov = st.text_input("Contraseña de Proveedor", type="password")
                     
-                    if st.button("Registrar Empresa Proveedora", type="primary", use_container_width=True):
+                    if st.button("Registrar Empresa y Entrar", type="primary", use_container_width=True):
                         if not empresa_prov: st.warning("Pon el nombre de la empresa.")
                         else:
                             try:
-                                res = supabase.auth.sign_up({"email": email_prov.strip(), "password": pass_prov})
-                                supabase.table("equipo").insert({"email": email_prov.strip().lower(), "nombre": empresa_prov, "lab_id": res.user.id, "rol": "proveedor"}).execute()
-                                st.success("Empresa registrada. Ve a 'Iniciar Sesión' para entrar.")
+                                # Registro
+                                res_up = supabase.auth.sign_up({"email": email_prov.strip(), "password": pass_prov})
+                                supabase.table("equipo").insert({"email": email_prov.strip().lower(), "nombre": empresa_prov, "lab_id": res_up.user.id, "rol": "proveedor"}).execute()
+                                
+                                # Auto-Login automático
+                                res_login = supabase.auth.sign_in_with_password({"email": email_prov.strip(), "password": pass_prov})
+                                st.session_state.usuario_autenticado = res_login.user.email
+                                st.session_state.user_uid = res_login.user.id
+                                st.session_state.lab_id = res_login.user.id
+                                st.session_state.rol = "proveedor"
+                                st.session_state.nombre_usuario = empresa_prov
+                                st.rerun()
                             except Exception as e: st.error("Error al registrar.")
     st.stop()
 
@@ -266,7 +287,7 @@ with col_mon:
         if df.empty: st.info("Inventario vacío.")
         else:
             for cat in categorias:
-                with st.expander(f"📁 {cat}"):
+                with st.expander(f"📁 {cat}", expanded=False):
                     subset_cat = df_show[df_show['categoria'].astype(str).str.strip() == cat].sort_values(by='nombre', key=lambda col: col.str.lower())
                     st.dataframe(subset_cat[['nombre', 'cantidad_actual', 'unidad', 'ubicacion', 'posicion_caja', 'fecha_vencimiento']].style.apply(aplicar_estilos_inv, axis=1), use_container_width=True, hide_index=True)
 
@@ -315,7 +336,6 @@ with col_mon:
                         supabase.table("items").upsert(d).execute()
                 st.rerun()
                 
-        # 🛒 MÓDULO FINANCIERO (SOLO ADMIN)
         if rol_actual == "admin" and not df.empty:
             st.markdown("---")
             st.markdown("### 🛒 Panel de Cotizaciones y Compras")
@@ -366,14 +386,13 @@ with col_mon:
                 if st.button("Dar Acceso", type="primary", use_container_width=True):
                     if nuevo_email:
                         try:
-                            # 1. Verificamos si existe antes de hacer el update
                             res_check = supabase.table("equipo").select("*").eq("email", nuevo_email).execute()
                             if res_check.data:
                                 supabase.table("equipo").update({"lab_id": lab_id, "rol": rol_nuevo}).eq("email", nuevo_email).execute()
                             else:
                                 supabase.table("equipo").insert({"email": nuevo_email, "lab_id": lab_id, "rol": rol_nuevo, "nombre": "Invitado"}).execute()
                             st.success(f"Acceso otorgado a {nuevo_email}.")
-                            st.rerun() # Fuerza la actualización de la tabla
+                            st.rerun() 
                         except Exception as e: st.error(f"Error: {e}")
             
             st.write("**Miembros con Acceso Activo:**")
