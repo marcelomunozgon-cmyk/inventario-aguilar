@@ -26,7 +26,7 @@ st.markdown("""
     .stTabs [data-baseweb="tab-list"] { gap: 15px; border-bottom: 1px solid #f0f0f0; }
     .stTabs [data-baseweb="tab"] { height: 50px; background-color: transparent; border-radius: 4px 4px 0px 0px; color: #666; font-weight: 500; }
     .stTabs [aria-selected="true"] { color: #000; border-bottom: 2px solid #000 !important; }
-    .stButton>button { border-radius: 8px; transition: all 0.2s ease; font-weight: 500; }
+    .stButton>button { border-radius: 8px; font-weight: 500; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -41,10 +41,12 @@ except Exception as e:
 def cargar_modelo_rapido(): return genai.GenerativeModel('gemini-2.5-flash')
 model = cargar_modelo_rapido()
 
-# --- 2. SISTEMA DE AUTENTICACIÓN (MULTI-TENANT) ---
+# --- 2. SISTEMA DE AUTENTICACIÓN Y ROLES ---
 if "usuario_autenticado" not in st.session_state:
     st.session_state.usuario_autenticado = None
+    st.session_state.user_uid = None
     st.session_state.lab_id = None
+    st.session_state.rol = None
 
 # PANTALLA DE LOGIN
 if st.session_state.usuario_autenticado is None:
@@ -53,37 +55,77 @@ if st.session_state.usuario_autenticado is None:
     
     col_espacio1, col_login, col_espacio2 = st.columns([1, 2, 1])
     with col_login:
-        tab_login, tab_reg = st.tabs(["🔐 Iniciar Sesión", "🏢 Registrar Laboratorio"])
+        tab_login, tab_reg = st.tabs(["🔐 Iniciar Sesión", "Crear Cuenta"])
         
         with tab_login:
             with st.container(border=True):
-                email_login = st.text_input("Correo corporativo")
+                email_login = st.text_input("Correo")
                 pass_login = st.text_input("Contraseña", type="password")
                 if st.button("Acceder a Stck", type="primary", use_container_width=True):
                     with st.spinner("Autenticando..."):
                         try:
                             res = supabase.auth.sign_in_with_password({"email": email_login, "password": pass_login})
-                            st.session_state.usuario_autenticado = res.user.email
-                            st.session_state.lab_id = res.user.id
+                            email = res.user.email
+                            uid = res.user.id
+                            
+                            st.session_state.usuario_autenticado = email
+                            st.session_state.user_uid = uid
+                            
+                            # BUSCAR SI EL USUARIO ESTÁ EN LA LISTA DE INVITADOS
+                            req_eq = supabase.table("equipo").select("*").eq("email", email).execute()
+                            
+                            if req_eq.data:
+                                st.session_state.lab_id = req_eq.data[0]['lab_id']
+                                st.session_state.rol = req_eq.data[0]['rol']
+                            else:
+                                # AUTO-RESCATE PARA MARCELO (Si ya tiene reactivos a su nombre)
+                                leg = supabase.table("items").select("id").eq("lab_id", uid).limit(1).execute()
+                                if leg.data:
+                                    supabase.table("equipo").insert({"email": email, "lab_id": uid, "rol": "admin"}).execute()
+                                    st.session_state.lab_id = uid
+                                    st.session_state.rol = "admin"
+                                else:
+                                    st.session_state.lab_id = "PENDIENTE"
+                                    st.session_state.rol = "espera"
                             st.rerun()
                         except Exception as e:
-                            st.error("Credenciales incorrectas o usuario no registrado.")
+                            st.error("Credenciales incorrectas.")
                             
         with tab_reg:
             with st.container(border=True):
-                st.info("Crea una cuenta para aislar los datos de tu laboratorio.")
+                st.info("Crea tu cuenta. Tu administrador deberá darte acceso luego.")
                 email_reg = st.text_input("Nuevo Correo")
                 pass_reg = st.text_input("Crear Contraseña (mín 6 caracteres)", type="password")
                 if st.button("Crear Cuenta", type="primary", use_container_width=True):
                     try:
                         res = supabase.auth.sign_up({"email": email_reg, "password": pass_reg})
-                        st.success("¡Laboratorio registrado! Ya puedes iniciar sesión en la pestaña de al lado.")
+                        st.success("¡Cuenta creada! Ya puedes iniciar sesión.")
                     except Exception as e:
                         st.error(f"Fallo al registrar: {e}")
     st.stop()
 
-# --- VARIABLES DE SESIÓN ---
+# --- PANTALLA DE "SALA DE ESPERA" (SIN ACCESO) ---
+if st.session_state.lab_id == "PENDIENTE":
+    st.warning("⏳ Sala de Espera")
+    st.write(f"Tu cuenta **{st.session_state.usuario_autenticado}** está activa, pero aún no has sido asignado a ningún laboratorio.")
+    st.write("👉 Pídele al administrador de tu laboratorio que añada tu correo al equipo.")
+    
+    st.divider()
+    st.write("¿Eres el fundador de un laboratorio nuevo?")
+    if st.button("Crear mi propio espacio de trabajo (Ser Administrador)"):
+        supabase.table("equipo").insert({"email": st.session_state.usuario_autenticado, "lab_id": st.session_state.user_uid, "rol": "admin"}).execute()
+        st.session_state.lab_id = st.session_state.user_uid
+        st.session_state.rol = "admin"
+        st.rerun()
+    
+    if st.button("🚪 Cerrar Sesión"):
+        st.session_state.usuario_autenticado = None
+        st.rerun()
+    st.stop()
+
+# --- VARIABLES DE SESIÓN GLOBALES ---
 lab_id = st.session_state.lab_id
+usuario_actual = st.session_state.usuario_autenticado
 
 if 'index' in st.query_params: st.session_state.index_orden = int(st.query_params['index'])
 elif 'index_orden' not in st.session_state: st.session_state.index_orden = 0
@@ -93,7 +135,7 @@ if 'triage_datos_ia' not in st.session_state: st.session_state.triage_datos_ia =
 if "backup_inventario" not in st.session_state: st.session_state.backup_inventario = None
 def crear_punto_restauracion(df_actual): st.session_state.backup_inventario = df_actual.copy()
 
-def enviar_alerta_gmail(df_alertas, operador, titulo="Reporte de Laboratorio"):
+def enviar_alerta_gmail(df_alertas, titulo="Reporte"):
     try:
         sender = st.secrets["EMAIL_SENDER"]
         password = st.secrets["EMAIL_PASSWORD"]
@@ -103,7 +145,7 @@ def enviar_alerta_gmail(df_alertas, operador, titulo="Reporte de Laboratorio"):
         msg['To'] = receiver
         msg['Subject'] = f"🔬 {titulo} - Stck"
         html_table = df_alertas[['nombre', 'ubicacion', 'posicion_caja', 'cantidad_actual', 'umbral_minimo', 'unidad']].to_html(index=False)
-        body = f"<html><body><h2>{titulo}</h2>{html_table}<br><p><i>Reporte generado por: {operador} (Stck)</i></p></body></html>"
+        body = f"<html><body><h2>{titulo}</h2>{html_table}<br><p><i>Acción realizada por: {usuario_actual}</i></p></body></html>"
         msg.attach(MIMEText(body, 'html'))
         server = smtplib.SMTP('smtp.gmail.com', 587)
         server.starttls()
@@ -111,11 +153,9 @@ def enviar_alerta_gmail(df_alertas, operador, titulo="Reporte de Laboratorio"):
         server.send_message(msg)
         server.quit()
         return True
-    except Exception as e:
-        st.error(f"Fallo al enviar correo. Detalle: {e}")
-        return False
+    except: return False
 
-# --- LÓGICA DE DATOS AISLADA (MULTI-TENANT) ---
+# --- LÓGICA DE DATOS AISLADA ---
 zonas_lab_fijas = ["Mesón", "Refrigerador 1 (4°C)", "Refrigerador 2 (4°C)", "Freezer -20°C", "Freezer -80°C", "Estante Químicos", "Estante Plásticos", "Gabinete Inflamables", "Otro"]
 cajones = [f"Cajón {i}" for i in range(1, 42)]
 zonas_lab = zonas_lab_fijas + cajones
@@ -134,28 +174,21 @@ df = pd.DataFrame(res_items.data)
 for col in ['id', 'nombre', 'categoria', 'subcategoria', 'lote', 'ubicacion', 'posicion_caja', 'unidad']:
     if col not in df.columns: df[col] = ""
     df[col] = df[col].astype(str).replace(["nan", "None"], "")
-
 for col in ['cantidad_actual', 'umbral_minimo']:
     if col not in df.columns: df[col] = 0
     df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype(int)
 
 df['categoria'] = df['categoria'].replace("", "GENERAL")
 
-try: 
-    res_prot = supabase.table("protocolos").select("*").eq("lab_id", lab_id).execute()
-    df_prot = pd.DataFrame(res_prot.data)
-except: 
-    df_prot = pd.DataFrame(columns=["id", "nombre", "materiales_base"])
+try: res_prot = supabase.table("protocolos").select("*").eq("lab_id", lab_id).execute(); df_prot = pd.DataFrame(res_prot.data)
+except: df_prot = pd.DataFrame(columns=["id", "nombre", "materiales_base"])
 
 # --- INTERFAZ PRINCIPAL ---
 col_logo, col_user = st.columns([3, 1])
 with col_logo: st.markdown("## 🔬 Stck")
 with col_user: 
-    # Menú de Trazabilidad Interna
-    equipo = ["Marcelo Muñoz", "Rodrigo Aguilar", "Marjorie", "Adrián", "Tesista / Estudiante", "Otro"]
-    operador_actual = st.selectbox("👤 Operador Actual:", equipo, index=0)
-    
-    if st.button("🚪 Cerrar Sesión del Lab"):
+    st.info(f"👤 {usuario_actual} ({st.session_state.rol})")
+    if st.button("🚪 Cerrar Sesión"):
         st.session_state.usuario_autenticado = None
         st.session_state.lab_id = None
         st.rerun()
@@ -163,37 +196,23 @@ with col_user:
 col_chat, col_mon = st.columns([1, 1.6], gap="large")
 
 with col_mon:
-    if st.session_state.backup_inventario is not None:
-        if st.button("↩️ Deshacer Última Acción Masiva", type="secondary"):
-            with st.spinner("Restaurando..."):
-                try:
-                    backup_df = st.session_state.backup_inventario.replace({np.nan: None})
-                    for index, row in backup_df.iterrows():
-                        row_dict = row.to_dict()
-                        for key, value in row_dict.items():
-                            if pd.isna(value) or str(value).strip() == "": row_dict[key] = None
-                        if 'id' in row_dict and row_dict['id'] is not None:
-                            row_dict['id'] = str(row_dict['id'])
-                            row_dict['lab_id'] = lab_id 
-                            supabase.table("items").upsert(row_dict).execute()
-                    st.session_state.backup_inventario = None
-                    st.success("Restaurado")
-                    st.rerun()
-                except: st.error("Error al restaurar")
-
-    tab_inventario, tab_protocolos, tab_editar, tab_orden, tab_importar = st.tabs(["📦 Inv", "🧪 Protocolos", "⚙️ Edit", "🗂️ Triage", "📥 Carga"])
+    # Definir pestañas según el ROL
+    if st.session_state.rol == "admin":
+        tab_inv, tab_prot, tab_edit, tab_ia, tab_carga, tab_equipo = st.tabs(["📦 Inv", "🧪 Protocolos", "⚙️ Edit", "🗂️ Triage", "📥 Carga", "👥 Equipo"])
+    else:
+        tab_inv, tab_prot, tab_edit, tab_ia = st.tabs(["📦 Inv", "🧪 Protocolos", "⚙️ Edit", "🗂️ Triage"])
+        tab_carga = tab_equipo = None # Ocultar pestañas a miembros
     
-    with tab_inventario:
+    with tab_inv:
         df_criticos = df[(df['cantidad_actual'] <= df['umbral_minimo']) & (df['umbral_minimo'] > 0)]
         if not df_criticos.empty:
             st.error("🚨 **Reactivos Críticos**")
             st.dataframe(df_criticos[['nombre', 'ubicacion', 'posicion_caja', 'cantidad_actual', 'umbral_minimo', 'unidad']], use_container_width=True, hide_index=True)
             if st.button("📧 Enviar Alerta Crítica", type="primary"):
-                if enviar_alerta_gmail(df_criticos, operador_actual, "Alerta de Stock Crítico"): st.success("Enviado")
+                if enviar_alerta_gmail(df_criticos, "Alerta de Stock Crítico"): st.success("Enviado")
 
         busqueda = st.text_input("🔍 Buscar...", value=st.session_state.auto_search)
         if busqueda != st.session_state.auto_search: st.session_state.auto_search = busqueda
-            
         df_show = df[df['nombre'].str.contains(busqueda, case=False)] if busqueda else df
         categorias = sorted(list(set([str(c).strip() for c in df_show['categoria'].unique() if str(c).strip() not in ["", "nan", "None"]])))
         
@@ -204,8 +223,7 @@ with col_mon:
                     subset_cat = df_show[df_show['categoria'].astype(str).str.strip() == cat].sort_values(by='nombre', key=lambda col: col.str.lower())
                     st.dataframe(subset_cat[['nombre', 'cantidad_actual', 'unidad', 'ubicacion', 'posicion_caja', 'lote']].style.apply(aplicar_estilos_inv, axis=1), use_container_width=True, hide_index=True)
 
-    with tab_protocolos:
-        st.markdown("### 🧬 Ejecución de Kits")
+    with tab_prot:
         tab_ejecutar, tab_crear = st.tabs(["🚀 Ejecutar", "📝 Nuevo"])
         with tab_ejecutar:
             if df_prot.empty: st.info("Sin protocolos.")
@@ -227,8 +245,7 @@ with col_mon:
                             crear_punto_restauracion(df)
                             for d in descuentos:
                                 supabase.table("items").update({"cantidad_actual": int(d["Stock"] - d["Descuento"])}).eq("id", d["id"]).execute()
-                                # Registro con el Operador Físico
-                                supabase.table("movimiento").insert({"item_id": d["id"], "nombre_item": d["Reactivo"], "cantidad_cambio": -d["Descuento"], "tipo": f"Uso Protocolo: {p_sel}", "usuario": operador_actual, "lab_id": lab_id}).execute()
+                                supabase.table("movimiento").insert({"item_id": d["id"], "nombre_item": d["Reactivo"], "cantidad_cambio": -d["Descuento"], "tipo": f"Uso Kit: {p_sel}", "usuario": usuario_actual, "lab_id": lab_id}).execute()
                             st.rerun()
 
         with tab_crear:
@@ -239,51 +256,39 @@ with col_mon:
                     supabase.table("protocolos").insert({"nombre": n_prot, "materiales_base": mat_base, "lab_id": lab_id}).execute()
                     st.rerun()
 
-    with tab_editar:
+    with tab_edit:
         st.markdown("### ✍️ Acciones Masivas")
         if not df.empty:
             cat_disp = ["Todas"] + sorted(list(set([str(c).strip() for c in df['categoria'].unique() if str(c).strip() not in ["", "nan", "None"]])))
             filtro_cat = st.selectbox("Filtrar por Categoría:", cat_disp)
-            
             df_edit_view = (df if filtro_cat == "Todas" else df[df['categoria'].astype(str).str.strip() == filtro_cat]).copy()
             df_edit_view.insert(0, '✅ Seleccionar', False)
             cols_finales = ['✅ Seleccionar', 'nombre', 'cantidad_actual', 'umbral_minimo', 'unidad', 'ubicacion', 'posicion_caja', 'lote', 'id']
             
-            edited_df = st.data_editor(
-                df_edit_view[cols_finales].copy(), 
-                column_config={"id": st.column_config.TextColumn("ID", disabled=True)}, 
-                use_container_width=True, hide_index=True
-            )
-            
+            edited_df = st.data_editor(df_edit_view[cols_finales].copy(), column_config={"id": st.column_config.TextColumn("ID", disabled=True)}, use_container_width=True, hide_index=True)
             seleccionados = edited_df[edited_df['✅ Seleccionar'] == True]
             
             if not seleccionados.empty:
-                st.markdown("---")
                 st.success(f"🛠️ **{len(seleccionados)} seleccionados:**")
                 c_acc1, c_acc2, c_acc3 = st.columns([1, 1, 1.5])
                 
-                if c_acc1.button("🗑️ Eliminar Selección", use_container_width=True):
+                if c_acc1.button("🗑️ Eliminar", use_container_width=True):
                     crear_punto_restauracion(df)
-                    with st.spinner("Borrando..."):
-                        for id_borrar in seleccionados['id']:
-                            supabase.table("items").delete().eq("id", str(id_borrar)).execute()
+                    for id_borrar in seleccionados['id']: supabase.table("items").delete().eq("id", str(id_borrar)).execute()
                     st.rerun()
                 
-                if c_acc2.button("📧 Compartir Reporte", use_container_width=True):
-                    if enviar_alerta_gmail(seleccionados, operador_actual, "Reporte Especial de Reactivos"):
-                        st.success("Enviado.")
+                if c_acc2.button("📧 Enviar Lista", use_container_width=True):
+                    if enviar_alerta_gmail(seleccionados, "Reporte Especial"): st.success("Enviado.")
 
-                nueva_ub = c_acc3.selectbox("📦 Mover todos a...", ["(Elige ubicación)"] + zonas_lab, label_visibility="collapsed")
-                if nueva_ub != "(Elige ubicación)":
-                    if c_acc3.button(f"Mover a {nueva_ub}", type="primary", use_container_width=True):
+                nueva_ub = c_acc3.selectbox("Mover a...", ["(Elige)"] + zonas_lab, label_visibility="collapsed")
+                if nueva_ub != "(Elige)":
+                    if c_acc3.button("Confirmar Traslado", type="primary"):
                         crear_punto_restauracion(df)
-                        with st.spinner("Trasladando..."):
-                            for id_mover in seleccionados['id']:
-                                supabase.table("items").update({"ubicacion": nueva_ub}).eq("id", str(id_mover)).execute()
+                        for id_mover in seleccionados['id']: supabase.table("items").update({"ubicacion": nueva_ub}).eq("id", str(id_mover)).execute()
                         st.rerun()
 
             st.markdown("---")
-            if st.button("💾 Guardar Ediciones Manuales"):
+            if st.button("💾 Guardar Cambios Manuales"):
                 crear_punto_restauracion(df)
                 modificados = edited_df[edited_df['✅ Seleccionar'] == False].drop(columns=['✅ Seleccionar'])
                 for _, row in modificados.iterrows():
@@ -293,8 +298,8 @@ with col_mon:
                         supabase.table("items").upsert(d).execute()
                 st.rerun()
 
-    with tab_orden:
-        st.markdown("### 📸 Triage con IA")
+    with tab_ia:
+        st.markdown("### 📸 Triage")
         if df.empty: st.info("Inventario vacío.")
         elif st.session_state.index_orden >= len(df):
             if st.button("🔄 Reiniciar"): st.session_state.index_orden = 0; st.query_params['index'] = 0; st.rerun()
@@ -306,7 +311,7 @@ with col_mon:
             
             col_f, col_d = st.columns([1, 1.2], gap="large")
             with col_f:
-                foto_ord = st.camera_input("Capturar Etiqueta", key=f"cam_{st.session_state.index_orden}")
+                foto_ord = st.camera_input("Capturar", key=f"cam_{st.session_state.index_orden}")
                 if st.button("⏭️ Saltar", use_container_width=True): st.session_state.index_orden += 1; st.query_params['index'] = st.session_state.index_orden; st.rerun()
                 if foto_ord and st.session_state.triage_foto_procesada != st.session_state.index_orden:
                     with st.spinner("Leyendo..."):
@@ -327,33 +332,58 @@ with col_mon:
                     n_p = c_2.text_input("Caja", dat.get('posicion_caja', ''))
                     n_c = st.number_input("Cantidad", value=int(dat.get('cantidad_actual', 0)))
                     n_un = st.selectbox("Unidad", unidades_list, index=unidades_list.index(dat.get('unidad')) if dat.get('unidad') in unidades_list else 0)
-                    if st.form_submit_button("💾 Guardar", type="primary", use_container_width=True):
+                    if st.form_submit_button("💾 Guardar", type="primary"):
                         supabase.table("items").update({"nombre": n_n, "ubicacion": n_u, "posicion_caja": n_p, "cantidad_actual": n_c, "unidad": n_un}).eq("id", str(item_actual['id'])).execute()
                         st.session_state.index_orden += 1; st.query_params['index'] = st.session_state.index_orden; st.rerun()
 
-    with tab_importar:
-        st.subheader("🧹 Limpieza")
-        if st.button("🗑️ VACIAR INVENTARIO", type="primary", disabled=not st.checkbox("Confirmar")):
-            supabase.table("movimiento").delete().eq("lab_id", lab_id).execute()
-            supabase.table("items").delete().eq("lab_id", lab_id).execute()
-            st.rerun()
+    if tab_carga:
+        with tab_carga:
+            if st.button("🗑️ VACIAR INVENTARIO", type="primary", disabled=not st.checkbox("Confirmar")):
+                supabase.table("movimiento").delete().eq("lab_id", lab_id).execute()
+                supabase.table("items").delete().eq("lab_id", lab_id).execute()
+                st.rerun()
+            archivo_excel = st.file_uploader("Sube tu Excel", type=["xlsx", "csv"])
+            if archivo_excel and st.button("🚀 Subir al Inventario"):
+                df_n = pd.read_csv(archivo_excel) if archivo_excel.name.endswith('.csv') else pd.read_excel(archivo_excel, engine='openpyxl')
+                df_s = df_n.rename(columns={"Nombre": "nombre", "Formato": "unidad", "cantidad": "cantidad_actual", "Detalle": "lote", "ubicación": "ubicacion", "categoria": "categoria"})
+                if 'posicion_caja' not in df_s.columns: df_s['posicion_caja'] = ""
+                df_s['cantidad_actual'] = df_s['cantidad_actual'].astype(str).str.extract(r'(\d+)')[0].fillna(0).astype(int)
+                df_s['lab_id'] = lab_id 
+                supabase.table("items").insert(df_s[["nombre", "unidad", "cantidad_actual", "lote", "ubicacion", "posicion_caja", "categoria", "lab_id"]].replace({np.nan: None}).to_dict(orient="records")).execute()
+                st.rerun()
 
-        archivo_excel = st.file_uploader("Sube tu Excel", type=["xlsx", "csv"])
-        if archivo_excel and st.button("🚀 Subir al Inventario"):
-            df_n = pd.read_csv(archivo_excel) if archivo_excel.name.endswith('.csv') else pd.read_excel(archivo_excel, engine='openpyxl')
-            df_s = df_n.rename(columns={"Nombre": "nombre", "Formato": "unidad", "cantidad": "cantidad_actual", "Detalle": "lote", "ubicación": "ubicacion", "categoria": "categoria"})
-            if 'posicion_caja' not in df_s.columns: df_s['posicion_caja'] = ""
-            df_s['cantidad_actual'] = df_s['cantidad_actual'].astype(str).str.extract(r'(\d+)')[0].fillna(0).astype(int)
-            df_s['lab_id'] = lab_id 
-            supabase.table("items").insert(df_s[["nombre", "unidad", "cantidad_actual", "lote", "ubicacion", "posicion_caja", "categoria", "lab_id"]].replace({np.nan: None}).to_dict(orient="records")).execute()
-            st.rerun()
+    # --- PESTAÑA EXCLUSIVA PARA ADMINISTRADORES ---
+    if tab_equipo:
+        with tab_equipo:
+            st.markdown("### 🤝 Gestión de Accesos")
+            st.write("Añade los correos de tu equipo para darles acceso a este inventario.")
+            
+            c_eq1, c_eq2 = st.columns(2)
+            with c_eq1:
+                with st.container(border=True):
+                    nuevo_email = st.text_input("Correo electrónico a invitar:")
+                    rol_nuevo = st.selectbox("Rol:", ["miembro", "admin"])
+                    if st.button("Dar Acceso", type="primary", use_container_width=True):
+                        if nuevo_email:
+                            try:
+                                supabase.table("equipo").insert({"email": nuevo_email, "lab_id": lab_id, "rol": rol_nuevo}).execute()
+                                st.success(f"Acceso otorgado a {nuevo_email}.")
+                            except: st.error("Ese usuario ya está en el equipo o hubo un error.")
+                        
+            with c_eq2:
+                st.write("**Miembros con Acceso:**")
+                try:
+                    miembros = supabase.table("equipo").select("email, rol").eq("lab_id", lab_id).execute()
+                    df_miembros = pd.DataFrame(miembros.data)
+                    st.dataframe(df_miembros, hide_index=True, use_container_width=True)
+                except: st.info("No hay miembros agregados.")
 
 # --- PANEL IA ---
 with col_chat:
     st.markdown("### 💬 Secretario IA")
     chat_box = st.container(height=500, border=False)
     
-    if "messages" not in st.session_state: st.session_state.messages = [{"role": "assistant", "content": f"Conectado a la base segura. ¿Qué guardamos hoy?"}]
+    if "messages" not in st.session_state: st.session_state.messages = [{"role": "assistant", "content": f"Conectado. ¿Qué guardamos hoy?"}]
     for m in st.session_state.messages:
         with chat_box: st.chat_message(m["role"]).markdown(m["content"])
 
@@ -375,15 +405,13 @@ with col_chat:
                         if id_ac != "NUEVO" and (not df.empty and id_ac in df['id'].astype(str).values):
                             supabase.table("items").update({"cantidad_actual": data['cantidad'], "ubicacion": data['ubicacion'], "posicion_caja": data.get('posicion_caja', '')}).eq("id", id_ac).execute()
                             itm = supabase.table("items").select("*").eq("id", id_ac).execute().data[0]
-                            # Registro con el Operador Físico
-                            supabase.table("movimiento").insert({"item_id": id_ac, "nombre_item": itm['nombre'], "cantidad_cambio": data['cantidad'], "tipo": "Acción IA", "usuario": operador_actual, "lab_id": lab_id}).execute()
+                            supabase.table("movimiento").insert({"item_id": id_ac, "nombre_item": itm['nombre'], "cantidad_cambio": data['cantidad'], "tipo": "Acción IA", "usuario": usuario_actual, "lab_id": lab_id}).execute()
                             msg = f"✅ **Actualizado:** {itm['nombre']} | Stock: {itm['cantidad_actual']}"
                         else:
                             res_ins = supabase.table("items").insert({"nombre": data['nombre'], "cantidad_actual": data['cantidad'], "unidad": data['unidad'], "ubicacion": data['ubicacion'], "posicion_caja": data.get('posicion_caja', ''), "lab_id": lab_id}).execute()
                             if res_ins.data:
                                 itm = res_ins.data[0]
-                                # Registro con el Operador Físico
-                                supabase.table("movimiento").insert({"item_id": str(itm['id']), "nombre_item": itm['nombre'], "cantidad_cambio": itm['cantidad_actual'], "tipo": "Nuevo IA", "usuario": operador_actual, "lab_id": lab_id}).execute()
+                                supabase.table("movimiento").insert({"item_id": str(itm['id']), "nombre_item": itm['nombre'], "cantidad_cambio": itm['cantidad_actual'], "tipo": "Nuevo IA", "usuario": usuario_actual, "lab_id": lab_id}).execute()
                                 msg = f"📦 **Creado:** {itm['nombre']} | Stock: {itm['cantidad_actual']}"
                         
                         st.session_state.auto_search = itm['nombre']
@@ -394,4 +422,3 @@ with col_chat:
                         st.markdown(res_ai)
                         st.session_state.messages.append({"role": "assistant", "content": res_ai})
                 except Exception as e: st.error(f"Error IA: {e}")
-                    
