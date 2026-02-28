@@ -111,7 +111,13 @@ if st.session_state.lab_id == "PENDIENTE":
     st.write("👉 Pídele al administrador que añada tu correo al equipo.")
     st.divider()
     if st.button("Crear mi propio espacio de trabajo (Ser Admin)"):
-        supabase.table("equipo").update({"lab_id": st.session_state.user_uid, "rol": "admin"}).eq("email", st.session_state.usuario_autenticado).execute()
+        # Intenta actualizar si existe, si no, lo inserta
+        res_check = supabase.table("equipo").select("*").eq("email", st.session_state.usuario_autenticado).execute()
+        if res_check.data:
+            supabase.table("equipo").update({"lab_id": st.session_state.user_uid, "rol": "admin"}).eq("email", st.session_state.usuario_autenticado).execute()
+        else:
+            supabase.table("equipo").insert({"email": st.session_state.usuario_autenticado, "lab_id": st.session_state.user_uid, "rol": "admin", "nombre": "Admin"}).execute()
+        
         st.session_state.lab_id = st.session_state.user_uid
         st.session_state.rol = "admin"
         st.rerun()
@@ -120,9 +126,10 @@ if st.session_state.lab_id == "PENDIENTE":
         st.rerun()
     st.stop()
 
-# --- VARIABLES GLOBALES (Con parche anti-crasheo) ---
+# --- VARIABLES GLOBALES ---
 lab_id = st.session_state.lab_id
 usuario_actual = st.session_state.get('nombre_usuario', st.session_state.get('usuario_autenticado', 'Usuario'))
+correo_destinatario_compras = st.secrets.get("EMAIL_RECEIVER", st.secrets.get("EMAIL_SENDER", "No configurado"))
 
 if 'auto_search' not in st.session_state: st.session_state.auto_search = ""
 if "backup_inventario" not in st.session_state: st.session_state.backup_inventario = None
@@ -182,12 +189,11 @@ col_chat, col_mon = st.columns([1, 1.6], gap="large")
 
 with col_mon:
     if st.session_state.get('rol') == "admin": 
-        tab_inv, tab_prot, tab_edit, tab_carga, tab_equipo = st.tabs(["📦 Inv & Finanzas", "🧪 Protocolos", "⚙️ Edición", "📥 Carga", "👥 Equipo"])
+        tab_inv, tab_prot, tab_edit, tab_carga, tab_equipo = st.tabs(["📦 Inventario", "🧪 Protocolos", "⚙️ Edición & Compras", "📥 Carga", "👥 Equipo"])
     else: 
         tab_inv, tab_prot, tab_edit = st.tabs(["📦 Inventario", "🧪 Protocolos", "⚙️ Edición"])
     
     with tab_inv:
-        # 🚨 ALERTAS MEJORADAS (Detecta stock 0 y vencimientos)
         if not df.empty:
             df['vence_pronto'] = False
             hoy = pd.to_datetime(date.today())
@@ -198,7 +204,6 @@ with col_mon:
                         if (fv - hoy).days <= 30: df.at[idx, 'vence_pronto'] = True
                 except: pass
             
-            # Ahora es crítico si está por debajo del umbral O si llegó a 0
             df_criticos = df[(df['cantidad_actual'] <= df['umbral_minimo']) & (df['umbral_minimo'] > 0) | (df['cantidad_actual'] <= 0)]
             df_vencidos = df[df['vence_pronto'] == True]
             
@@ -210,7 +215,6 @@ with col_mon:
                 if not df_vencidos.empty: 
                     st.warning(f"📅 **{len(df_vencidos)} Reactivos Vencen en < 30 días**")
         
-        # 📁 INVENTARIO CLASIFICADO (DE VUELTA)
         st.markdown("### 🗂️ Catálogo de Reactivos")
         busqueda = st.text_input("🔍 Buscar reactivo...", value=st.session_state.auto_search)
         df_show = df[df['nombre'].str.contains(busqueda, case=False)] if busqueda else df
@@ -222,33 +226,6 @@ with col_mon:
                 with st.expander(f"📁 {cat}"):
                     subset_cat = df_show[df_show['categoria'].astype(str).str.strip() == cat].sort_values(by='nombre', key=lambda col: col.str.lower())
                     st.dataframe(subset_cat[['nombre', 'cantidad_actual', 'unidad', 'ubicacion', 'posicion_caja', 'fecha_vencimiento']].style.apply(aplicar_estilos_inv, axis=1), use_container_width=True, hide_index=True)
-
-        # 🛒 MÓDULO FINANCIERO (SOLO ADMIN)
-        if st.session_state.get('rol') == "admin" and not df.empty:
-            st.markdown("---")
-            st.markdown("### 🛒 Panel Financiero y Compras")
-            c_comp1, c_comp2 = st.columns([2, 1])
-            with c_comp1:
-                item_compra = st.selectbox("Seleccionar Reactivo a Comprar:", df['nombre'].tolist())
-                datos_item = df[df['nombre'] == item_compra].iloc[0]
-                fecha_cot = datos_item['fecha_cotizacion'] if datos_item['fecha_cotizacion'] else "Nunca"
-                precio_ref = datos_item['precio'] if datos_item['precio'] > 0 else "No registrado"
-                st.caption(f"**Última cotización:** {fecha_cot} | **Precio Referencial:** ${precio_ref}")
-            with c_comp2:
-                st.write("")
-                st.write("")
-                if st.button("🛒 Iniciar Solicitud", use_container_width=True): st.session_state.confirmar_compra = item_compra
-                if st.session_state.get('confirmar_compra') == item_compra:
-                    st.warning("¿Confirmas enviar correo a adquisiciones?")
-                    c_si, c_no = st.columns(2)
-                    if c_si.button("✅ Enviar", type="primary"):
-                        enviar_correo_compras(item_compra, precio_ref, usuario_actual)
-                        st.success("Solicitud enviada.")
-                        st.session_state.confirmar_compra = None
-                        st.rerun()
-                    if c_no.button("❌ Cancelar"):
-                        st.session_state.confirmar_compra = None
-                        st.rerun()
 
     with tab_prot:
         tab_ejecutar, tab_crear = st.tabs(["🚀 Ejecutar", "📝 Nuevo"])
@@ -295,6 +272,33 @@ with col_mon:
                         supabase.table("items").upsert(d).execute()
                 st.success("Guardado.")
                 st.rerun()
+                
+        # 🛒 MÓDULO FINANCIERO TRASLADADO A EDICIÓN (SOLO ADMIN)
+        if st.session_state.get('rol') == "admin" and not df.empty:
+            st.markdown("---")
+            st.markdown("### 🛒 Panel de Cotizaciones y Compras")
+            st.caption(f"📧 **Destinatario de la solicitud:** `{correo_destinatario_compras}`")
+            c_comp1, c_comp2 = st.columns([2, 1])
+            with c_comp1:
+                item_compra = st.selectbox("Seleccionar Reactivo a Comprar:", df['nombre'].tolist())
+                datos_item = df[df['nombre'] == item_compra].iloc[0]
+                fecha_cot = datos_item['fecha_cotizacion'] if datos_item['fecha_cotizacion'] else "Nunca"
+                precio_ref = datos_item['precio'] if datos_item['precio'] > 0 else "No registrado"
+                st.write(f"**Última cotización:** {fecha_cot} | **Precio Referencial:** ${precio_ref}")
+            with c_comp2:
+                st.write("")
+                if st.button("🛒 Iniciar Solicitud", use_container_width=True): st.session_state.confirmar_compra = item_compra
+                if st.session_state.get('confirmar_compra') == item_compra:
+                    st.warning("¿Confirmas enviar correo a adquisiciones?")
+                    c_si, c_no = st.columns(2)
+                    if c_si.button("✅ Enviar", type="primary"):
+                        enviar_correo_compras(item_compra, precio_ref, usuario_actual)
+                        st.success("Solicitud enviada.")
+                        st.session_state.confirmar_compra = None
+                        st.rerun()
+                    if c_no.button("❌ Cancelar"):
+                        st.session_state.confirmar_compra = None
+                        st.rerun()
 
     if st.session_state.get('rol') == "admin":
         with tab_carga:
@@ -320,8 +324,10 @@ with col_mon:
                 if st.button("Dar Acceso", type="primary", use_container_width=True):
                     try:
                         res = supabase.table("equipo").update({"lab_id": lab_id, "rol": rol_nuevo}).eq("email", nuevo_email).execute()
-                        if len(res.data) == 0: st.warning("Ese correo aún no se ha registrado en Stck.")
-                        else: st.success(f"Acceso otorgado a {nuevo_email}.")
+                        if len(res.data) == 0: 
+                            # Si el usuario no estaba en la tabla (lo forzaron por auth o es muy antiguo), lo agregamos a la fuerza
+                            supabase.table("equipo").insert({"email": nuevo_email, "lab_id": lab_id, "rol": rol_nuevo, "nombre": "(Falta Registro)"}).execute()
+                        st.success(f"Acceso otorgado a {nuevo_email}.")
                     except Exception as e: st.error(f"Error: {e}")
             st.write("**Miembros con Acceso:**")
             try:
@@ -338,11 +344,9 @@ with col_chat:
     for m in st.session_state.messages:
         with chat_box: st.chat_message(m["role"]).markdown(m["content"])
 
-    # Ingreso de Voz o Texto
     v_in = speech_to_text(language='es-CL', start_prompt="🎙️ Hablar", stop_prompt="⏹️ Enviar", just_once=True, key='voice_input')
     prompt = v_in if v_in else st.chat_input("Ej: Saqué 2 buffer...")
 
-    # MÓDULO VISUAL (LA NUEVA CÁMARA)
     with st.expander("📸 Enviar Foto de Etiqueta"):
         accion_foto = st.radio("¿Qué deseas hacer con la foto?", ["➕ Agregar como Nuevo", "🔄 Actualizar Existente"], horizontal=True)
         item_a_actualizar = None
@@ -389,7 +393,6 @@ with col_chat:
                         st.error(err_msg)
                         st.session_state.messages.append({"role": "assistant", "content": err_msg})
 
-    # PROCESAMIENTO DE TEXTO/VOZ
     if prompt:
         st.session_state.messages.append({"role": "user", "content": prompt})
         with chat_box: st.chat_message("user").markdown(prompt)
