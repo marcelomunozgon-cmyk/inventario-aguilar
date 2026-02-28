@@ -5,11 +5,8 @@ import pandas as pd
 import json
 import re
 from streamlit_mic_recorder import speech_to_text
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 import numpy as np
-import io
-import qrcode
-from PIL import Image
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -47,15 +44,16 @@ if "usuario_autenticado" not in st.session_state:
     st.session_state.user_uid = None
     st.session_state.lab_id = None
     st.session_state.rol = None
+    st.session_state.nombre_usuario = None
 
 # PANTALLA DE LOGIN
 if st.session_state.usuario_autenticado is None:
     st.markdown("<h1 style='text-align: center;'>🔬 Stck</h1>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center; color: gray;'>Gestión Inteligente de Inventario</p>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; color: gray;'>Gestión Inteligente de Inventario B2B</p>", unsafe_allow_html=True)
     
     col_espacio1, col_login, col_espacio2 = st.columns([1, 2, 1])
     with col_login:
-        tab_login, tab_reg = st.tabs(["🔐 Iniciar Sesión", "Crear Cuenta"])
+        tab_login, tab_reg = st.tabs(["🔐 Iniciar Sesión", "🏢 Crear Cuenta"])
         
         with tab_login:
             with st.container(border=True):
@@ -67,75 +65,76 @@ if st.session_state.usuario_autenticado is None:
                             res = supabase.auth.sign_in_with_password({"email": email_login, "password": pass_login})
                             email = res.user.email
                             uid = res.user.id
-                            
                             st.session_state.usuario_autenticado = email
                             st.session_state.user_uid = uid
                             
-                            # BUSCAR SI EL USUARIO ESTÁ EN LA LISTA DE INVITADOS
                             req_eq = supabase.table("equipo").select("*").eq("email", email).execute()
-                            
                             if req_eq.data:
                                 st.session_state.lab_id = req_eq.data[0]['lab_id']
                                 st.session_state.rol = req_eq.data[0]['rol']
+                                st.session_state.nombre_usuario = req_eq.data[0].get('nombre', email)
                             else:
-                                # AUTO-RESCATE PARA MARCELO (Si ya tiene reactivos a su nombre)
-                                leg = supabase.table("items").select("id").eq("lab_id", uid).limit(1).execute()
-                                if leg.data:
-                                    supabase.table("equipo").insert({"email": email, "lab_id": uid, "rol": "admin"}).execute()
-                                    st.session_state.lab_id = uid
-                                    st.session_state.rol = "admin"
-                                else:
-                                    st.session_state.lab_id = "PENDIENTE"
-                                    st.session_state.rol = "espera"
+                                st.session_state.lab_id = "PENDIENTE"
+                                st.session_state.rol = "espera"
+                                st.session_state.nombre_usuario = email
                             st.rerun()
                         except Exception as e:
                             st.error("Credenciales incorrectas.")
                             
         with tab_reg:
             with st.container(border=True):
-                st.info("Crea tu cuenta. Tu administrador deberá darte acceso luego.")
+                st.info("Únete a Stck. Completa tu perfil profesional.")
+                nombre_reg = st.text_input("Nombre y Apellido")
+                perfil_reg = st.selectbox("Perfil Académico/Profesional", ["Estudiante de Pregrado", "Estudiante de Doctorado/Postdoc", "Investigador Principal (PI)", "Lab Manager", "CEO / Fundador", "Otro"])
+                inst_reg = st.text_input("Universidad, Centro de Investigación o Empresa")
                 email_reg = st.text_input("Nuevo Correo")
                 pass_reg = st.text_input("Crear Contraseña (mín 6 caracteres)", type="password")
+                
                 if st.button("Crear Cuenta", type="primary", use_container_width=True):
-                    try:
-                        res = supabase.auth.sign_up({"email": email_reg, "password": pass_reg})
-                        st.success("¡Cuenta creada! Ya puedes iniciar sesión.")
-                    except Exception as e:
-                        st.error(f"Fallo al registrar: {e}")
+                    if not nombre_reg or not inst_reg:
+                        st.warning("Por favor completa tu Nombre y Universidad/Empresa.")
+                    else:
+                        try:
+                            res = supabase.auth.sign_up({"email": email_reg, "password": pass_reg})
+                            # Guardar la demografía en la tabla equipo (sin lab_id por ahora)
+                            supabase.table("equipo").insert({
+                                "email": email_reg, 
+                                "nombre": nombre_reg, 
+                                "perfil_academico": perfil_reg, 
+                                "institucion": inst_reg,
+                                "rol": "espera"
+                            }).execute()
+                            st.success("¡Cuenta creada! Tu administrador ya puede darte acceso.")
+                        except Exception as e:
+                            st.error(f"Fallo al registrar: {e}")
     st.stop()
 
-# --- PANTALLA DE "SALA DE ESPERA" (SIN ACCESO) ---
+# --- PANTALLA DE "SALA DE ESPERA" ---
 if st.session_state.lab_id == "PENDIENTE":
     st.warning("⏳ Sala de Espera")
-    st.write(f"Tu cuenta **{st.session_state.usuario_autenticado}** está activa, pero aún no has sido asignado a ningún laboratorio.")
+    st.write(f"Hola **{st.session_state.nombre_usuario}**. Tu cuenta está activa, pero aún no has sido asignado a ningún laboratorio.")
     st.write("👉 Pídele al administrador de tu laboratorio que añada tu correo al equipo.")
-    
     st.divider()
-    st.write("¿Eres el fundador de un laboratorio nuevo?")
-    if st.button("Crear mi propio espacio de trabajo (Ser Administrador)"):
-        supabase.table("equipo").insert({"email": st.session_state.usuario_autenticado, "lab_id": st.session_state.user_uid, "rol": "admin"}).execute()
+    st.write("¿Eres el administrador de un laboratorio nuevo?")
+    if st.button("Crear mi propio espacio de trabajo (Ser Admin)"):
+        supabase.table("equipo").update({"lab_id": st.session_state.user_uid, "rol": "admin"}).eq("email", st.session_state.usuario_autenticado).execute()
         st.session_state.lab_id = st.session_state.user_uid
         st.session_state.rol = "admin"
         st.rerun()
-    
     if st.button("🚪 Cerrar Sesión"):
         st.session_state.usuario_autenticado = None
         st.rerun()
     st.stop()
 
-# --- VARIABLES DE SESIÓN GLOBALES ---
+# --- VARIABLES GLOBALES ---
 lab_id = st.session_state.lab_id
-usuario_actual = st.session_state.usuario_autenticado
+usuario_actual = st.session_state.nombre_usuario
 
-if 'index' in st.query_params: st.session_state.index_orden = int(st.query_params['index'])
-elif 'index_orden' not in st.session_state: st.session_state.index_orden = 0
 if 'auto_search' not in st.session_state: st.session_state.auto_search = ""
-if 'triage_foto_procesada' not in st.session_state: st.session_state.triage_foto_procesada = -1
-if 'triage_datos_ia' not in st.session_state: st.session_state.triage_datos_ia = {}
 if "backup_inventario" not in st.session_state: st.session_state.backup_inventario = None
 def crear_punto_restauracion(df_actual): st.session_state.backup_inventario = df_actual.copy()
 
-def enviar_alerta_gmail(df_alertas, titulo="Reporte"):
+def enviar_correo_compras(item_nombre, precio, operador):
     try:
         sender = st.secrets["EMAIL_SENDER"]
         password = st.secrets["EMAIL_PASSWORD"]
@@ -143,9 +142,8 @@ def enviar_alerta_gmail(df_alertas, titulo="Reporte"):
         msg = MIMEMultipart()
         msg['From'] = sender
         msg['To'] = receiver
-        msg['Subject'] = f"🔬 {titulo} - Stck"
-        html_table = df_alertas[['nombre', 'ubicacion', 'posicion_caja', 'cantidad_actual', 'umbral_minimo', 'unidad']].to_html(index=False)
-        body = f"<html><body><h2>{titulo}</h2>{html_table}<br><p><i>Acción realizada por: {usuario_actual}</i></p></body></html>"
+        msg['Subject'] = f"🛒 SOLICITUD DE COMPRA: {item_nombre} - Stck"
+        body = f"<html><body><h2>Solicitud de Cotización / Compra</h2><p>Se ha solicitado reabastecer el siguiente ítem:</p><ul><li><b>Reactivo:</b> {item_nombre}</li><li><b>Último precio referencial:</b> ${precio}</li><li><b>Solicitado por:</b> {operador}</li></ul></body></html>"
         msg.attach(MIMEText(body, 'html'))
         server = smtplib.SMTP('smtp.gmail.com', 587)
         server.starttls()
@@ -155,228 +153,132 @@ def enviar_alerta_gmail(df_alertas, titulo="Reporte"):
         return True
     except: return False
 
-# --- LÓGICA DE DATOS AISLADA ---
-zonas_lab_fijas = ["Mesón", "Refrigerador 1 (4°C)", "Refrigerador 2 (4°C)", "Freezer -20°C", "Freezer -80°C", "Estante Químicos", "Estante Plásticos", "Gabinete Inflamables", "Otro"]
-cajones = [f"Cajón {i}" for i in range(1, 42)]
-zonas_lab = zonas_lab_fijas + cajones
-unidades_list = ["unidades", "mL", "uL", "cajas", "kits", "g", "mg", "bolsas"]
-
-def aplicar_estilos_inv(row):
-    cant = row.get('cantidad_actual', 0)
-    umb = row.get('umbral_minimo', 0) if pd.notnull(row.get('umbral_minimo', 0)) else 0
-    if cant <= 0: return ['background-color: #ffeaea; color: #a00'] * len(row)
-    if umb > 0 and cant <= umb: return ['background-color: #fff8e6; color: #850'] * len(row)
-    return [''] * len(row)
-
+# --- CARGA DE DATOS ---
 res_items = supabase.table("items").select("*").eq("lab_id", lab_id).execute()
 df = pd.DataFrame(res_items.data)
 
-for col in ['id', 'nombre', 'categoria', 'subcategoria', 'lote', 'ubicacion', 'posicion_caja', 'unidad']:
+for col in ['id', 'nombre', 'categoria', 'ubicacion', 'posicion_caja', 'unidad', 'fecha_vencimiento', 'fecha_cotizacion']:
     if col not in df.columns: df[col] = ""
-    df[col] = df[col].astype(str).replace(["nan", "None"], "")
-for col in ['cantidad_actual', 'umbral_minimo']:
+    df[col] = df[col].astype(str).replace(["nan", "None", "NaT"], "")
+for col in ['cantidad_actual', 'umbral_minimo', 'precio']:
     if col not in df.columns: df[col] = 0
-    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype(int)
-
-df['categoria'] = df['categoria'].replace("", "GENERAL")
-
-try: res_prot = supabase.table("protocolos").select("*").eq("lab_id", lab_id).execute(); df_prot = pd.DataFrame(res_prot.data)
-except: df_prot = pd.DataFrame(columns=["id", "nombre", "materiales_base"])
+    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
 # --- INTERFAZ PRINCIPAL ---
 col_logo, col_user = st.columns([3, 1])
 with col_logo: st.markdown("## 🔬 Stck")
 with col_user: 
-    st.info(f"👤 {usuario_actual} ({st.session_state.get('rol', 'Cargando...')})")
+    st.info(f"👤 {usuario_actual} ({st.session_state.get('rol', '...')})")
     if st.button("🚪 Cerrar Sesión"):
-        st.session_state.usuario_autenticado = None
-        st.session_state.lab_id = None
+        for key in list(st.session_state.keys()): del st.session_state[key]
         st.rerun()
 
 col_chat, col_mon = st.columns([1, 1.6], gap="large")
 
 with col_mon:
-    # Definir pestañas según el ROL
-    if st.session_state.rol == "admin":
-        tab_inv, tab_prot, tab_edit, tab_ia, tab_carga, tab_equipo = st.tabs(["📦 Inv", "🧪 Protocolos", "⚙️ Edit", "🗂️ Triage", "📥 Carga", "👥 Equipo"])
-    else:
-        tab_inv, tab_prot, tab_edit, tab_ia = st.tabs(["📦 Inv", "🧪 Protocolos", "⚙️ Edit", "🗂️ Triage"])
-        tab_carga = tab_equipo = None # Ocultar pestañas a miembros
+    if st.session_state.rol == "admin": tab_inv, tab_edit, tab_equipo = st.tabs(["📦 Inventario & Finanzas", "⚙️ Editar Masivo", "👥 Equipo"])
+    else: tab_inv, tab_edit = st.tabs(["📦 Inventario", "⚙️ Editar Masivo"])
     
     with tab_inv:
-        df_criticos = df[(df['cantidad_actual'] <= df['umbral_minimo']) & (df['umbral_minimo'] > 0)]
-        if not df_criticos.empty:
-            st.error("🚨 **Reactivos Críticos**")
-            st.dataframe(df_criticos[['nombre', 'ubicacion', 'posicion_caja', 'cantidad_actual', 'umbral_minimo', 'unidad']], use_container_width=True, hide_index=True)
-            if st.button("📧 Enviar Alerta Crítica", type="primary"):
-                if enviar_alerta_gmail(df_criticos, "Alerta de Stock Crítico"): st.success("Enviado")
-
-        busqueda = st.text_input("🔍 Buscar...", value=st.session_state.auto_search)
-        if busqueda != st.session_state.auto_search: st.session_state.auto_search = busqueda
+        # RADAR DE VENCIMIENTOS Y STOCK
+        if not df.empty:
+            df['vence_pronto'] = False
+            hoy = pd.to_datetime(date.today())
+            for idx, row in df.iterrows():
+                try:
+                    if row['fecha_vencimiento'] and str(row['fecha_vencimiento']).strip():
+                        fv = pd.to_datetime(row['fecha_vencimiento'])
+                        if (fv - hoy).days <= 30: df.at[idx, 'vence_pronto'] = True
+                except: pass
+            
+            df_vencidos = df[df['vence_pronto'] == True]
+            df_criticos = df[(df['cantidad_actual'] <= df['umbral_minimo']) & (df['umbral_minimo'] > 0)]
+            
+            if not df_vencidos.empty or not df_criticos.empty:
+                st.error("🚨 **Alertas de Laboratorio**")
+                if not df_criticos.empty: st.warning(f"⚠️ {len(df_criticos)} reactivos con stock crítico.")
+                if not df_vencidos.empty: st.warning(f"⚠️ {len(df_vencidos)} reactivos vencen en menos de 30 días.")
+        
+        # TABLA DE INVENTARIO COMPLETA VISIBLE
+        busqueda = st.text_input("🔍 Buscar reactivo...", value=st.session_state.auto_search)
         df_show = df[df['nombre'].str.contains(busqueda, case=False)] if busqueda else df
-        categorias = sorted(list(set([str(c).strip() for c in df_show['categoria'].unique() if str(c).strip() not in ["", "nan", "None"]])))
         
         if df.empty: st.info("Inventario vacío.")
         else:
-            for cat in categorias:
-                with st.expander(f"📁 {cat}"):
-                    subset_cat = df_show[df_show['categoria'].astype(str).str.strip() == cat].sort_values(by='nombre', key=lambda col: col.str.lower())
-                    st.dataframe(subset_cat[['nombre', 'cantidad_actual', 'unidad', 'ubicacion', 'posicion_caja', 'lote']].style.apply(aplicar_estilos_inv, axis=1), use_container_width=True, hide_index=True)
+            cols_mostrar = ['nombre', 'cantidad_actual', 'unidad', 'ubicacion', 'fecha_vencimiento']
+            st.dataframe(df_show[cols_mostrar], use_container_width=True, hide_index=True)
 
-    with tab_prot:
-        tab_ejecutar, tab_crear = st.tabs(["🚀 Ejecutar", "📝 Nuevo"])
-        with tab_ejecutar:
-            if df_prot.empty: st.info("Sin protocolos.")
-            else:
-                p_sel = st.selectbox("Protocolo:", df_prot['nombre'].tolist())
-                n_muestras = st.number_input("Muestras:", min_value=1, value=1)
-                if st.button("🔍 Previsualizar"):
-                    info_p = df_prot[df_prot['nombre'] == p_sel]['materiales_base'].values[0]
-                    descuentos = []
-                    for linea in info_p.split('\n'):
-                        if ":" in linea:
-                            partes = linea.split(":")
-                            item_db = df[df['nombre'].str.contains(partes[0].strip(), case=False, na=False)]
-                            if not item_db.empty:
-                                descuentos.append({"id": str(item_db.iloc[0]['id']), "Reactivo": item_db.iloc[0]['nombre'], "Stock": item_db.iloc[0]['cantidad_actual'], "Descuento": float(partes[1].strip()) * n_muestras, "Unidad": item_db.iloc[0]['unidad']})
-                    if descuentos:
-                        st.dataframe(pd.DataFrame(descuentos), hide_index=True)
-                        if st.button("✅ Descontar del Inventario", type="primary"):
-                            crear_punto_restauracion(df)
-                            for d in descuentos:
-                                supabase.table("items").update({"cantidad_actual": int(d["Stock"] - d["Descuento"])}).eq("id", d["id"]).execute()
-                                supabase.table("movimiento").insert({"item_id": d["id"], "nombre_item": d["Reactivo"], "cantidad_cambio": -d["Descuento"], "tipo": f"Uso Kit: {p_sel}", "usuario": usuario_actual, "lab_id": lab_id}).execute()
-                            st.rerun()
-
-        with tab_crear:
-            with st.form("form_nuevo_prot"):
-                n_prot = st.text_input("Nombre (Ej: PCR Mix)")
-                mat_base = st.text_area("Reactivos (Nombre : Cantidad)", placeholder="Taq Polimerasa : 0.5")
-                if st.form_submit_button("💾 Guardar"):
-                    supabase.table("protocolos").insert({"nombre": n_prot, "materiales_base": mat_base, "lab_id": lab_id}).execute()
-                    st.rerun()
-
-    with tab_edit:
-        st.markdown("### ✍️ Acciones Masivas")
-        if not df.empty:
-            cat_disp = ["Todas"] + sorted(list(set([str(c).strip() for c in df['categoria'].unique() if str(c).strip() not in ["", "nan", "None"]])))
-            filtro_cat = st.selectbox("Filtrar por Categoría:", cat_disp)
-            df_edit_view = (df if filtro_cat == "Todas" else df[df['categoria'].astype(str).str.strip() == filtro_cat]).copy()
-            df_edit_view.insert(0, '✅ Seleccionar', False)
-            cols_finales = ['✅ Seleccionar', 'nombre', 'cantidad_actual', 'umbral_minimo', 'unidad', 'ubicacion', 'posicion_caja', 'lote', 'id']
+        # MÓDULO FINANCIERO (SOLO ADMIN)
+        if st.session_state.rol == "admin" and not df.empty:
+            st.markdown("---")
+            st.markdown("### 🛒 Panel Financiero y Compras")
+            st.write("Solicita nuevas cotizaciones o reabastece reactivos directamente.")
             
-            edited_df = st.data_editor(df_edit_view[cols_finales].copy(), column_config={"id": st.column_config.TextColumn("ID", disabled=True)}, use_container_width=True, hide_index=True)
-            seleccionados = edited_df[edited_df['✅ Seleccionar'] == True]
+            c_comp1, c_comp2 = st.columns([2, 1])
+            with c_comp1:
+                item_compra = st.selectbox("Seleccionar Reactivo a Comprar:", df['nombre'].tolist())
+                datos_item = df[df['nombre'] == item_compra].iloc[0]
+                
+                fecha_cot = datos_item['fecha_cotizacion'] if datos_item['fecha_cotizacion'] else "Nunca"
+                precio_ref = datos_item['precio'] if datos_item['precio'] > 0 else "No registrado"
+                
+                st.caption(f"**Última cotización:** {fecha_cot} | **Precio Referencial:** ${precio_ref}")
             
-            if not seleccionados.empty:
-                st.success(f"🛠️ **{len(seleccionados)} seleccionados:**")
-                c_acc1, c_acc2, c_acc3 = st.columns([1, 1, 1.5])
+            with c_comp2:
+                st.write("") # Espaciador
+                st.write("")
+                # DOBLE CHEQUEO PARA COMPRAR
+                if st.button("🛒 Iniciar Solicitud", use_container_width=True):
+                    st.session_state.confirmar_compra = item_compra
                 
-                if c_acc1.button("🗑️ Eliminar", use_container_width=True):
-                    crear_punto_restauracion(df)
-                    for id_borrar in seleccionados['id']: supabase.table("items").delete().eq("id", str(id_borrar)).execute()
-                    st.rerun()
-                
-                if c_acc2.button("📧 Enviar Lista", use_container_width=True):
-                    if enviar_alerta_gmail(seleccionados, "Reporte Especial"): st.success("Enviado.")
-
-                nueva_ub = c_acc3.selectbox("Mover a...", ["(Elige)"] + zonas_lab, label_visibility="collapsed")
-                if nueva_ub != "(Elige)":
-                    if c_acc3.button("Confirmar Traslado", type="primary"):
-                        crear_punto_restauracion(df)
-                        for id_mover in seleccionados['id']: supabase.table("items").update({"ubicacion": nueva_ub}).eq("id", str(id_mover)).execute()
+                if st.session_state.get('confirmar_compra') == item_compra:
+                    st.warning("¿Confirmas enviar correo a adquisiciones?")
+                    c_si, c_no = st.columns(2)
+                    if c_si.button("✅ Enviar", type="primary"):
+                        enviar_correo_compras(item_compra, precio_ref, usuario_actual)
+                        st.success("Solicitud enviada.")
+                        st.session_state.confirmar_compra = None
+                        st.rerun()
+                    if c_no.button("❌ Cancelar"):
+                        st.session_state.confirmar_compra = None
                         st.rerun()
 
-            st.markdown("---")
+    with tab_edit:
+        st.markdown("### ✍️ Edición (Precios y Fechas)")
+        if not df.empty:
+            cols_edit = ['nombre', 'cantidad_actual', 'precio', 'fecha_vencimiento', 'fecha_cotizacion', 'id']
+            edited_df = st.data_editor(df[cols_edit].copy(), column_config={"id": st.column_config.TextColumn("ID", disabled=True)}, use_container_width=True, hide_index=True)
+            
             if st.button("💾 Guardar Cambios Manuales"):
-                crear_punto_restauracion(df)
-                modificados = edited_df[edited_df['✅ Seleccionar'] == False].drop(columns=['✅ Seleccionar'])
-                for _, row in modificados.iterrows():
+                for _, row in edited_df.iterrows():
                     d = row.replace({np.nan: None}).to_dict()
                     if 'id' in d and str(d['id']).strip(): 
                         d['lab_id'] = lab_id 
                         supabase.table("items").upsert(d).execute()
+                st.success("Guardado.")
                 st.rerun()
 
-    with tab_ia:
-        st.markdown("### 📸 Triage")
-        if df.empty: st.info("Inventario vacío.")
-        elif st.session_state.index_orden >= len(df):
-            if st.button("🔄 Reiniciar"): st.session_state.index_orden = 0; st.query_params['index'] = 0; st.rerun()
-        else:
-            item_actual = df.iloc[st.session_state.index_orden]
-            if st.session_state.triage_foto_procesada != st.session_state.index_orden: st.session_state.triage_datos_ia = item_actual.to_dict()
-            st.progress(st.session_state.index_orden / len(df))
-            st.markdown(f"**Validando:** {item_actual['nombre']}")
-            
-            col_f, col_d = st.columns([1, 1.2], gap="large")
-            with col_f:
-                foto_ord = st.camera_input("Capturar", key=f"cam_{st.session_state.index_orden}")
-                if st.button("⏭️ Saltar", use_container_width=True): st.session_state.index_orden += 1; st.query_params['index'] = st.session_state.index_orden; st.rerun()
-                if foto_ord and st.session_state.triage_foto_procesada != st.session_state.index_orden:
-                    with st.spinner("Leyendo..."):
-                        try:
-                            res_v = model.generate_content([f"Extrae de '{item_actual['nombre']}': categoria, lote, unidad, cantidad_actual. JSON: {{\"categoria\": \"\", \"lote\": \"\", \"unidad\": \"\", \"cantidad_actual\": 0}}", Image.open(foto_ord).convert('RGB')]).text
-                            for k, v in json.loads(re.search(r'\{.*\}', res_v, re.DOTALL).group()).items():
-                                if v and str(v).strip() not in ["", "0", "None"]: st.session_state.triage_datos_ia[k] = v
-                            st.session_state.triage_foto_procesada = st.session_state.index_orden
-                            st.rerun()
-                        except: st.error("No se pudo leer.")
-
-            with col_d:
-                dat = st.session_state.triage_datos_ia
-                with st.form(f"form_{st.session_state.index_orden}"):
-                    n_n = st.text_input("Nombre", dat.get('nombre', ''))
-                    c_1, c_2 = st.columns([1.5, 1])
-                    n_u = c_1.selectbox("Zona", zonas_lab, index=zonas_lab.index(dat.get('ubicacion')) if dat.get('ubicacion') in zonas_lab else zonas_lab.index("Mesón"))
-                    n_p = c_2.text_input("Caja", dat.get('posicion_caja', ''))
-                    n_c = st.number_input("Cantidad", value=int(dat.get('cantidad_actual', 0)))
-                    n_un = st.selectbox("Unidad", unidades_list, index=unidades_list.index(dat.get('unidad')) if dat.get('unidad') in unidades_list else 0)
-                    if st.form_submit_button("💾 Guardar", type="primary"):
-                        supabase.table("items").update({"nombre": n_n, "ubicacion": n_u, "posicion_caja": n_p, "cantidad_actual": n_c, "unidad": n_un}).eq("id", str(item_actual['id'])).execute()
-                        st.session_state.index_orden += 1; st.query_params['index'] = st.session_state.index_orden; st.rerun()
-
-    if tab_carga:
-        with tab_carga:
-            if st.button("🗑️ VACIAR INVENTARIO", type="primary", disabled=not st.checkbox("Confirmar")):
-                supabase.table("movimiento").delete().eq("lab_id", lab_id).execute()
-                supabase.table("items").delete().eq("lab_id", lab_id).execute()
-                st.rerun()
-            archivo_excel = st.file_uploader("Sube tu Excel", type=["xlsx", "csv"])
-            if archivo_excel and st.button("🚀 Subir al Inventario"):
-                df_n = pd.read_csv(archivo_excel) if archivo_excel.name.endswith('.csv') else pd.read_excel(archivo_excel, engine='openpyxl')
-                df_s = df_n.rename(columns={"Nombre": "nombre", "Formato": "unidad", "cantidad": "cantidad_actual", "Detalle": "lote", "ubicación": "ubicacion", "categoria": "categoria"})
-                if 'posicion_caja' not in df_s.columns: df_s['posicion_caja'] = ""
-                df_s['cantidad_actual'] = df_s['cantidad_actual'].astype(str).str.extract(r'(\d+)')[0].fillna(0).astype(int)
-                df_s['lab_id'] = lab_id 
-                supabase.table("items").insert(df_s[["nombre", "unidad", "cantidad_actual", "lote", "ubicacion", "posicion_caja", "categoria", "lab_id"]].replace({np.nan: None}).to_dict(orient="records")).execute()
-                st.rerun()
-
-    # --- PESTAÑA EXCLUSIVA PARA ADMINISTRADORES ---
-    if tab_equipo:
+    if st.session_state.rol == "admin":
         with tab_equipo:
             st.markdown("### 🤝 Gestión de Accesos")
-            st.write("Añade los correos de tu equipo para darles acceso a este inventario.")
+            with st.container(border=True):
+                nuevo_email = st.text_input("Correo electrónico a invitar:")
+                rol_nuevo = st.selectbox("Rol:", ["miembro", "admin"])
+                if st.button("Dar Acceso", type="primary", use_container_width=True):
+                    try:
+                        # Actualizamos el lab_id y rol si el usuario ya se registró y estaba en espera
+                        res = supabase.table("equipo").update({"lab_id": lab_id, "rol": rol_nuevo}).eq("email", nuevo_email).execute()
+                        if len(res.data) == 0:
+                            st.warning("Ese correo aún no se ha registrado en Stck. Pídele que cree una cuenta primero para llenar sus datos demográficos.")
+                        else: st.success(f"Acceso otorgado a {nuevo_email}.")
+                    except Exception as e: st.error(f"Error: {e}")
             
-            c_eq1, c_eq2 = st.columns(2)
-            with c_eq1:
-                with st.container(border=True):
-                    nuevo_email = st.text_input("Correo electrónico a invitar:")
-                    rol_nuevo = st.selectbox("Rol:", ["miembro", "admin"])
-                    if st.button("Dar Acceso", type="primary", use_container_width=True):
-                        if nuevo_email:
-                            try:
-                                supabase.table("equipo").insert({"email": nuevo_email, "lab_id": lab_id, "rol": rol_nuevo}).execute()
-                                st.success(f"Acceso otorgado a {nuevo_email}.")
-                            except: st.error("Ese usuario ya está en el equipo o hubo un error.")
-                        
-            with c_eq2:
-                st.write("**Miembros con Acceso:**")
-                try:
-                    miembros = supabase.table("equipo").select("email, rol").eq("lab_id", lab_id).execute()
-                    df_miembros = pd.DataFrame(miembros.data)
-                    st.dataframe(df_miembros, hide_index=True, use_container_width=True)
-                except: st.info("No hay miembros agregados.")
+            st.write("**Miembros con Acceso:**")
+            try:
+                miembros = supabase.table("equipo").select("nombre, email, rol, perfil_academico, institucion").eq("lab_id", lab_id).execute()
+                df_miembros = pd.DataFrame(miembros.data)
+                st.dataframe(df_miembros, hide_index=True, use_container_width=True)
+            except: st.info("No hay miembros agregados.")
 
 # --- PANEL IA ---
 with col_chat:
@@ -393,26 +295,24 @@ with col_chat:
     if prompt:
         st.session_state.messages.append({"role": "user", "content": prompt})
         with chat_box: st.chat_message("user").markdown(prompt)
-        
         with st.chat_message("assistant"):
             with st.spinner("Pensando..."):
                 try:
-                    d_ia = df[['id', 'nombre', 'cantidad_actual', 'ubicacion', 'posicion_caja']].to_json(orient='records') if not df.empty else "[]"
-                    res_ai = model.generate_content(f"Inventario: {d_ia}\nUsa id si existe, si no 'NUEVO'. JSON: EJECUTAR_ACCION:{{\"id\":\"\",\"nombre\":\"\",\"cantidad\":0,\"unidad\":\"\",\"ubicacion\":\"\",\"posicion_caja\":\"\"}}\nUsuario: {prompt}").text
+                    d_ia = df[['id', 'nombre', 'cantidad_actual', 'ubicacion']].to_json(orient='records') if not df.empty else "[]"
+                    res_ai = model.generate_content(f"Inventario: {d_ia}\nUsa id si existe, si no 'NUEVO'. JSON: EJECUTAR_ACCION:{{\"id\":\"\",\"nombre\":\"\",\"cantidad\":0,\"unidad\":\"\",\"ubicacion\":\"\"}}\nUsuario: {prompt}").text
                     if "EJECUTAR_ACCION:" in res_ai:
                         data = json.loads(re.search(r'\{.*\}', res_ai, re.DOTALL).group())
                         id_ac = str(data.get('id', 'NUEVO'))
                         if id_ac != "NUEVO" and (not df.empty and id_ac in df['id'].astype(str).values):
-                            supabase.table("items").update({"cantidad_actual": data['cantidad'], "ubicacion": data['ubicacion'], "posicion_caja": data.get('posicion_caja', '')}).eq("id", id_ac).execute()
+                            supabase.table("items").update({"cantidad_actual": data['cantidad'], "ubicacion": data['ubicacion']}).eq("id", id_ac).execute()
                             itm = supabase.table("items").select("*").eq("id", id_ac).execute().data[0]
                             supabase.table("movimiento").insert({"item_id": id_ac, "nombre_item": itm['nombre'], "cantidad_cambio": data['cantidad'], "tipo": "Acción IA", "usuario": usuario_actual, "lab_id": lab_id}).execute()
                             msg = f"✅ **Actualizado:** {itm['nombre']} | Stock: {itm['cantidad_actual']}"
                         else:
-                            res_ins = supabase.table("items").insert({"nombre": data['nombre'], "cantidad_actual": data['cantidad'], "unidad": data['unidad'], "ubicacion": data['ubicacion'], "posicion_caja": data.get('posicion_caja', ''), "lab_id": lab_id}).execute()
-                            if res_ins.data:
-                                itm = res_ins.data[0]
-                                supabase.table("movimiento").insert({"item_id": str(itm['id']), "nombre_item": itm['nombre'], "cantidad_cambio": itm['cantidad_actual'], "tipo": "Nuevo IA", "usuario": usuario_actual, "lab_id": lab_id}).execute()
-                                msg = f"📦 **Creado:** {itm['nombre']} | Stock: {itm['cantidad_actual']}"
+                            res_ins = supabase.table("items").insert({"nombre": data['nombre'], "cantidad_actual": data['cantidad'], "unidad": data['unidad'], "ubicacion": data['ubicacion'], "lab_id": lab_id}).execute()
+                            itm = res_ins.data[0]
+                            supabase.table("movimiento").insert({"item_id": str(itm['id']), "nombre_item": itm['nombre'], "cantidad_cambio": itm['cantidad_actual'], "tipo": "Nuevo IA", "usuario": usuario_actual, "lab_id": lab_id}).execute()
+                            msg = f"📦 **Creado:** {itm['nombre']} | Stock: {itm['cantidad_actual']}"
                         
                         st.session_state.auto_search = itm['nombre']
                         st.markdown(msg)
