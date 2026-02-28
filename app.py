@@ -5,14 +5,14 @@ import pandas as pd
 import json
 import re
 from streamlit_mic_recorder import speech_to_text
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 import numpy as np
 from PIL import Image
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
-# --- 1. CONFIGURACIÓN Y ESTÉTICA MEJORADA ---
+# --- 1. CONFIGURACIÓN Y ESTÉTICA ---
 st.set_page_config(page_title="Stck", layout="wide", page_icon="🔬")
 
 st.markdown("""
@@ -23,14 +23,7 @@ st.markdown("""
     div[data-testid="stContainer"] { border-radius: 10px; border-color: #f0f0f0; }
     .stTabs [data-baseweb="tab-list"] { gap: 15px; border-bottom: 1px solid #f0f0f0; }
     .stTabs [data-baseweb="tab"] { height: 50px; background-color: transparent; border-radius: 4px 4px 0px 0px; color: #888; font-weight: 500; }
-    
-    /* FIX DE COLOR DE PESTAÑAS: Fondo negro, letra blanca obligatoria */
-    .stTabs [aria-selected="true"] { 
-        color: #ffffff !important; 
-        background-color: #1a1a1a !important; 
-        border-bottom: 2px solid #1a1a1a !important; 
-    }
-    
+    .stTabs [aria-selected="true"] { color: #ffffff !important; background-color: #1a1a1a !important; border-bottom: 2px solid #1a1a1a !important; }
     .stButton>button { border-radius: 8px; font-weight: 500; }
 </style>
 """, unsafe_allow_html=True)
@@ -46,7 +39,7 @@ except Exception as e:
 def cargar_modelo_rapido(): return genai.GenerativeModel('gemini-2.5-flash')
 model = cargar_modelo_rapido()
 
-# --- 2. SISTEMA DE AUTENTICACIÓN (CON AUTO-LOGIN) ---
+# --- 2. SISTEMA DE AUTENTICACIÓN ---
 if "usuario_autenticado" not in st.session_state:
     st.session_state.usuario_autenticado = None
     st.session_state.user_uid = None
@@ -61,7 +54,6 @@ if st.session_state.usuario_autenticado is None:
     col_espacio1, col_login, col_espacio2 = st.columns([1, 2, 1])
     with col_login:
         tab_login, tab_reg = st.tabs(["🔐 Iniciar Sesión", "🏢 Crear Cuenta"])
-        
         with tab_login:
             with st.container(border=True):
                 email_login = st.text_input("Correo corporativo", key="log_email")
@@ -89,23 +81,18 @@ if st.session_state.usuario_autenticado is None:
             with st.container(border=True):
                 tipo_cuenta = st.radio("¿Qué tipo de cuenta deseas crear?", ["Laboratorio", "Proveedor (Ventas)"], horizontal=True)
                 st.markdown("---")
-                
                 if tipo_cuenta == "Laboratorio":
                     nombre_reg = st.text_input("Nombre y Apellido")
                     perfil_reg = st.selectbox("Perfil Académico", ["Pregrado", "Doctorado/Postdoc", "PI", "Lab Manager", "CEO", "Otro"])
                     inst_reg = st.text_input("Universidad o Empresa")
                     email_reg = st.text_input("Nuevo Correo")
                     pass_reg = st.text_input("Crear Contraseña", type="password")
-                    
                     if st.button("Crear Cuenta y Entrar", type="primary", use_container_width=True):
                         if not nombre_reg: st.warning("Falta el nombre.")
                         else:
                             try:
-                                # Registro
                                 supabase.auth.sign_up({"email": email_reg.strip(), "password": pass_reg})
                                 supabase.table("equipo").insert({"email": email_reg.strip().lower(), "nombre": nombre_reg, "perfil_academico": perfil_reg, "institucion": inst_reg, "rol": "espera"}).execute()
-                                
-                                # Auto-Login automático
                                 res_login = supabase.auth.sign_in_with_password({"email": email_reg.strip(), "password": pass_reg})
                                 st.session_state.usuario_autenticado = res_login.user.email
                                 st.session_state.user_uid = res_login.user.id
@@ -114,21 +101,16 @@ if st.session_state.usuario_autenticado is None:
                                 st.session_state.nombre_usuario = nombre_reg
                                 st.rerun()
                             except Exception as e: st.error(f"Error: {e}")
-                
                 else:
                     empresa_prov = st.text_input("Nombre de la Empresa / Marca")
                     email_prov = st.text_input("Correo de Ventas")
                     pass_prov = st.text_input("Contraseña de Proveedor", type="password")
-                    
                     if st.button("Registrar Empresa y Entrar", type="primary", use_container_width=True):
                         if not empresa_prov: st.warning("Pon el nombre de la empresa.")
                         else:
                             try:
-                                # Registro
                                 res_up = supabase.auth.sign_up({"email": email_prov.strip(), "password": pass_prov})
                                 supabase.table("equipo").insert({"email": email_prov.strip().lower(), "nombre": empresa_prov, "lab_id": res_up.user.id, "rol": "proveedor"}).execute()
-                                
-                                # Auto-Login automático
                                 res_login = supabase.auth.sign_in_with_password({"email": email_prov.strip(), "password": pass_prov})
                                 st.session_state.usuario_autenticado = res_login.user.email
                                 st.session_state.user_uid = res_login.user.id
@@ -139,7 +121,6 @@ if st.session_state.usuario_autenticado is None:
                             except Exception as e: st.error("Error al registrar.")
     st.stop()
 
-# --- RUTEO DE ACCESOS EN ESPERA ---
 if st.session_state.lab_id == "PENDIENTE":
     st.warning("⏳ Sala de Espera")
     st.write("Tu cuenta está activa, pero no tienes un laboratorio asignado.")
@@ -221,16 +202,13 @@ with col_user:
 if rol_actual == "proveedor":
     st.markdown("### 🚚 Portal de Proveedores Stck")
     tab_prov_cat, tab_prov_carga = st.tabs(["📦 Mi Catálogo Ofertado", "📥 Subir Lista de Precios"])
-    
     with tab_prov_cat:
         st.write("Estos son los reactivos que tu empresa tiene disponibles en la red Stck.")
         if df.empty: st.info("No has subido ningún producto todavía.")
         else:
             cols_prov = ['nombre', 'categoria', 'precio', 'unidad']
             st.dataframe(df[cols_prov], use_container_width=True, hide_index=True)
-            
     with tab_prov_carga:
-        st.write("Sube tu Excel con tu catálogo. Columnas requeridas: `nombre`, `precio`, `categoria`, `unidad`.")
         archivo_excel = st.file_uploader("Sube tu Excel de Catálogo", type=["xlsx", "csv"])
         if archivo_excel and st.button("🚀 Cargar Productos a la Red"):
             df_n = pd.read_csv(archivo_excel) if archivo_excel.name.endswith('.csv') else pd.read_excel(archivo_excel, engine='openpyxl')
@@ -238,12 +216,10 @@ if rol_actual == "proveedor":
             for c in ["ubicacion", "posicion_caja", "lote"]: df_s[c] = "Bodega Proveedor"
             df_s['cantidad_actual'] = 9999 
             df_s['lab_id'] = lab_id 
-            
             cols_guardar = [c for c in df_s.columns if c in ['nombre', 'precio', 'categoria', 'unidad', 'ubicacion', 'posicion_caja', 'lote', 'cantidad_actual', 'lab_id']]
             supabase.table("items").insert(df_s[cols_guardar].replace({np.nan: None}).to_dict(orient="records")).execute()
             st.success("¡Catálogo actualizado con éxito!")
             st.rerun()
-            
     st.stop()
 
 # =====================================================================
@@ -253,7 +229,7 @@ col_chat, col_mon = st.columns([1, 1.6], gap="large")
 
 with col_mon:
     if rol_actual == "admin": 
-        tab_inv, tab_prot, tab_edit, tab_carga, tab_equipo = st.tabs(["📦 Inventario", "🧪 Protocolos", "⚙️ Edición & Compras", "📥 Carga", "👥 Equipo"])
+        tab_inv, tab_prot, tab_edit, tab_analisis, tab_equipo = st.tabs(["📦 Inv", "🧪 Prot", "⚙️ Edit", "📊 Analítica", "👥 Equipo"])
     else: 
         tab_inv, tab_prot, tab_edit = st.tabs(["📦 Inventario", "🧪 Protocolos", "⚙️ Edición"])
     
@@ -276,8 +252,7 @@ with col_mon:
                 if not df_criticos.empty: 
                     st.warning(f"⚠️ **{len(df_criticos)} Reactivos Críticos / Fuera de Stock**")
                     st.dataframe(df_criticos[['nombre', 'cantidad_actual', 'ubicacion']], use_container_width=True, hide_index=True)
-                if not df_vencidos.empty: 
-                    st.warning(f"📅 **{len(df_vencidos)} Reactivos Vencen en < 30 días**")
+                if not df_vencidos.empty: st.warning(f"📅 **{len(df_vencidos)} Reactivos Vencen en < 30 días**")
         
         st.markdown("### 🗂️ Catálogo de Reactivos")
         busqueda = st.text_input("🔍 Buscar reactivo...", value=st.session_state.auto_search)
@@ -363,20 +338,53 @@ with col_mon:
                         st.rerun()
 
     if rol_actual == "admin":
-        with tab_carga:
-            if st.button("🗑️ VACIAR INVENTARIO", type="primary", disabled=not st.checkbox("Confirmar")):
-                supabase.table("movimiento").delete().eq("lab_id", lab_id).execute()
-                supabase.table("items").delete().eq("lab_id", lab_id).execute()
-                st.rerun()
-            archivo_excel = st.file_uploader("Sube tu Excel", type=["xlsx", "csv"])
-            if archivo_excel and st.button("🚀 Subir al Inventario"):
-                df_n = pd.read_csv(archivo_excel) if archivo_excel.name.endswith('.csv') else pd.read_excel(archivo_excel, engine='openpyxl')
-                df_s = df_n.rename(columns={"Nombre": "nombre", "Formato": "unidad", "cantidad": "cantidad_actual", "Detalle": "lote", "ubicación": "ubicacion", "categoria": "categoria"})
-                if 'posicion_caja' not in df_s.columns: df_s['posicion_caja'] = ""
-                df_s['cantidad_actual'] = df_s['cantidad_actual'].astype(str).str.extract(r'(\d+)')[0].fillna(0).astype(int)
-                df_s['lab_id'] = lab_id 
-                supabase.table("items").insert(df_s[["nombre", "unidad", "cantidad_actual", "lote", "ubicacion", "posicion_caja", "categoria", "lab_id"]].replace({np.nan: None}).to_dict(orient="records")).execute()
-                st.rerun()
+        # 📊 EL NUEVO MOTOR DE PREDICCIONES
+        with tab_analisis:
+            st.markdown("### 📈 Predicción de Consumo (Burn Rate)")
+            st.write("Stck analiza el historial de movimientos de tu laboratorio en los últimos 30 días para calcular a qué velocidad se gastan los reactivos y estimar cuándo te quedarás sin stock.")
+            
+            with st.spinner("Analizando Big Data del laboratorio..."):
+                res_mov = supabase.table("movimiento").select("*").eq("lab_id", lab_id).execute()
+                df_mov = pd.DataFrame(res_mov.data)
+                
+                if not df_mov.empty and not df.empty:
+                    df_mov['created_at'] = pd.to_datetime(df_mov['created_at']).dt.tz_localize(None)
+                    # Filtramos solo cuando se sacaron reactivos (cantidad negativa)
+                    df_consumos = df_mov[df_mov['cantidad_cambio'] < 0].copy()
+                    df_consumos['cantidad_cambio'] = df_consumos['cantidad_cambio'].abs()
+                    
+                    # Filtramos últimos 30 días
+                    hace_30_dias = pd.to_datetime(date.today()) - timedelta(days=30)
+                    df_ultimos_30 = df_consumos[df_consumos['created_at'] >= hace_30_dias]
+                    
+                    if not df_ultimos_30.empty:
+                        # Sumar todo lo que se gastó de cada ítem
+                        resumen = df_ultimos_30.groupby('nombre_item')['cantidad_cambio'].sum().reset_index()
+                        resumen = resumen.rename(columns={'cantidad_cambio': 'consumo_30d'})
+                        
+                        # Juntarlo con el inventario actual
+                        df_pred = pd.merge(df[['nombre', 'cantidad_actual', 'unidad']], resumen, left_on='nombre', right_on='nombre_item', how='inner')
+                        
+                        # Matemáticas: Tasa diaria = gasto / 30 días
+                        df_pred['tasa_diaria'] = df_pred['consumo_30d'] / 30
+                        # Días restantes = stock actual / tasa diaria
+                        df_pred['dias_restantes'] = np.where(df_pred['tasa_diaria'] > 0, df_pred['cantidad_actual'] / df_pred['tasa_diaria'], 9999)
+                        
+                        # Formatear visualmente
+                        df_pred['dias_restantes_num'] = df_pred['dias_restantes']
+                        df_pred['dias_restantes'] = df_pred['dias_restantes'].apply(lambda x: "🚨 Se agota hoy/mañana" if x <= 1.5 else f"Aprox {int(x)} días")
+                        df_pred['tasa_diaria'] = df_pred['tasa_diaria'].round(2)
+                        
+                        st.dataframe(
+                            df_pred[['nombre', 'cantidad_actual', 'unidad', 'consumo_30d', 'tasa_diaria', 'dias_restantes']]
+                            .sort_values(by='dias_restantes_num', ascending=True)
+                            .drop(columns=['dias_restantes_num']), 
+                            use_container_width=True, hide_index=True
+                        )
+                    else:
+                        st.info("💡 Aún no hay suficientes retiros de reactivos registrados en los últimos 30 días para hacer una proyección matemática.")
+                else:
+                    st.info("💡 Registra movimientos en la tabla (sacando reactivos) para que Stck pueda aprender tu ritmo de consumo.")
 
         with tab_equipo:
             st.markdown("### 🤝 Gestión de Accesos")
@@ -394,14 +402,11 @@ with col_mon:
                             st.success(f"Acceso otorgado a {nuevo_email}.")
                             st.rerun() 
                         except Exception as e: st.error(f"Error: {e}")
-            
             st.write("**Miembros con Acceso Activo:**")
             try:
                 miembros = supabase.table("equipo").select("nombre, email, rol, perfil_academico, institucion").eq("lab_id", lab_id).execute()
-                if miembros.data:
-                    st.dataframe(pd.DataFrame(miembros.data), hide_index=True, use_container_width=True)
-                else:
-                    st.info("No hay miembros agregados.")
+                if miembros.data: st.dataframe(pd.DataFrame(miembros.data), hide_index=True, use_container_width=True)
+                else: st.info("No hay miembros agregados.")
             except: st.info("Cargando miembros...")
 
 # --- PANEL IA ---
@@ -474,9 +479,13 @@ with col_chat:
                         data = json.loads(re.search(r'\{.*\}', res_ai, re.DOTALL).group())
                         id_ac = str(data.get('id', 'NUEVO'))
                         if id_ac != "NUEVO" and (not df.empty and id_ac in df['id'].astype(str).values):
+                            # Calcular la diferencia para el registro
+                            stock_viejo = df[df['id'].astype(str) == id_ac].iloc[0]['cantidad_actual']
+                            cambio = data['cantidad'] - stock_viejo
+                            
                             supabase.table("items").update({"cantidad_actual": data['cantidad'], "ubicacion": data.get('ubicacion', '')}).eq("id", id_ac).execute()
                             itm = supabase.table("items").select("*").eq("id", id_ac).execute().data[0]
-                            supabase.table("movimiento").insert({"item_id": id_ac, "nombre_item": itm['nombre'], "cantidad_cambio": data['cantidad'], "tipo": "Acción IA", "usuario": usuario_actual, "lab_id": lab_id}).execute()
+                            supabase.table("movimiento").insert({"item_id": id_ac, "nombre_item": itm['nombre'], "cantidad_cambio": cambio, "tipo": "Acción IA", "usuario": usuario_actual, "lab_id": lab_id}).execute()
                             msg = f"✅ **Actualizado:** {itm['nombre']} | Stock: {itm['cantidad_actual']}"
                         else:
                             res_ins = supabase.table("items").insert({"nombre": data['nombre'], "cantidad_actual": data['cantidad'], "unidad": data['unidad'], "ubicacion": data.get('ubicacion', ''), "lab_id": lab_id}).execute()
