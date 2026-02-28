@@ -5,7 +5,7 @@ import pandas as pd
 import json
 import re
 from streamlit_mic_recorder import speech_to_text
-from datetime import datetime, date, timedelta
+from datetime import datetime, date
 import numpy as np
 from PIL import Image
 import smtplib
@@ -53,7 +53,8 @@ if st.session_state.usuario_autenticado is None:
     
     col_espacio1, col_login, col_espacio2 = st.columns([1, 2, 1])
     with col_login:
-        tab_login, tab_reg, tab_prov = st.tabs(["🔐 Iniciar Sesión", "🏢 Crear Cuenta Lab", "🚚 Portal Proveedores"])
+        # PESTAÑAS UNIFICADAS
+        tab_login, tab_reg = st.tabs(["🔐 Iniciar Sesión", "🏢 Crear Cuenta"])
         
         with tab_login:
             with st.container(border=True):
@@ -62,7 +63,7 @@ if st.session_state.usuario_autenticado is None:
                 if st.button("Acceder a Stck", type="primary", use_container_width=True):
                     with st.spinner("Autenticando..."):
                         try:
-                            res = supabase.auth.sign_in_with_password({"email": email_login, "password": pass_login})
+                            res = supabase.auth.sign_in_with_password({"email": email_login.strip(), "password": pass_login})
                             st.session_state.usuario_autenticado = res.user.email
                             st.session_state.user_uid = res.user.id
                             
@@ -80,36 +81,41 @@ if st.session_state.usuario_autenticado is None:
                             
         with tab_reg:
             with st.container(border=True):
-                st.info("Laboratorios: Completa tu perfil científico.")
-                nombre_reg = st.text_input("Nombre y Apellido")
-                perfil_reg = st.selectbox("Perfil Académico", ["Pregrado", "Doctorado/Postdoc", "PI", "Lab Manager", "CEO", "Otro"])
-                inst_reg = st.text_input("Universidad o Empresa")
-                email_reg = st.text_input("Nuevo Correo")
-                pass_reg = st.text_input("Crear Contraseña", type="password")
-                if st.button("Crear Cuenta de Laboratorio", type="primary", use_container_width=True):
-                    if not nombre_reg: st.warning("Falta el nombre.")
-                    else:
-                        try:
-                            res = supabase.auth.sign_up({"email": email_reg, "password": pass_reg})
-                            supabase.table("equipo").insert({"email": email_reg, "nombre": nombre_reg, "perfil_academico": perfil_reg, "institucion": inst_reg, "rol": "espera"}).execute()
-                            st.success("¡Cuenta creada! Tu administrador ya puede darte acceso.")
-                        except Exception as e: st.error(f"Error: {e}")
-
-        with tab_prov:
-            with st.container(border=True):
-                st.info("Proveedores: Únete para ofrecer tu catálogo a la red Stck.")
-                empresa_prov = st.text_input("Nombre de la Empresa / Marca")
-                email_prov = st.text_input("Correo de Ventas")
-                pass_prov = st.text_input("Contraseña de Proveedor", type="password")
+                # SELECTOR DE TIPO DE CUENTA
+                tipo_cuenta = st.radio("¿Qué tipo de cuenta deseas crear?", ["Laboratorio", "Proveedor (Ventas)"], horizontal=True)
+                st.markdown("---")
                 
-                if st.button("Registrar Empresa Proveedora", type="primary", use_container_width=True):
-                    if not empresa_prov: st.warning("Pon el nombre de la empresa.")
-                    else:
-                        try:
-                            res = supabase.auth.sign_up({"email": email_prov, "password": pass_prov})
-                            supabase.table("equipo").insert({"email": email_prov, "nombre": empresa_prov, "lab_id": res.user.id, "rol": "proveedor"}).execute()
-                            st.success("Empresa registrada. Ve a 'Iniciar Sesión' para entrar.")
-                        except Exception as e: st.error("Error al registrar.")
+                if tipo_cuenta == "Laboratorio":
+                    st.info("Laboratorios: Completa tu perfil científico.")
+                    nombre_reg = st.text_input("Nombre y Apellido")
+                    perfil_reg = st.selectbox("Perfil Académico", ["Pregrado", "Doctorado/Postdoc", "PI", "Lab Manager", "CEO", "Otro"])
+                    inst_reg = st.text_input("Universidad o Empresa")
+                    email_reg = st.text_input("Nuevo Correo")
+                    pass_reg = st.text_input("Crear Contraseña", type="password")
+                    
+                    if st.button("Crear Cuenta de Laboratorio", type="primary", use_container_width=True):
+                        if not nombre_reg: st.warning("Falta el nombre.")
+                        else:
+                            try:
+                                res = supabase.auth.sign_up({"email": email_reg.strip(), "password": pass_reg})
+                                supabase.table("equipo").insert({"email": email_reg.strip().lower(), "nombre": nombre_reg, "perfil_academico": perfil_reg, "institucion": inst_reg, "rol": "espera"}).execute()
+                                st.success("¡Cuenta creada! Tu administrador ya puede darte acceso.")
+                            except Exception as e: st.error(f"Error: {e}")
+                
+                else:
+                    st.info("Proveedores: Únete para ofrecer tu catálogo a la red Stck.")
+                    empresa_prov = st.text_input("Nombre de la Empresa / Marca")
+                    email_prov = st.text_input("Correo de Ventas")
+                    pass_prov = st.text_input("Contraseña de Proveedor", type="password")
+                    
+                    if st.button("Registrar Empresa Proveedora", type="primary", use_container_width=True):
+                        if not empresa_prov: st.warning("Pon el nombre de la empresa.")
+                        else:
+                            try:
+                                res = supabase.auth.sign_up({"email": email_prov.strip(), "password": pass_prov})
+                                supabase.table("equipo").insert({"email": email_prov.strip().lower(), "nombre": empresa_prov, "lab_id": res.user.id, "rol": "proveedor"}).execute()
+                                st.success("Empresa registrada. Ve a 'Iniciar Sesión' para entrar.")
+                            except Exception as e: st.error("Error al registrar.")
     st.stop()
 
 # --- RUTEO DE ACCESOS EN ESPERA ---
@@ -355,22 +361,29 @@ with col_mon:
         with tab_equipo:
             st.markdown("### 🤝 Gestión de Accesos")
             with st.container(border=True):
-                nuevo_email = st.text_input("Correo a invitar:")
+                nuevo_email = st.text_input("Correo a invitar:").strip().lower()
                 rol_nuevo = st.selectbox("Rol:", ["miembro", "admin"])
                 if st.button("Dar Acceso", type="primary", use_container_width=True):
-                    try:
-                        res = supabase.table("equipo").update({"lab_id": lab_id, "rol": rol_nuevo}).eq("email", nuevo_email).execute()
-                        if len(res.data) == 0: 
-                            supabase.table("equipo").insert({"email": nuevo_email, "lab_id": lab_id, "rol": rol_nuevo, "nombre": "Invitado"}).execute()
-                        st.success(f"Acceso otorgado a {nuevo_email}.")
-                        st.rerun() # Esto arregla que el miembro aparezca al instante
-                    except Exception as e: st.error(f"Error: {e}")
+                    if nuevo_email:
+                        try:
+                            # 1. Verificamos si existe antes de hacer el update
+                            res_check = supabase.table("equipo").select("*").eq("email", nuevo_email).execute()
+                            if res_check.data:
+                                supabase.table("equipo").update({"lab_id": lab_id, "rol": rol_nuevo}).eq("email", nuevo_email).execute()
+                            else:
+                                supabase.table("equipo").insert({"email": nuevo_email, "lab_id": lab_id, "rol": rol_nuevo, "nombre": "Invitado"}).execute()
+                            st.success(f"Acceso otorgado a {nuevo_email}.")
+                            st.rerun() # Fuerza la actualización de la tabla
+                        except Exception as e: st.error(f"Error: {e}")
             
             st.write("**Miembros con Acceso Activo:**")
             try:
                 miembros = supabase.table("equipo").select("nombre, email, rol, perfil_academico, institucion").eq("lab_id", lab_id).execute()
-                st.dataframe(pd.DataFrame(miembros.data), hide_index=True, use_container_width=True)
-            except: st.info("No hay miembros.")
+                if miembros.data:
+                    st.dataframe(pd.DataFrame(miembros.data), hide_index=True, use_container_width=True)
+                else:
+                    st.info("No hay miembros agregados.")
+            except: st.info("Cargando miembros...")
 
 # --- PANEL IA ---
 with col_chat:
