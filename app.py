@@ -128,7 +128,7 @@ if st.session_state.lab_id == "PENDIENTE":
 
 # --- VARIABLES GLOBALES ---
 lab_id = st.session_state.lab_id
-usuario_actual = st.session_state.nombre_usuario
+usuario_actual = st.session_state.get('nombre_usuario', st.session_state.get('usuario_autenticado', 'Usuario'))
 
 if 'auto_search' not in st.session_state: st.session_state.auto_search = ""
 if "backup_inventario" not in st.session_state: st.session_state.backup_inventario = None
