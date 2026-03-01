@@ -429,7 +429,6 @@ with col_mon:
     with tab_bitacora:
         st.markdown("### 📔 Electronic Lab Notebook (ELN)")
         
-        # LOGICA DE VISIBILIDAD DE ROLES
         if rol_actual == "admin":
             filtro_usuario = st.selectbox("Ver bitácora de:", ["Todos"] + list(set(nombres_equipo)))
         else:
@@ -468,7 +467,7 @@ with col_mon:
                             st.success("¡Entrada guardada con éxito!")
                             st.rerun()
                         except Exception as e:
-                            st.error(f"❌ Error al guardar en base de datos: {e}")
+                            st.error(f"❌ Error de Base de Datos: {e}")
                     else:
                         st.warning("Escribe algo o toma una foto antes de guardar.")
                         
@@ -592,17 +591,27 @@ with col_mon:
                 if st.button("Dar Acceso", type="primary", use_container_width=True):
                     if nuevo_email:
                         try:
+                            # EL BLOQUE PROTEGIDO PARA VER ERRORES
                             res_check = supabase.table("equipo").select("*").eq("email", nuevo_email).execute()
-                            if res_check.data: supabase.table("equipo").update({"lab_id": lab_id, "rol": rol_nuevo}).eq("email", nuevo_email).execute()
-                            else: supabase.table("equipo").insert({"email": nuevo_email, "lab_id": lab_id, "rol": rol_nuevo, "nombre": "Invitado"}).execute()
+                            if res_check.data: 
+                                supabase.table("equipo").update({"lab_id": lab_id, "rol": rol_nuevo}).eq("email", nuevo_email).execute()
+                            else: 
+                                supabase.table("equipo").insert({"email": nuevo_email, "lab_id": lab_id, "rol": rol_nuevo, "nombre": "Invitado"}).execute()
                             st.success(f"Acceso otorgado a {nuevo_email}.")
                             st.rerun() 
-                        except: st.error("Error al dar acceso.")
+                        except Exception as e: 
+                            st.error(f"❌ Error exacto al guardar en BD: {e}")
+            
             st.write("**Miembros Activos:**")
             try:
+                # EL BLOQUE PROTEGIDO PARA VER LA LISTA
                 miembros = supabase.table("equipo").select("nombre, email, rol, perfil_academico, institucion").eq("lab_id", lab_id).execute()
-                if miembros.data: st.dataframe(pd.DataFrame(miembros.data), hide_index=True, use_container_width=True)
-            except: pass
+                if miembros.data: 
+                    st.dataframe(pd.DataFrame(miembros.data), hide_index=True, use_container_width=True)
+                else:
+                    st.info("No hay miembros adicionales.")
+            except Exception as e: 
+                st.error(f"❌ Error al cargar la lista: {e}")
 
 # --- PANEL IA ---
 with col_chat:
