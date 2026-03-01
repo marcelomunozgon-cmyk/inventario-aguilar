@@ -58,19 +58,16 @@ if st.session_state.usuario_autenticado is None:
         
         with tab_login:
             with st.container(border=True):
-                # SOLUCIÓN: Usar un formulario para aislar el inicio de sesión y evitar problemas de estado al cambiar de pestaña
                 with st.form("form_login"):
                     email_login = st.text_input("Correo corporativo")
                     pass_login = st.text_input("Contraseña", type="password")
                     submitted = st.form_submit_button("Acceder a Stck", type="primary", use_container_width=True)
-                    
                     if submitted:
                         with st.spinner("Autenticando..."):
                             try:
                                 res = supabase.auth.sign_in_with_password({"email": email_login.strip(), "password": pass_login})
                                 st.session_state.usuario_autenticado = res.user.email
                                 st.session_state.user_uid = res.user.id
-                                
                                 req_eq = supabase.table("equipo").select("*").eq("email", res.user.email).execute()
                                 if req_eq.data:
                                     st.session_state.lab_id = req_eq.data[0]['lab_id']
@@ -153,6 +150,45 @@ if 'auto_search' not in st.session_state: st.session_state.auto_search = ""
 if "backup_inventario" not in st.session_state: st.session_state.backup_inventario = None
 def crear_punto_restauracion(df_actual): st.session_state.backup_inventario = df_actual.copy()
 
+def obtener_admin_email(lab_id):
+    try:
+        res_admins = supabase.table("equipo").select("email").eq("lab_id", lab_id).eq("rol", "admin").execute()
+        correos = [a['email'] for a in res_admins.data]
+        return correos[0] if correos else st.secrets.get("EMAIL_SENDER")
+    except: return st.secrets.get("EMAIL_SENDER")
+
+def enviar_correo_reserva(equipo_nombre, fecha_str, hora_ini, hora_fin, usuario_reserva, admin_email, usuario_email):
+    try:
+        sender = st.secrets["EMAIL_SENDER"]
+        password = st.secrets["EMAIL_PASSWORD"]
+
+        # Correo para el Usuario
+        msg_user = MIMEMultipart()
+        msg_user['From'] = sender
+        msg_user['To'] = usuario_email
+        msg_user['Subject'] = f"✅ Reserva Confirmada: {equipo_nombre} - Stck"
+        msg_user.attach(MIMEText(f"<html><body><h3>Reserva Exitosa</h3><p>Hola, has reservado exitosamente el equipo <b>{equipo_nombre}</b> para el <b>{fecha_str}</b> en el horario de <b>{hora_ini}</b> a <b>{hora_fin}</b>.</p></body></html>", 'html'))
+
+        # Correo para el Admin
+        msg_admin = MIMEMultipart()
+        msg_admin['From'] = sender
+        msg_admin['To'] = admin_email
+        msg_admin['Subject'] = f"📅 Nueva Reserva de Equipo: {equipo_nombre} - Stck"
+        msg_admin.attach(MIMEText(f"<html><body><h3>Notificación de Laboratorio</h3><p>El usuario <b>{usuario_reserva}</b> ({usuario_email}) ha agendado el uso de <b>{equipo_nombre}</b> para el <b>{fecha_str}</b> desde las <b>{hora_ini}</b> hasta las <b>{hora_fin}</b>.</p></body></html>", 'html'))
+
+        server = smtplib.SMTP('smtp.gmail.com', 587)
+        server.starttls()
+        server.login(sender, password)
+        server.send_message(msg_user)
+        # Solo enviar al admin si es distinto al usuario que hace la reserva
+        if admin_email and admin_email != usuario_email:
+            server.send_message(msg_admin)
+        server.quit()
+        return True
+    except Exception as e: 
+        print(e)
+        return False
+
 def enviar_correo_compras(item_nombre, precio, operador):
     try:
         sender = st.secrets["EMAIL_SENDER"]
@@ -174,8 +210,7 @@ def enviar_correo_compras(item_nombre, precio, operador):
 
 def generar_link_gcal(titulo, inicio, fin, descripcion=""):
     fmt = "%Y%m%dT%H%M%SZ"
-    # Ajustar zona horaria a UTC para el enlace
-    inicio_utc = inicio + timedelta(hours=3) # Ajuste manual basico para Chile, ideal usar pytz en produccion
+    inicio_utc = inicio + timedelta(hours=3) 
     fin_utc = fin + timedelta(hours=3)
     url = f"https://calendar.google.com/calendar/render?action=TEMPLATE&text={urllib.parse.quote(titulo)}&dates={inicio_utc.strftime(fmt)}/{fin_utc.strftime(fmt)}&details={urllib.parse.quote(descripcion)}"
     return url
@@ -194,16 +229,17 @@ df['categoria'] = df['categoria'].replace("", "GENERAL")
 try: res_prot = supabase.table("protocolos").select("*").eq("lab_id", lab_id).execute(); df_prot = pd.DataFrame(res_prot.data)
 except: df_prot = pd.DataFrame(columns=["id", "nombre", "materiales_base"])
 
-# Carga de Equipos y Reservas
 try:
-    # SOLUCIÓN: Usar el nombre de tabla correcto 'equipos_lab' en el código
     res_equipos = supabase.table("equipos_lab").select("*").eq("lab_id", lab_id).execute()
     df_equipos = pd.DataFrame(res_equipos.data)
-    
+    for col in ['descripcion', 'visibilidad', 'requisitos']:
+        if col not in df_equipos.columns: df_equipos[col] = ""
+        df_equipos[col] = df_equipos[col].astype(str).replace(["nan", "None"], "")
+        
     res_reservas = supabase.table("reservas").select("*").eq("lab_id", lab_id).execute()
     df_reservas = pd.DataFrame(res_reservas.data)
-except:
-    df_equipos = pd.DataFrame(columns=["id", "nombre", "descripcion", "visibilidad"])
+except Exception as e:
+    df_equipos = pd.DataFrame(columns=["id", "nombre", "descripcion", "visibilidad", "requisitos"])
     df_reservas = pd.DataFrame(columns=["id", "equipo_id", "usuario", "fecha_inicio", "fecha_fin"])
 
 def aplicar_estilos_inv(row):
@@ -290,87 +326,153 @@ with col_mon:
                     st.dataframe(subset_cat[['nombre', 'cantidad_actual', 'unidad', 'ubicacion', 'posicion_caja', 'fecha_vencimiento']].style.apply(aplicar_estilos_inv, axis=1), use_container_width=True, hide_index=True)
 
     with tab_equipos:
-        st.markdown("### 🗓️ Booking de Equipos (Beta)")
+        st.markdown("### 🗓️ Gestión y Booking de Equipos")
         
-        c_eq_res, c_eq_agenda = st.columns([1, 1.2])
-        
-        with c_eq_res:
-            if df_equipos.empty:
-                st.info("Aún no has registrado equipos en tu laboratorio.")
-            else:
-                eq_seleccionado = st.selectbox("Seleccionar Equipo para Reservar:", df_equipos['nombre'].tolist())
-                eq_id = df_equipos[df_equipos['nombre'] == eq_seleccionado].iloc[0]['id']
-                vis_eq = df_equipos[df_equipos['nombre'] == eq_seleccionado].iloc[0].get('visibilidad', 'Privado')
-                
-                st.caption(f"👀 Visibilidad configurada: **{vis_eq}**")
-                
-                fecha_res = st.date_input("Fecha:")
-                t_ini = st.time_input("Hora Inicio:", value=time(9, 0))
-                t_fin = st.time_input("Hora Fin:", value=time(10, 0))
-                
-                if st.button("Reservar Bloque", type="primary", use_container_width=True):
-                    dt_ini = datetime.combine(fecha_res, t_ini)
-                    dt_fin = datetime.combine(fecha_res, t_fin)
-                    
-                    if dt_ini >= dt_fin: st.error("La hora de inicio debe ser anterior a la de fin.")
-                    else:
-                        try:
-                            supabase.table("reservas").insert({
-                                "equipo_id": eq_id, "usuario": usuario_actual, 
-                                "fecha_inicio": dt_ini.isoformat(), "fecha_fin": dt_fin.isoformat(), "lab_id": lab_id
-                            }).execute()
-                            st.success("✅ Reserva confirmada.")
-                            st.rerun()
-                        except Exception as e: st.error(f"Error al reservar: {e}")
-        
-        with c_eq_agenda:
-            st.write("**Agenda de Hoy y Futuro:**")
-            if not df_reservas.empty and not df_equipos.empty:
-                # Cruzar nombres de equipos
-                df_r = pd.merge(df_reservas, df_equipos[['id', 'nombre']], left_on='equipo_id', right_on='id', how='inner')
-                df_r['fecha_inicio'] = pd.to_datetime(df_r['fecha_inicio'])
-                df_r['fecha_fin'] = pd.to_datetime(df_r['fecha_fin'])
-                
-                # Filtrar solo futuras
-                df_futuras = df_r[df_r['fecha_fin'] >= pd.to_datetime('today')]
-                
-                if df_futuras.empty: st.info("No hay reservas próximas.")
+        if rol_actual == "admin":
+            sub_tab_reserva, sub_tab_mis_equipos = st.tabs(["📅 Agendar Uso", "⚙️ Mis Equipos (Admin)"])
+        else:
+            sub_tab_reserva, sub_tab_mis_equipos = st.tabs(["📅 Agendar Uso"]), None
+
+        with sub_tab_reserva:
+            c_eq_res, c_eq_agenda = st.columns([1, 1.2])
+            
+            with c_eq_res:
+                if df_equipos.empty:
+                    st.info("No hay equipos registrados disponibles.")
                 else:
-                    df_futuras = df_futuras.sort_values(by='fecha_inicio')
-                    for _, row in df_futuras.iterrows():
-                        with st.container(border=True):
-                            st.markdown(f"**{row['nombre_y']}** (por {row['usuario']})")
-                            st.write(f"🕒 {row['fecha_inicio'].strftime('%d/%b %H:%M')} - {row['fecha_fin'].strftime('%H:%M')}")
+                    eq_seleccionado = st.selectbox("Seleccionar Equipo:", df_equipos['nombre'].tolist())
+                    datos_eq = df_equipos[df_equipos['nombre'] == eq_seleccionado].iloc[0]
+                    
+                    st.caption(f"👀 Visibilidad: **{datos_eq.get('visibilidad', 'Privado')}**")
+                    if str(datos_eq.get('requisitos', '')).strip():
+                        st.warning(f"⚠️ **Requisitos:** {datos_eq['requisitos']}")
+                    
+                    fecha_res = st.date_input("Fecha de reserva:")
+                    
+                    # --- MOSTRAR DISPONIBILIDAD (CALENDARIO VISUAL) ---
+                    st.markdown(f"**Disponibilidad para el {fecha_res.strftime('%d/%m/%Y')}:**")
+                    df_r_dia = pd.DataFrame()
+                    if not df_reservas.empty:
+                        df_r_eq = df_reservas[df_reservas['equipo_id'] == str(datos_eq['id'])].copy()
+                        if not df_r_eq.empty:
+                            df_r_eq['fecha_inicio'] = pd.to_datetime(df_r_eq['fecha_inicio'])
+                            df_r_eq['fecha_fin'] = pd.to_datetime(df_r_eq['fecha_fin'])
+                            df_r_dia = df_r_eq[df_r_eq['fecha_inicio'].dt.date == fecha_res].sort_values(by='fecha_inicio')
+                    
+                    if not df_r_dia.empty:
+                        for _, row in df_r_dia.iterrows():
+                            st.markdown(f"🚫 `{row['fecha_inicio'].strftime('%H:%M')} - {row['fecha_fin'].strftime('%H:%M')}` (Reservado por {row['usuario']})")
+                    else:
+                        st.success("✅ Todo el día está libre.")
+                    
+                    # --- FORMULARIO DE RESERVA ---
+                    col_h1, col_h2 = st.columns(2)
+                    with col_h1: t_ini = st.time_input("Hora Inicio:", value=time(9, 0))
+                    with col_h2: t_fin = st.time_input("Hora Fin:", value=time(10, 0))
+                    
+                    if st.button("Confirmar Reserva", type="primary", use_container_width=True):
+                        dt_ini = datetime.combine(fecha_res, t_ini)
+                        dt_fin = datetime.combine(fecha_res, t_fin)
+                        
+                        if dt_ini >= dt_fin: 
+                            st.error("La hora de inicio debe ser anterior a la de fin.")
+                        else:
+                            # LÓGICA ANTI-CHOQUE
+                            solapamiento = False
+                            if not df_r_dia.empty:
+                                for _, r in df_r_dia.iterrows():
+                                    if dt_ini < r['fecha_fin'] and dt_fin > r['fecha_inicio']:
+                                        solapamiento = True
+                                        break
                             
-                            # GENERADOR DE LINK MAGICO A GOOGLE CALENDAR
-                            if row['usuario'] == usuario_actual:
+                            if solapamiento:
+                                st.error("❌ El horario seleccionado choca con una reserva existente. Por favor elige otro bloque.")
+                            else:
+                                try:
+                                    # Guardar en Base de Datos
+                                    supabase.table("reservas").insert({
+                                        "equipo_id": str(datos_eq['id']), "usuario": usuario_actual, 
+                                        "fecha_inicio": dt_ini.isoformat(), "fecha_fin": dt_fin.isoformat(), "lab_id": lab_id
+                                    }).execute()
+                                    
+                                    # Enviar Correos Automatizados
+                                    admin_email = obtener_admin_email(lab_id)
+                                    user_email = st.session_state.usuario_autenticado
+                                    enviar_correo_reserva(
+                                        datos_eq['nombre'], fecha_res.strftime('%d/%m/%Y'),
+                                        t_ini.strftime('%H:%M'), t_fin.strftime('%H:%M'),
+                                        usuario_actual, admin_email, user_email
+                                    )
+                                    
+                                    st.success("✅ Reserva guardada y notificaciones enviadas.")
+                                    st.rerun()
+                                except Exception as e: st.error(f"Error al reservar: {e}")
+            
+            with c_eq_agenda:
+                st.write("**Tus Próximas Reservas:**")
+                if not df_reservas.empty and not df_equipos.empty:
+                    df_r = pd.merge(df_reservas, df_equipos[['id', 'nombre']], left_on='equipo_id', right_on='id', how='inner')
+                    df_r['fecha_inicio'] = pd.to_datetime(df_r['fecha_inicio'])
+                    df_r['fecha_fin'] = pd.to_datetime(df_r['fecha_fin'])
+                    df_futuras = df_r[(df_r['fecha_fin'] >= pd.to_datetime('today')) & (df_r['usuario'] == usuario_actual)].sort_values(by='fecha_inicio')
+                    
+                    if df_futuras.empty: st.info("No tienes reservas activas.")
+                    else:
+                        for _, row in df_futuras.iterrows():
+                            with st.container(border=True):
+                                st.markdown(f"**{row['nombre_y']}**")
+                                st.write(f"🕒 {row['fecha_inicio'].strftime('%d/%b %H:%M')} - {row['fecha_fin'].strftime('%H:%M')}")
                                 gcal_link = generar_link_gcal(
                                     titulo=f"Uso Lab: {row['nombre_y']}", 
                                     inicio=row['fecha_inicio'], fin=row['fecha_fin'], 
-                                    descripcion=f"Reserva de equipo gestionada vía Stck."
+                                    descripcion=f"Reserva gestionada en Stck."
                                 )
                                 st.markdown(f"[📅 Agregar a mi Google Calendar]({gcal_link})", unsafe_allow_html=True)
-            else:
-                st.info("La agenda está vacía.")
+                else:
+                    st.info("No hay reservas.")
+                    
+        # PANEL DE ADMINISTRACIÓN DE EQUIPOS
+        if rol_actual == "admin" and sub_tab_mis_equipos:
+            with sub_tab_mis_equipos:
+                st.write("Gestiona la información, visibilidad y reglas de uso de tus equipos.")
+                if not df_equipos.empty:
+                    cols_ed_eq = ['nombre', 'descripcion', 'visibilidad', 'requisitos', 'id']
+                    edited_eq_df = st.data_editor(
+                        df_equipos[cols_ed_eq].copy(), 
+                        column_config={
+                            "id": st.column_config.TextColumn("ID", disabled=True),
+                            "visibilidad": st.column_config.SelectboxColumn("Visibilidad", options=["Solo mi Laboratorio", "Mi Instituto", "Toda la Sede", "Público General"])
+                        }, 
+                        use_container_width=True, hide_index=True
+                    )
+                    
+                    if st.button("💾 Guardar Cambios en Equipos", type="secondary"):
+                        for _, row in edited_eq_df.iterrows():
+                            d = row.replace({np.nan: None}).to_dict()
+                            if 'id' in d and str(d['id']).strip(): 
+                                d['lab_id'] = lab_id 
+                                supabase.table("equipos_lab").upsert(d).execute()
+                        st.success("Equipos actualizados.")
+                        st.rerun()
                 
-        if rol_actual == "admin":
-            st.markdown("---")
-            with st.expander("⚙️ Agregar Nuevo Equipo al Booking"):
-                with st.form("form_nuevo_equipo"):
-                    n_eq = st.text_input("Nombre del Equipo (Ej: Termociclador BioRad)")
-                    d_eq = st.text_input("Descripción / Ubicación")
-                    # La especificación original para crear la tabla 'equipos_lab' incluía la columna 'visibilidad'.
-                    v_eq = st.selectbox("Nivel de Visibilidad Pública", ["Solo mi Laboratorio", "Mi Instituto", "Toda la Sede", "Público General"])
-                    if st.form_submit_button("Guardar Equipo"):
-                        try:
-                            # SOLUCIÓN: Usar el nombre de tabla correcto 'equipos_lab' en el código
-                            # La columna 'visibilidad' se incluyó en la especificación original de la tabla.
-                            supabase.table("equipos_lab").insert({"nombre": n_eq, "descripcion": d_eq, "visibilidad": v_eq, "lab_id": lab_id}).execute()
-                            st.success("Equipo registrado.")
-                            st.rerun()
-                        except Exception as e:
-                            # Cambiado para mostrar el error real, útil para depurar permisos de RLS
-                            st.error(f"Error: {e}")
+                st.markdown("---")
+                with st.expander("➕ Registrar Nuevo Equipo", expanded=df_equipos.empty):
+                    with st.form("form_nuevo_equipo"):
+                        n_eq = st.text_input("Nombre del Equipo (Ej: HPLC Agilent)")
+                        d_eq = st.text_input("Descripción / Ubicación")
+                        req_eq = st.text_area("Requisitos de Uso (Ej: Solo usuarios capacitados)")
+                        v_eq = st.selectbox("Visibilidad", ["Solo mi Laboratorio", "Mi Instituto", "Toda la Sede", "Público General"])
+                        
+                        if st.form_submit_button("Crear Equipo", type="primary"):
+                            try:
+                                supabase.table("equipos_lab").insert({
+                                    "nombre": n_eq, "descripcion": d_eq, "visibilidad": v_eq, 
+                                    "requisitos": req_eq, "lab_id": lab_id
+                                }).execute()
+                                st.success("Equipo registrado exitosamente.")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Error al guardar: {e}")
 
     with tab_prot:
         tab_ejecutar, tab_crear = st.tabs(["🚀 Ejecutar", "📝 Nuevo"])
