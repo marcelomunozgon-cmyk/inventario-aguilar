@@ -329,8 +329,13 @@ with col_mon:
 
     with tab_equipos:
         st.markdown("### 🗓️ Gestión y Booking de Equipos")
-        if rol_actual == "admin": sub_tab_reserva, sub_tab_mis_equipos = st.tabs(["📅 Agendar Uso", "⚙️ Mis Equipos (Admin)"])
-        else: sub_tab_reserva, sub_tab_mis_equipos = st.tabs(["📅 Agendar Uso"]), None
+        
+        # FIX DE LA LISTA
+        if rol_actual == "admin": 
+            sub_tab_reserva, sub_tab_mis_equipos = st.tabs(["📅 Agendar Uso", "⚙️ Mis Equipos (Admin)"])
+        else: 
+            sub_tab_reserva = st.tabs(["📅 Agendar Uso"])[0]
+            sub_tab_mis_equipos = None
 
         with sub_tab_reserva:
             c_eq_res, c_eq_agenda = st.columns([1, 1.2])
@@ -467,7 +472,7 @@ with col_mon:
                             st.success("¡Entrada guardada con éxito!")
                             st.rerun()
                         except Exception as e:
-                            st.error(f"❌ Error de Base de Datos: {e}")
+                            st.error(f"❌ Error al guardar en base de datos: {e}")
                     else:
                         st.warning("Escribe algo o toma una foto antes de guardar.")
                         
