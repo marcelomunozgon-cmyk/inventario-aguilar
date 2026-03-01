@@ -185,6 +185,25 @@ def enviar_correo_reserva(equipo_nombre, fecha_str, hora_ini, hora_fin, usuario_
         return True
     except: return False
 
+def enviar_correo_compras(item_nombre, precio, operador):
+    try:
+        sender = st.secrets["EMAIL_SENDER"]
+        password = st.secrets["EMAIL_PASSWORD"]
+        receiver = st.secrets.get("EMAIL_RECEIVER", sender)
+        msg = MIMEMultipart()
+        msg['From'] = sender
+        msg['To'] = receiver
+        msg['Subject'] = f"🛒 SOLICITUD DE COMPRA: {item_nombre} - Stck"
+        body = f"<html><body><h2>Solicitud de Cotización / Compra</h2><p>Se ha solicitado reabastecer el siguiente ítem:</p><ul><li><b>Reactivo:</b> {item_nombre}</li><li><b>Último precio referencial:</b> ${precio}</li><li><b>Solicitado por:</b> {operador}</li></ul></body></html>"
+        msg.attach(MIMEText(body, 'html'))
+        server = smtplib.SMTP('smtp.gmail.com', 587)
+        server.starttls()
+        server.login(sender, password)
+        server.send_message(msg)
+        server.quit()
+        return True
+    except: return False
+
 def generar_link_gcal(titulo, inicio, fin, descripcion=""):
     fmt = "%Y%m%dT%H%M%SZ"
     inicio_utc = inicio + timedelta(hours=3) 
@@ -218,7 +237,7 @@ except:
     df_equipos = pd.DataFrame(columns=["id", "nombre", "descripcion", "visibilidad", "requisitos"])
     df_reservas = pd.DataFrame(columns=["id", "equipo_id", "usuario", "fecha_inicio", "fecha_fin"])
 
-# Carga de Bitácora (Ahora con Resultado y Link)
+# Carga de Bitácora
 try:
     res_bitacora = supabase.table("bitacora").select("*").eq("lab_id", lab_id).order("fecha", desc=True).execute()
     df_bitacora = pd.DataFrame(res_bitacora.data)
@@ -410,14 +429,11 @@ with col_mon:
                                 st.rerun()
                             except Exception as e: st.error(f"Error: {e}")
 
-    # --- PESTAÑA MEJORADA: BITÁCORA CON RESULTADOS ---
+    # --- PESTAÑA MEJORADA: BITÁCORA CON DESCUENTO POR DEFECTO ---
     with tab_bitacora:
         st.markdown("### 📔 Electronic Lab Notebook (ELN)")
-        
-        if rol_actual == "admin":
-            filtro_usuario = st.selectbox("Ver bitácora de:", ["Todos"] + list(set(nombres_equipo)))
-        else:
-            filtro_usuario = usuario_actual
+        if rol_actual == "admin": filtro_usuario = st.selectbox("Ver bitácora de:", ["Todos"] + list(set(nombres_equipo)))
+        else: filtro_usuario = usuario_actual
         
         c_bit_form, c_bit_view = st.columns([1, 1.5], gap="large")
         
@@ -425,26 +441,48 @@ with col_mon:
             with st.container(border=True):
                 st.write("📝 **Nueva Entrada de Bitácora**")
                 fecha_b = st.date_input("Fecha:", value=date.today())
-                texto_metodo = st.text_area("🧪 Protocolo / Metodología", height=100, placeholder="Describe qué hiciste...")
-                texto_resultado = st.text_area("📊 Resultados / Observaciones", height=100, placeholder="Anota medidas, colores, fallos...")
-                link_evidencia = st.text_input("📎 Enlace a Evidencia (Opcional)", placeholder="Pega el link de Google Drive, imagen o PDF aquí")
                 
-                st.write("📸 **O Digitaliza tu Protocolo Físico**")
-                foto_b = st.camera_input("Capturar página de tu cuaderno", label_visibility="collapsed")
+                # Menú desplegable obligatorio para vincular protocolo (con opción libre)
+                opciones_prot = ["Ninguno (Entrada Libre)"] + df_prot['nombre'].tolist() if not df_prot.empty else ["Ninguno (Entrada Libre)"]
+                prot_seleccionado = st.selectbox("🔗 Protocolo Ejecutado (Descuenta inventario automáticamente):", opciones_prot)
                 
-                if st.button("💾 Guardar en Bitácora", type="primary", use_container_width=True):
+                n_muestras_b = 1
+                if prot_seleccionado != "Ninguno (Entrada Libre)":
+                    n_muestras_b = st.number_input("N° Muestras:", min_value=1, value=1)
+                    texto_metodo = st.text_area("Observaciones del método (Opcional)", height=70, placeholder="Modificaciones al protocolo base...")
+                else:
+                    texto_metodo = st.text_area("🧪 Protocolo / Metodología Libre", height=100, placeholder="Describe qué hiciste hoy...")
+                
+                texto_resultado = st.text_area("📊 Resultados / Conclusiones", height=100, placeholder="Concentración, observaciones visuales...")
+                link_evidencia = st.text_input("📎 Enlace a Evidencia", placeholder="Ej: Link de Google Drive con la foto del Gel")
+                foto_b = st.camera_input("O Digitaliza el protocolo físico", label_visibility="collapsed")
+                
+                if st.button("💾 Guardar Entrada", type="primary", use_container_width=True):
                     contenido_final = texto_metodo
                     if foto_b:
-                        with st.spinner("La IA está leyendo y transcribiendo tu letra..."):
+                        with st.spinner("La IA está leyendo tu letra..."):
                             try:
                                 img = Image.open(foto_b).convert('RGB')
-                                prompt_vision = "Actúa como un transcriptor científico. Lee esta página de una bitácora y transcribe el texto. Solo devuelve el texto."
-                                transcripcion = model.generate_content([prompt_vision, img]).text
+                                transcripcion = model.generate_content(["Actúa como un transcriptor científico. Transcribe el texto de esta bitácora.", img]).text
                                 contenido_final = f"{texto_metodo}\n\n*Digitalizado por IA:*\n{transcripcion}"
-                            except:
-                                st.error("No se pudo leer bien la imagen.")
-                                contenido_final = texto_metodo
+                            except: pass
                     
+                    # Si eligió un protocolo real, descontamos stock automáticamente
+                    if prot_seleccionado != "Ninguno (Entrada Libre)":
+                        contenido_final = f"🧪 **Protocolo Vinculado:** {prot_seleccionado} (x{n_muestras_b} muestras)\n\n{contenido_final}"
+                        info_p = df_prot[df_prot['nombre'] == prot_seleccionado]['materiales_base'].values[0]
+                        for linea in info_p.split('\n'):
+                            if ":" in linea:
+                                partes = linea.split(":")
+                                item_db = df[df['nombre'].str.contains(partes[0].strip(), case=False, na=False)]
+                                if not item_db.empty: 
+                                    desc_cant = float(partes[1].strip()) * n_muestras_b
+                                    id_item = str(item_db.iloc[0]['id'])
+                                    stock_actual = item_db.iloc[0]['cantidad_actual']
+                                    supabase.table("items").update({"cantidad_actual": int(stock_actual - desc_cant)}).eq("id", id_item).execute()
+                                    supabase.table("movimiento").insert({"item_id": id_item, "nombre_item": item_db.iloc[0]['nombre'], "cantidad_cambio": -desc_cant, "tipo": f"Uso Bitácora: {prot_seleccionado}", "usuario": usuario_actual, "lab_id": lab_id}).execute()
+                        st.toast("Inventario descontado automáticamente.", icon="📉")
+
                     if contenido_final.strip() or texto_resultado.strip():
                         try:
                             supabase.table("bitacora").insert({
@@ -453,9 +491,8 @@ with col_mon:
                             }).execute()
                             st.success("¡Entrada guardada con éxito!")
                             st.rerun()
-                        except Exception as e:
-                            st.error(f"❌ Error BD: {e}. ¿Creaste las columnas 'resultado' y 'link_adjunto' en Supabase?")
-                    else: st.warning("Escribe algo en Metodología o Resultados antes de guardar.")
+                        except Exception as e: st.error(f"❌ Error BD: {e}")
+                    else: st.warning("Escribe algo antes de guardar.")
                         
         with c_bit_view:
             st.write(f"**Historial de {filtro_usuario}:**")
@@ -465,7 +502,7 @@ with col_mon:
                 if df_b_show.empty: st.info(f"No hay registros para {filtro_usuario}.")
                 else:
                     for _, row in df_b_show.iterrows():
-                        res_html = f"<b>📊 Resultados:</b><br><span style='white-space: pre-wrap;'>{row.get('resultado', 'Sin resultados anotados.')}</span><br><br>" if row.get('resultado') else ""
+                        res_html = f"<b>📊 Resultados:</b><br><span style='white-space: pre-wrap;'>{row.get('resultado', '')}</span><br><br>" if row.get('resultado') else ""
                         link_html = f"📎 <a href='{row.get('link_adjunto')}' target='_blank'>Ver Evidencia Adjunta</a>" if str(row.get('link_adjunto')).startswith('http') else ""
                         
                         st.markdown(f"""
@@ -479,17 +516,17 @@ with col_mon:
                         """, unsafe_allow_html=True)
 
     with tab_prot:
-        tab_ejecutar, tab_crear = st.tabs(["🚀 Ejecutar & Costos", "📝 Nuevo"])
+        tab_ejecutar, tab_crear = st.tabs(["🚀 Ejecutar & Finanzas", "📝 Nuevo Protocolo"])
         with tab_ejecutar:
             if df_prot.empty: st.info("Sin protocolos.")
             else:
                 p_sel = st.selectbox("Protocolo a realizar:", df_prot['nombre'].tolist())
                 n_muestras = st.number_input("Cantidad de Muestras:", min_value=1, value=1)
                 
-                if st.button("🔍 Previsualizar y Calcular Costo"):
+                if st.button("🔍 Previsualizar e Impacto Financiero"):
                     info_p = df_prot[df_prot['nombre'] == p_sel]['materiales_base'].values[0]
                     descuentos = []
-                    costo_estimado_total = 0
+                    costo_total_exp = 0
                     
                     for linea in info_p.split('\n'):
                         if ":" in linea:
@@ -498,38 +535,27 @@ with col_mon:
                             if not item_db.empty: 
                                 desc_cant = float(partes[1].strip()) * n_muestras
                                 precio_ref = item_db.iloc[0]['precio']
-                                # Calculadora de Costo de Muestra (Basada en el precio referencial)
                                 if precio_ref > 0 and item_db.iloc[0]['cantidad_actual'] > 0:
-                                    # Asumimos que el "precio" es por el stock actual para dar un estimado
                                     costo_item = (desc_cant / item_db.iloc[0]['cantidad_actual']) * precio_ref
-                                    costo_estimado_total += costo_item
-                                
-                                descuentos.append({"id": str(item_db.iloc[0]['id']), "Reactivo": item_db.iloc[0]['nombre'], "Stock": item_db.iloc[0]['cantidad_actual'], "Descontar": desc_cant, "Unidad": item_db.iloc[0]['unidad'], "Precio Ref": f"${precio_ref}"})
+                                    costo_total_exp += costo_item
+                                    
+                                descuentos.append({"id": str(item_db.iloc[0]['id']), "Reactivo": item_db.iloc[0]['nombre'], "Stock": item_db.iloc[0]['cantidad_actual'], "Descontar": desc_cant, "Unidad": item_db.iloc[0]['unidad']})
                     if descuentos:
                         st.dataframe(pd.DataFrame(descuentos).drop(columns=['id']), hide_index=True)
-                        
-                        # Mostrar el Burn Rate Financiero del Protocolo
-                        if costo_estimado_total > 0:
-                            st.markdown(f"<span class='badge-costo'>💰 Costo Estimado del Experimento: ${int(costo_estimado_total)} CLP</span>", unsafe_allow_html=True)
-                            st.write("")
+                        if costo_total_exp > 0:
+                            st.markdown(f"<div class='badge-costo'>💰 Costo Aproximado del Experimento: ${int(costo_total_exp):,} CLP</div><br>", unsafe_allow_html=True)
                             
-                        if st.button("✅ Confirmar Descuento del Inventario", type="primary"):
+                        if st.button("✅ Descontar del Inventario Solo Aquí", type="primary"):
                             crear_punto_restauracion(df)
                             for d in descuentos:
                                 supabase.table("items").update({"cantidad_actual": int(d["Stock"] - d["Descontar"])}).eq("id", d["id"]).execute()
                                 supabase.table("movimiento").insert({"item_id": d["id"], "nombre_item": d["Reactivo"], "cantidad_cambio": -d["Descontar"], "tipo": f"Uso Kit: {p_sel}", "usuario": usuario_actual, "lab_id": lab_id}).execute()
-                            
-                            # Magia extra: Guardar automáticamente en la bitácora que se hizo este protocolo
-                            try:
-                                supabase.table("bitacora").insert({"lab_id": lab_id, "usuario": usuario_actual, "fecha": date.today().isoformat(), "contenido": f"Ejecutado Protocolo: {p_sel} para {n_muestras} muestras."}).execute()
-                            except: pass
-                            st.success("Inventario actualizado.")
                             st.rerun()
         with tab_crear:
             with st.form("form_nuevo_prot"):
-                n_prot = st.text_input("Nombre (Ej: PCR Mix)")
-                mat_base = st.text_area("Reactivos (Nombre : Cantidad)")
-                if st.form_submit_button("💾 Guardar Protocolo"):
+                n_prot = st.text_input("Nombre (Ej: Ensayo DNAzimas)")
+                mat_base = st.text_area("Reactivos (Nombre en inventario : Cantidad por muestra)")
+                if st.form_submit_button("💾 Guardar"):
                     supabase.table("protocolos").insert({"nombre": n_prot, "materiales_base": mat_base, "lab_id": lab_id}).execute()
                     st.rerun()
 
@@ -607,7 +633,6 @@ with col_mon:
                             st.success(f"Acceso otorgado a {nuevo_email}.")
                             st.rerun() 
                         except Exception as e: st.error(f"❌ Error exacto al guardar en BD: {e}")
-            
             st.write("**Miembros Activos:**")
             try:
                 miembros = supabase.table("equipo").select("nombre, email, rol, perfil_academico, institucion").eq("lab_id", lab_id).execute()
@@ -624,13 +649,12 @@ with col_chat:
         with chat_box: st.chat_message(m["role"]).markdown(m["content"])
 
     v_in = speech_to_text(language='es-CL', start_prompt="🎙️ Hablar", stop_prompt="⏹️ Enviar", just_once=True, key='voice_input')
-    prompt = v_in if v_in else st.chat_input("Ej: Saqué 2 buffer / Agrega a mi bitácora...")
+    prompt = v_in if v_in else st.chat_input("Ej: Ejecuté el protocolo PCR Mix en 5 muestras...")
 
     with st.expander("📸 Procesar con Ojo IA"):
-        accion_foto = st.radio("¿Qué deseas hacer con la foto?", ["➕ Agregar Reactivo Nuevo", "🔄 Actualizar Reactivo", "📔 Digitalizar a Bitácora"], horizontal=True)
+        accion_foto = st.radio("¿Qué deseas hacer con la foto?", ["➕ Agregar Reactivo Nuevo", "🔄 Actualizar Reactivo"], horizontal=True)
         item_a_actualizar = None
         if accion_foto == "🔄 Actualizar Reactivo" and not df.empty: item_a_actualizar = st.selectbox("Selecciona reactivo:", df['nombre'].tolist())
-        
         foto_chat = st.camera_input("Capturar Imagen", label_visibility="collapsed")
         
         if foto_chat and st.button("🧠 Procesar Foto", type="primary", use_container_width=True):
@@ -658,15 +682,9 @@ with col_chat:
                             supabase.table("items").update({"cantidad_actual": nueva_cant}).eq("id", id_ac).execute()
                             supabase.table("movimiento").insert({"item_id": id_ac, "nombre_item": item_a_actualizar, "cantidad_cambio": nueva_cant, "tipo": "Actualizado IA (Foto)", "usuario": usuario_actual, "lab_id": lab_id}).execute()
                             msg = f"📸 **Actualizado:** {item_a_actualizar} ahora tiene {nueva_cant} en stock."
-                            
-                        elif accion_foto == "📔 Digitalizar a Bitácora":
-                            prompt_vision = "Actúa como un transcriptor científico. Lee esta página de una bitácora de laboratorio y transcribe todo el texto de la forma más fiel y ordenada posible. Solo devuelve el texto, sin comentarios."
-                            transcripcion = model.generate_content([prompt_vision, img]).text
-                            supabase.table("bitacora").insert({"lab_id": lab_id, "usuario": usuario_actual, "fecha": date.today().isoformat(), "contenido": f"*Digitalizado por IA:*\n{transcripcion}"}).execute()
-                            msg = f"📔 **Guardado en tu Bitácora:**\n\n{transcripcion}"
 
                         st.markdown(msg); st.session_state.messages.append({"role": "assistant", "content": msg}); st.rerun()
-                    except Exception as e: st.error(f"Error al procesar la imagen: {e}")
+                    except Exception as e: st.error("Error al procesar la imagen.")
 
     if prompt:
         st.session_state.messages.append({"role": "user", "content": prompt})
@@ -675,15 +693,48 @@ with col_chat:
             with st.spinner("Pensando..."):
                 try:
                     d_ia = df[['id', 'nombre', 'cantidad_actual', 'ubicacion']].to_json(orient='records') if not df.empty else "[]"
+                    d_prot = df_prot[['nombre']].to_json(orient='records') if not df_prot.empty else "[]"
+                    
                     prompt_sistema = f"""
-                    Inventario actual: {d_ia}
-                    Si el usuario pide guardar algo en la bitácora o diario, responde SOLO JSON: GUARDAR_BITACORA:{{\"contenido\": \"texto a guardar\"}}
-                    Si el usuario mueve inventario, usa id si existe, si no 'NUEVO'. Responde SOLO JSON: EJECUTAR_ACCION:{{\"id\":\"\",\"nombre\":\"\",\"cantidad\":0,\"unidad\":\"\",\"ubicacion\":\"\"}}
+                    Inventario: {d_ia}
+                    Protocolos: {d_prot}
+                    Reglas:
+                    1. Si el usuario corrió un protocolo, responde SOLO JSON: EJECUTAR_PROTOCOLO:{{"nombre": "nombre exacto del protocolo", "muestras": 1, "resultado": "lo que pasó"}}
+                    2. Si guarda nota libre: GUARDAR_BITACORA:{{"contenido": "texto"}}
+                    3. Si mueve stock manual: EJECUTAR_ACCION:{{"id":"...", "nombre":"...", "cantidad":0, "ubicacion":"..."}}
                     Usuario: {prompt}
                     """
                     res_ai = model.generate_content(prompt_sistema).text
                     
-                    if "GUARDAR_BITACORA:" in res_ai:
+                    if "EJECUTAR_PROTOCOLO:" in res_ai:
+                        data = json.loads(re.search(r'\{.*\}', res_ai, re.DOTALL).group())
+                        prot_nom = data.get('nombre')
+                        muestras = data.get('muestras', 1)
+                        resultado = data.get('resultado', 'Protocolo ejecutado vía IA.')
+                        
+                        prot_match = df_prot[df_prot['nombre'].str.contains(prot_nom, case=False, na=False)]
+                        if not prot_match.empty:
+                            info_p = prot_match.iloc[0]['materiales_base']
+                            for linea in info_p.split('\n'):
+                                if ":" in linea:
+                                    partes = linea.split(":")
+                                    item_db = df[df['nombre'].str.contains(partes[0].strip(), case=False, na=False)]
+                                    if not item_db.empty:
+                                        desc_cant = float(partes[1].strip()) * muestras
+                                        id_item = str(item_db.iloc[0]['id'])
+                                        stock_actual = item_db.iloc[0]['cantidad_actual']
+                                        supabase.table("items").update({"cantidad_actual": int(stock_actual - desc_cant)}).eq("id", id_item).execute()
+                                        supabase.table("movimiento").insert({"item_id": id_item, "nombre_item": item_db.iloc[0]['nombre'], "cantidad_cambio": -desc_cant, "tipo": f"Uso IA: {prot_nom}", "usuario": usuario_actual, "lab_id": lab_id}).execute()
+                            
+                            cont_b = f"🧪 Protocolo Vinculado (IA): {prot_match.iloc[0]['nombre']} (x{muestras} muestras)"
+                            supabase.table("bitacora").insert({"lab_id": lab_id, "usuario": usuario_actual, "fecha": date.today().isoformat(), "contenido": cont_b, "resultado": resultado}).execute()
+                            
+                            msg = f"✅ **Protocolo Ejecutado:** {prot_nom} ({muestras} muestras).\nInventario descontado y guardado en tu bitácora."
+                        else:
+                            msg = f"❌ No encontré el protocolo '{prot_nom}' en la base de datos."
+                        st.markdown(msg); st.session_state.messages.append({"role": "assistant", "content": msg}); st.rerun()
+
+                    elif "GUARDAR_BITACORA:" in res_ai:
                         data = json.loads(re.search(r'\{.*\}', res_ai, re.DOTALL).group())
                         supabase.table("bitacora").insert({"lab_id": lab_id, "usuario": usuario_actual, "fecha": date.today().isoformat(), "contenido": data['contenido']}).execute()
                         msg = f"📔 **Anotado en tu bitácora:** {data['contenido']}"
