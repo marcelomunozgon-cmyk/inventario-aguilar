@@ -41,7 +41,7 @@ except Exception as e:
 def cargar_modelo_rapido(): return genai.GenerativeModel('gemini-2.5-flash')
 model = cargar_modelo_rapido()
 
-# --- 2. SISTEMA DE AUTENTICACIÓN ---
+# --- 2. SISTEMA DE AUTENTICACIÓN (NUEVO MOTOR ANTI-GHOSTING) ---
 if "usuario_autenticado" not in st.session_state:
     st.session_state.usuario_autenticado = None
     st.session_state.user_uid = None
@@ -59,28 +59,40 @@ if st.session_state.usuario_autenticado is None:
         
         with tab_login:
             with st.container(border=True):
-                with st.form("form_login"):
-                    email_login = st.text_input("Correo corporativo")
-                    pass_login = st.text_input("Contraseña", type="password")
-                    submitted = st.form_submit_button("Acceder a Stck", type="primary", use_container_width=True)
-                    if submitted:
-                        with st.spinner("Autenticando..."):
-                            try:
-                                res = supabase.auth.sign_in_with_password({"email": email_login.strip(), "password": pass_login})
-                                st.session_state.usuario_autenticado = res.user.email
-                                st.session_state.user_uid = res.user.id
-                                req_eq = supabase.table("equipo").select("*").eq("email", res.user.email).execute()
-                                if req_eq.data:
-                                    st.session_state.lab_id = req_eq.data[0]['lab_id']
-                                    st.session_state.rol = req_eq.data[0]['rol']
-                                    st.session_state.nombre_usuario = req_eq.data[0].get('nombre', res.user.email)
-                                else:
-                                    st.session_state.lab_id = "PENDIENTE"
-                                    st.session_state.rol = "espera"
-                                    st.session_state.nombre_usuario = res.user.email
-                                st.rerun()
-                            except: 
-                                st.error("Credenciales incorrectas.")
+                email_login = st.text_input("Correo corporativo", key="log_email")
+                pass_login = st.text_input("Contraseña", type="password", key="log_pass")
+                
+                if st.button("Acceder a Stck", type="primary", use_container_width=True):
+                    with st.spinner("Autenticando..."):
+                        try:
+                            # 1. Autenticación Pura
+                            res = supabase.auth.sign_in_with_password({"email": email_login.strip(), "password": pass_login})
+                        except Exception as e:
+                            st.error("Credenciales incorrectas o usuario no registrado.")
+                            st.stop() # Bloquea el avance si la clave es mala
+                        
+                        # 2. Guardamos la sesión (Ya estás adentro)
+                        st.session_state.usuario_autenticado = res.user.email
+                        st.session_state.user_uid = res.user.id
+                        
+                        # 3. Intentamos leer los roles sin que rompa el inicio de sesión
+                        try:
+                            req_eq = supabase.table("equipo").select("*").eq("email", res.user.email).execute()
+                            if req_eq.data:
+                                st.session_state.lab_id = req_eq.data[0]['lab_id']
+                                st.session_state.rol = req_eq.data[0]['rol']
+                                st.session_state.nombre_usuario = req_eq.data[0].get('nombre', res.user.email)
+                            else:
+                                st.session_state.lab_id = "PENDIENTE"
+                                st.session_state.rol = "espera"
+                                st.session_state.nombre_usuario = res.user.email
+                        except Exception as db_error:
+                            st.session_state.lab_id = "PENDIENTE"
+                            st.session_state.rol = "espera"
+                            st.session_state.nombre_usuario = res.user.email
+                            
+                        # 4. Forzamos el refresco de pantalla
+                        st.rerun()
                             
         with tab_reg:
             with st.container(border=True):
@@ -144,7 +156,7 @@ if st.session_state.lab_id == "PENDIENTE":
 # --- VARIABLES GLOBALES Y FUNCIONES ---
 lab_id = st.session_state.lab_id
 usuario_actual = st.session_state.get('nombre_usuario', st.session_state.get('usuario_autenticado', 'Usuario'))
-rol_actual = st.session_state.get('rol', 'miembro')
+rol_actual = str(st.session_state.get('rol', 'miembro')).strip().lower()
 correo_destinatario_compras = st.secrets.get("EMAIL_RECEIVER", "No configurado")
 
 if 'auto_search' not in st.session_state: st.session_state.auto_search = ""
@@ -256,7 +268,7 @@ def aplicar_estilos_inv(row):
 col_logo, col_user = st.columns([3, 1])
 with col_logo: st.markdown("## 🔬 Stck")
 with col_user: 
-    tipo_cuenta = "🚚 Proveedor" if rol_actual == "proveedor" else f"👤 {rol_actual.capitalize()}"
+    tipo_cuenta = "🚚 Proveedor" if rol_actual == "proveedor" else f"👤 {str(st.session_state.get('rol', 'miembro')).capitalize()}"
     st.info(f"{tipo_cuenta}: {usuario_actual}")
     if st.button("🚪 Cerrar Sesión"):
         for key in list(st.session_state.keys()): del st.session_state[key]
