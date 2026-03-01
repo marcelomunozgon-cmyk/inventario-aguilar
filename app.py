@@ -26,7 +26,7 @@ st.markdown("""
     .stTabs [data-baseweb="tab"] { height: 50px; background-color: transparent; border-radius: 4px 4px 0px 0px; color: #888; font-weight: 500; }
     .stTabs [aria-selected="true"] { color: #ffffff !important; background-color: #1a1a1a !important; border-bottom: 2px solid #1a1a1a !important; }
     .stButton>button { border-radius: 8px; font-weight: 500; }
-    .bitacora-entry { background-color: #f9f9f9; padding: 15px; border-radius: 8px; border-left: 4px solid #4a90e2; margin-bottom: 10px; }
+    .bitacora-entry { background-color: #fcfcfc; padding: 20px; border-radius: 8px; border-left: 5px solid #ffaa00; margin-bottom: 15px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); font-family: 'Georgia', serif;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -233,10 +233,12 @@ except:
     df_equipos = pd.DataFrame(columns=["id", "nombre", "descripcion", "visibilidad", "requisitos"])
     df_reservas = pd.DataFrame(columns=["id", "equipo_id", "usuario", "fecha_inicio", "fecha_fin"])
 
+# Carga de Bitácora
 try:
     res_bitacora = supabase.table("bitacora").select("*").eq("lab_id", lab_id).order("fecha", desc=True).execute()
     df_bitacora = pd.DataFrame(res_bitacora.data)
-except: df_bitacora = pd.DataFrame(columns=["id", "usuario", "fecha", "contenido"])
+except Exception as e: 
+    df_bitacora = pd.DataFrame(columns=["id", "usuario", "fecha", "contenido"])
 
 try:
     res_equipo_lab = supabase.table("equipo").select("nombre").eq("lab_id", lab_id).execute()
@@ -423,11 +425,15 @@ with col_mon:
                                 st.rerun()
                             except Exception as e: st.error(f"Error: {e}")
 
-    # --- NUEVA PESTAÑA: BITÁCORA ELECTRÓNICA ---
+    # --- PESTAÑA: BITÁCORA ELECTRÓNICA ---
     with tab_bitacora:
         st.markdown("### 📔 Electronic Lab Notebook (ELN)")
         
-        filtro_usuario = st.selectbox("Ver bitácora de:", ["Todos"] + list(set(nombres_equipo)))
+        # LOGICA DE VISIBILIDAD DE ROLES
+        if rol_actual == "admin":
+            filtro_usuario = st.selectbox("Ver bitácora de:", ["Todos"] + list(set(nombres_equipo)))
+        else:
+            filtro_usuario = usuario_actual
         
         c_bit_form, c_bit_view = st.columns([1, 1.5], gap="large")
         
@@ -442,12 +448,11 @@ with col_mon:
                 
                 if st.button("💾 Guardar en Bitácora", type="primary", use_container_width=True):
                     contenido_final = texto_b
-                    
                     if foto_b:
                         with st.spinner("La IA está leyendo y transcribiendo tu letra..."):
                             try:
                                 img = Image.open(foto_b).convert('RGB')
-                                prompt_vision = "Actúa como un transcriptor científico. Lee esta página de una bitácora de laboratorio y transcribe todo el texto escrito a mano de la forma más fiel y ordenada posible. Solo devuelve el texto, sin comentarios adicionales."
+                                prompt_vision = "Actúa como un transcriptor científico. Lee esta página de una bitácora de laboratorio y transcribe todo el texto de la forma más fiel posible. Solo devuelve el texto."
                                 transcripcion = model.generate_content([prompt_vision, img]).text
                                 contenido_final = f"{texto_b}\n\n---\n*Transcripción de foto:*\n{transcripcion}"
                             except Exception as e:
@@ -463,12 +468,16 @@ with col_mon:
                             st.success("¡Entrada guardada con éxito!")
                             st.rerun()
                         except Exception as e:
-                            st.error("Asegúrate de crear la tabla 'bitacora' en Supabase.")
+                            st.error(f"❌ Error al guardar en base de datos: {e}")
                     else:
                         st.warning("Escribe algo o toma una foto antes de guardar.")
                         
         with c_bit_view:
-            st.write(f"**Historial de {filtro_usuario}:**")
+            if rol_actual == "admin":
+                st.write(f"**Historial de {filtro_usuario}:**")
+            else:
+                st.write("**Tu historial personal:**")
+                
             if df_bitacora.empty:
                 st.info("Aún no hay registros en la bitácora del laboratorio.")
             else:
@@ -480,7 +489,7 @@ with col_mon:
                         st.markdown(f"""
                         <div class="bitacora-entry">
                             <small style="color: gray;">📅 {row['fecha']} | 👤 <b>{row['usuario']}</b></small><br>
-                            <span style="white-space: pre-wrap;">{row['contenido']}</span>
+                            <span style="white-space: pre-wrap; line-height: 1.6;">{row['contenido']}</span>
                         </div>
                         """, unsafe_allow_html=True)
 
@@ -647,7 +656,7 @@ with col_chat:
                             msg = f"📔 **Guardado en tu Bitácora:**\n\n{transcripcion}"
 
                         st.markdown(msg); st.session_state.messages.append({"role": "assistant", "content": msg}); st.rerun()
-                    except Exception as e: st.error("No pude procesar la imagen.")
+                    except Exception as e: st.error(f"Error al procesar la imagen: {e}")
 
     if prompt:
         st.session_state.messages.append({"role": "user", "content": prompt})
@@ -689,4 +698,4 @@ with col_chat:
                         st.session_state.auto_search = itm['nombre']
                         st.markdown(msg); st.session_state.messages.append({"role": "assistant", "content": msg}); st.rerun() 
                     else: st.markdown(res_ai); st.session_state.messages.append({"role": "assistant", "content": res_ai})
-                except: st.error("Error IA.")
+                except Exception as e: st.error(f"Error IA: {e}")
