@@ -22,8 +22,8 @@ st.markdown("""
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
     html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
     div[data-testid="stContainer"] { border-radius: 10px; border-color: #f0f0f0; }
-    .stTabs [data-baseweb="tab-list"] { gap: 15px; border-bottom: 1px solid #f0f0f0; }
-    .stTabs [data-baseweb="tab"] { height: 50px; background-color: transparent; border-radius: 4px 4px 0px 0px; color: #888; font-weight: 500; }
+    .stTabs [data-baseweb="tab-list"] { gap: 15px; border-bottom: 1px solid #f0f0f0; flex-wrap: wrap; }
+    .stTabs [data-baseweb="tab"] { height: 50px; background-color: transparent; border-radius: 4px 4px 0px 0px; color: #888; font-weight: 500; white-space: nowrap; }
     .stTabs [aria-selected="true"] { color: #ffffff !important; background-color: #1a1a1a !important; border-bottom: 2px solid #1a1a1a !important; }
     .stButton>button { border-radius: 8px; font-weight: 500; }
     .bitacora-entry { background-color: #fcfcfc; padding: 20px; border-radius: 8px; border-left: 5px solid #ffaa00; margin-bottom: 15px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); font-family: 'Georgia', serif;}
@@ -292,7 +292,7 @@ col_chat, col_mon = st.columns([1, 1.6], gap="large")
 
 with col_mon:
     if rol_actual == "admin": 
-        tab_inv, tab_prot, tab_equipos, tab_bitacora, tab_edit, tab_analisis, tab_equipo = st.tabs(["📦 Inv", "🧪 Prot", "📅 Eq", "📔 Bitácora", "⚙️ Edit", "📊 Data", "👥 Usr"])
+        tab_inv, tab_prot, tab_equipos, tab_bitacora, tab_edit, tab_analisis, tab_usuarios = st.tabs(["📦 Inventario", "🧪 Protocolos", "📅 Equipos", "📔 Bitácora", "⚙️ Edición", "📊 Analítica", "👥 Usuarios"])
     else: 
         tab_inv, tab_prot, tab_equipos, tab_bitacora, tab_edit = st.tabs(["📦 Inventario", "🧪 Protocolos", "📅 Equipos", "📔 Bitácora", "⚙️ Edición"])
     
@@ -330,7 +330,6 @@ with col_mon:
     with tab_equipos:
         st.markdown("### 🗓️ Gestión y Booking de Equipos")
         
-        # FIX DE LA LISTA
         if rol_actual == "admin": 
             sub_tab_reserva, sub_tab_mis_equipos = st.tabs(["📅 Agendar Uso", "⚙️ Mis Equipos (Admin)"])
         else: 
@@ -588,7 +587,7 @@ with col_mon:
                     else: st.info("Aún no hay suficientes retiros para proyectar matemáticas.")
                 else: st.info("Registra movimientos para que la IA aprenda el consumo.")
 
-        with tab_equipo:
+        with tab_usuarios:
             st.markdown("### 🤝 Gestión de Accesos")
             with st.container(border=True):
                 nuevo_email = st.text_input("Correo a invitar:").strip().lower()
