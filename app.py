@@ -55,28 +55,34 @@ if st.session_state.usuario_autenticado is None:
     col_espacio1, col_login, col_espacio2 = st.columns([1, 2, 1])
     with col_login:
         tab_login, tab_reg = st.tabs(["🔐 Iniciar Sesión", "🏢 Crear Cuenta"])
+        
         with tab_login:
             with st.container(border=True):
-                email_login = st.text_input("Correo corporativo", key="log_email")
-                pass_login = st.text_input("Contraseña", type="password", key="log_pass")
-                if st.button("Acceder a Stck", type="primary", use_container_width=True):
-                    with st.spinner("Autenticando..."):
-                        try:
-                            res = supabase.auth.sign_in_with_password({"email": email_login.strip(), "password": pass_login})
-                            st.session_state.usuario_autenticado = res.user.email
-                            st.session_state.user_uid = res.user.id
-                            
-                            req_eq = supabase.table("equipo").select("*").eq("email", res.user.email).execute()
-                            if req_eq.data:
-                                st.session_state.lab_id = req_eq.data[0]['lab_id']
-                                st.session_state.rol = req_eq.data[0]['rol']
-                                st.session_state.nombre_usuario = req_eq.data[0].get('nombre', res.user.email)
-                            else:
-                                st.session_state.lab_id = "PENDIENTE"
-                                st.session_state.rol = "espera"
-                                st.session_state.nombre_usuario = res.user.email
-                            st.rerun()
-                        except: st.error("Credenciales incorrectas.")
+                # SOLUCIÓN: Usar un formulario para aislar el inicio de sesión y evitar problemas de estado al cambiar de pestaña
+                with st.form("form_login"):
+                    email_login = st.text_input("Correo corporativo")
+                    pass_login = st.text_input("Contraseña", type="password")
+                    submitted = st.form_submit_button("Acceder a Stck", type="primary", use_container_width=True)
+                    
+                    if submitted:
+                        with st.spinner("Autenticando..."):
+                            try:
+                                res = supabase.auth.sign_in_with_password({"email": email_login.strip(), "password": pass_login})
+                                st.session_state.usuario_autenticado = res.user.email
+                                st.session_state.user_uid = res.user.id
+                                
+                                req_eq = supabase.table("equipo").select("*").eq("email", res.user.email).execute()
+                                if req_eq.data:
+                                    st.session_state.lab_id = req_eq.data[0]['lab_id']
+                                    st.session_state.rol = req_eq.data[0]['rol']
+                                    st.session_state.nombre_usuario = req_eq.data[0].get('nombre', res.user.email)
+                                else:
+                                    st.session_state.lab_id = "PENDIENTE"
+                                    st.session_state.rol = "espera"
+                                    st.session_state.nombre_usuario = res.user.email
+                                st.rerun()
+                            except: 
+                                st.error("Credenciales incorrectas.")
                             
         with tab_reg:
             with st.container(border=True):
@@ -190,7 +196,7 @@ except: df_prot = pd.DataFrame(columns=["id", "nombre", "materiales_base"])
 
 # Carga de Equipos y Reservas
 try:
-    # A futuro: Aquí podemos filtrar para mostrar equipos de otros lab_id según visibilidad
+    # SOLUCIÓN: Usar el nombre de tabla correcto 'equipos_lab' en el código
     res_equipos = supabase.table("equipos_lab").select("*").eq("lab_id", lab_id).execute()
     df_equipos = pd.DataFrame(res_equipos.data)
     
@@ -353,13 +359,18 @@ with col_mon:
                 with st.form("form_nuevo_equipo"):
                     n_eq = st.text_input("Nombre del Equipo (Ej: Termociclador BioRad)")
                     d_eq = st.text_input("Descripción / Ubicación")
+                    # La especificación original para crear la tabla 'equipos_lab' incluía la columna 'visibilidad'.
                     v_eq = st.selectbox("Nivel de Visibilidad Pública", ["Solo mi Laboratorio", "Mi Instituto", "Toda la Sede", "Público General"])
                     if st.form_submit_button("Guardar Equipo"):
                         try:
+                            # SOLUCIÓN: Usar el nombre de tabla correcto 'equipos_lab' en el código
+                            # La columna 'visibilidad' se incluyó en la especificación original de la tabla.
                             supabase.table("equipos_lab").insert({"nombre": n_eq, "descripcion": d_eq, "visibilidad": v_eq, "lab_id": lab_id}).execute()
                             st.success("Equipo registrado.")
                             st.rerun()
-                        except Exception as e: st.error(f"Asegúrate de haber creado la tabla en Supabase.")
+                        except Exception as e:
+                            # Cambiado para mostrar el error real, útil para depurar permisos de RLS
+                            st.error(f"Error: {e}")
 
     with tab_prot:
         tab_ejecutar, tab_crear = st.tabs(["🚀 Ejecutar", "📝 Nuevo"])
