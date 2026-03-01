@@ -26,6 +26,7 @@ st.markdown("""
     .stTabs [data-baseweb="tab"] { height: 50px; background-color: transparent; border-radius: 4px 4px 0px 0px; color: #888; font-weight: 500; }
     .stTabs [aria-selected="true"] { color: #ffffff !important; background-color: #1a1a1a !important; border-bottom: 2px solid #1a1a1a !important; }
     .stButton>button { border-radius: 8px; font-weight: 500; }
+    .bitacora-entry { background-color: #f9f9f9; padding: 15px; border-radius: 8px; border-left: 4px solid #4a90e2; margin-bottom: 10px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -161,33 +162,24 @@ def enviar_correo_reserva(equipo_nombre, fecha_str, hora_ini, hora_fin, usuario_
     try:
         sender = st.secrets["EMAIL_SENDER"]
         password = st.secrets["EMAIL_PASSWORD"]
-
-        # Correo para el Usuario
         msg_user = MIMEMultipart()
         msg_user['From'] = sender
         msg_user['To'] = usuario_email
         msg_user['Subject'] = f"✅ Reserva Confirmada: {equipo_nombre} - Stck"
         msg_user.attach(MIMEText(f"<html><body><h3>Reserva Exitosa</h3><p>Hola, has reservado exitosamente el equipo <b>{equipo_nombre}</b> para el <b>{fecha_str}</b> en el horario de <b>{hora_ini}</b> a <b>{hora_fin}</b>.</p></body></html>", 'html'))
-
-        # Correo para el Admin
         msg_admin = MIMEMultipart()
         msg_admin['From'] = sender
         msg_admin['To'] = admin_email
         msg_admin['Subject'] = f"📅 Nueva Reserva de Equipo: {equipo_nombre} - Stck"
         msg_admin.attach(MIMEText(f"<html><body><h3>Notificación de Laboratorio</h3><p>El usuario <b>{usuario_reserva}</b> ({usuario_email}) ha agendado el uso de <b>{equipo_nombre}</b> para el <b>{fecha_str}</b> desde las <b>{hora_ini}</b> hasta las <b>{hora_fin}</b>.</p></body></html>", 'html'))
-
         server = smtplib.SMTP('smtp.gmail.com', 587)
         server.starttls()
         server.login(sender, password)
         server.send_message(msg_user)
-        # Solo enviar al admin si es distinto al usuario que hace la reserva
-        if admin_email and admin_email != usuario_email:
-            server.send_message(msg_admin)
+        if admin_email and admin_email != usuario_email: server.send_message(msg_admin)
         server.quit()
         return True
-    except Exception as e: 
-        print(e)
-        return False
+    except: return False
 
 def enviar_correo_compras(item_nombre, precio, operador):
     try:
@@ -235,12 +227,21 @@ try:
     for col in ['descripcion', 'visibilidad', 'requisitos']:
         if col not in df_equipos.columns: df_equipos[col] = ""
         df_equipos[col] = df_equipos[col].astype(str).replace(["nan", "None"], "")
-        
     res_reservas = supabase.table("reservas").select("*").eq("lab_id", lab_id).execute()
     df_reservas = pd.DataFrame(res_reservas.data)
-except Exception as e:
+except:
     df_equipos = pd.DataFrame(columns=["id", "nombre", "descripcion", "visibilidad", "requisitos"])
     df_reservas = pd.DataFrame(columns=["id", "equipo_id", "usuario", "fecha_inicio", "fecha_fin"])
+
+try:
+    res_bitacora = supabase.table("bitacora").select("*").eq("lab_id", lab_id).order("fecha", desc=True).execute()
+    df_bitacora = pd.DataFrame(res_bitacora.data)
+except: df_bitacora = pd.DataFrame(columns=["id", "usuario", "fecha", "contenido"])
+
+try:
+    res_equipo_lab = supabase.table("equipo").select("nombre").eq("lab_id", lab_id).execute()
+    nombres_equipo = [row['nombre'] for row in res_equipo_lab.data]
+except: nombres_equipo = [usuario_actual]
 
 def aplicar_estilos_inv(row):
     cant = row.get('cantidad_actual', 0)
@@ -289,9 +290,9 @@ col_chat, col_mon = st.columns([1, 1.6], gap="large")
 
 with col_mon:
     if rol_actual == "admin": 
-        tab_inv, tab_prot, tab_equipos, tab_edit, tab_analisis, tab_equipo = st.tabs(["📦 Inv", "🧪 Prot", "📅 Equipos", "⚙️ Edit", "📊 Data", "👥 Acceso"])
+        tab_inv, tab_prot, tab_equipos, tab_bitacora, tab_edit, tab_analisis, tab_equipo = st.tabs(["📦 Inv", "🧪 Prot", "📅 Eq", "📔 Bitácora", "⚙️ Edit", "📊 Data", "👥 Usr"])
     else: 
-        tab_inv, tab_prot, tab_equipos, tab_edit = st.tabs(["📦 Inventario", "🧪 Protocolos", "📅 Equipos", "⚙️ Edición"])
+        tab_inv, tab_prot, tab_equipos, tab_bitacora, tab_edit = st.tabs(["📦 Inventario", "🧪 Protocolos", "📅 Equipos", "📔 Bitácora", "⚙️ Edición"])
     
     with tab_inv:
         if not df.empty:
@@ -309,8 +310,7 @@ with col_mon:
             
             if not df_criticos.empty or not df_vencidos.empty:
                 st.error("🚨 **Alertas de Laboratorio**")
-                if not df_criticos.empty: 
-                    st.warning(f"⚠️ **{len(df_criticos)} Reactivos Críticos / Fuera de Stock**")
+                if not df_criticos.empty: st.warning(f"⚠️ **{len(df_criticos)} Reactivos Críticos / Fuera de Stock**")
                 if not df_vencidos.empty: st.warning(f"📅 **{len(df_vencidos)} Reactivos Vencen en < 30 días**")
         
         st.markdown("### 🗂️ Catálogo de Reactivos")
@@ -327,29 +327,20 @@ with col_mon:
 
     with tab_equipos:
         st.markdown("### 🗓️ Gestión y Booking de Equipos")
-        
-        if rol_actual == "admin":
-            sub_tab_reserva, sub_tab_mis_equipos = st.tabs(["📅 Agendar Uso", "⚙️ Mis Equipos (Admin)"])
-        else:
-            sub_tab_reserva, sub_tab_mis_equipos = st.tabs(["📅 Agendar Uso"]), None
+        if rol_actual == "admin": sub_tab_reserva, sub_tab_mis_equipos = st.tabs(["📅 Agendar Uso", "⚙️ Mis Equipos (Admin)"])
+        else: sub_tab_reserva, sub_tab_mis_equipos = st.tabs(["📅 Agendar Uso"]), None
 
         with sub_tab_reserva:
             c_eq_res, c_eq_agenda = st.columns([1, 1.2])
-            
             with c_eq_res:
-                if df_equipos.empty:
-                    st.info("No hay equipos registrados disponibles.")
+                if df_equipos.empty: st.info("No hay equipos registrados disponibles.")
                 else:
                     eq_seleccionado = st.selectbox("Seleccionar Equipo:", df_equipos['nombre'].tolist())
                     datos_eq = df_equipos[df_equipos['nombre'] == eq_seleccionado].iloc[0]
-                    
                     st.caption(f"👀 Visibilidad: **{datos_eq.get('visibilidad', 'Privado')}**")
-                    if str(datos_eq.get('requisitos', '')).strip():
-                        st.warning(f"⚠️ **Requisitos:** {datos_eq['requisitos']}")
+                    if str(datos_eq.get('requisitos', '')).strip(): st.warning(f"⚠️ **Requisitos:** {datos_eq['requisitos']}")
                     
                     fecha_res = st.date_input("Fecha de reserva:")
-                    
-                    # --- MOSTRAR DISPONIBILIDAD (CALENDARIO VISUAL) ---
                     st.markdown(f"**Disponibilidad para el {fecha_res.strftime('%d/%m/%Y')}:**")
                     df_r_dia = pd.DataFrame()
                     if not df_reservas.empty:
@@ -362,10 +353,8 @@ with col_mon:
                     if not df_r_dia.empty:
                         for _, row in df_r_dia.iterrows():
                             st.markdown(f"🚫 `{row['fecha_inicio'].strftime('%H:%M')} - {row['fecha_fin'].strftime('%H:%M')}` (Reservado por {row['usuario']})")
-                    else:
-                        st.success("✅ Todo el día está libre.")
+                    else: st.success("✅ Todo el día está libre.")
                     
-                    # --- FORMULARIO DE RESERVA ---
                     col_h1, col_h2 = st.columns(2)
                     with col_h1: t_ini = st.time_input("Hora Inicio:", value=time(9, 0))
                     with col_h2: t_fin = st.time_input("Hora Fin:", value=time(10, 0))
@@ -373,41 +362,23 @@ with col_mon:
                     if st.button("Confirmar Reserva", type="primary", use_container_width=True):
                         dt_ini = datetime.combine(fecha_res, t_ini)
                         dt_fin = datetime.combine(fecha_res, t_fin)
-                        
-                        if dt_ini >= dt_fin: 
-                            st.error("La hora de inicio debe ser anterior a la de fin.")
+                        if dt_ini >= dt_fin: st.error("La hora de inicio debe ser anterior a la de fin.")
                         else:
-                            # LÓGICA ANTI-CHOQUE
                             solapamiento = False
                             if not df_r_dia.empty:
                                 for _, r in df_r_dia.iterrows():
                                     if dt_ini < r['fecha_fin'] and dt_fin > r['fecha_inicio']:
                                         solapamiento = True
                                         break
-                            
-                            if solapamiento:
-                                st.error("❌ El horario seleccionado choca con una reserva existente. Por favor elige otro bloque.")
+                            if solapamiento: st.error("❌ El horario seleccionado choca con una reserva existente.")
                             else:
                                 try:
-                                    # Guardar en Base de Datos
-                                    supabase.table("reservas").insert({
-                                        "equipo_id": str(datos_eq['id']), "usuario": usuario_actual, 
-                                        "fecha_inicio": dt_ini.isoformat(), "fecha_fin": dt_fin.isoformat(), "lab_id": lab_id
-                                    }).execute()
-                                    
-                                    # Enviar Correos Automatizados
+                                    supabase.table("reservas").insert({"equipo_id": str(datos_eq['id']), "usuario": usuario_actual, "fecha_inicio": dt_ini.isoformat(), "fecha_fin": dt_fin.isoformat(), "lab_id": lab_id}).execute()
                                     admin_email = obtener_admin_email(lab_id)
-                                    user_email = st.session_state.usuario_autenticado
-                                    enviar_correo_reserva(
-                                        datos_eq['nombre'], fecha_res.strftime('%d/%m/%Y'),
-                                        t_ini.strftime('%H:%M'), t_fin.strftime('%H:%M'),
-                                        usuario_actual, admin_email, user_email
-                                    )
-                                    
-                                    st.success("✅ Reserva guardada y notificaciones enviadas.")
+                                    enviar_correo_reserva(datos_eq['nombre'], fecha_res.strftime('%d/%m/%Y'), t_ini.strftime('%H:%M'), t_fin.strftime('%H:%M'), usuario_actual, admin_email, st.session_state.usuario_autenticado)
+                                    st.success("✅ Reserva guardada.")
                                     st.rerun()
                                 except Exception as e: st.error(f"Error al reservar: {e}")
-            
             with c_eq_agenda:
                 st.write("**Tus Próximas Reservas:**")
                 if not df_reservas.empty and not df_equipos.empty:
@@ -415,64 +386,103 @@ with col_mon:
                     df_r['fecha_inicio'] = pd.to_datetime(df_r['fecha_inicio'])
                     df_r['fecha_fin'] = pd.to_datetime(df_r['fecha_fin'])
                     df_futuras = df_r[(df_r['fecha_fin'] >= pd.to_datetime('today')) & (df_r['usuario'] == usuario_actual)].sort_values(by='fecha_inicio')
-                    
                     if df_futuras.empty: st.info("No tienes reservas activas.")
                     else:
                         for _, row in df_futuras.iterrows():
                             with st.container(border=True):
                                 st.markdown(f"**{row['nombre_y']}**")
                                 st.write(f"🕒 {row['fecha_inicio'].strftime('%d/%b %H:%M')} - {row['fecha_fin'].strftime('%H:%M')}")
-                                gcal_link = generar_link_gcal(
-                                    titulo=f"Uso Lab: {row['nombre_y']}", 
-                                    inicio=row['fecha_inicio'], fin=row['fecha_fin'], 
-                                    descripcion=f"Reserva gestionada en Stck."
-                                )
+                                gcal_link = generar_link_gcal(titulo=f"Uso Lab: {row['nombre_y']}", inicio=row['fecha_inicio'], fin=row['fecha_fin'], descripcion=f"Reserva gestionada en Stck.")
                                 st.markdown(f"[📅 Agregar a mi Google Calendar]({gcal_link})", unsafe_allow_html=True)
-                else:
-                    st.info("No hay reservas.")
+                else: st.info("No hay reservas.")
                     
-        # PANEL DE ADMINISTRACIÓN DE EQUIPOS
         if rol_actual == "admin" and sub_tab_mis_equipos:
             with sub_tab_mis_equipos:
                 st.write("Gestiona la información, visibilidad y reglas de uso de tus equipos.")
                 if not df_equipos.empty:
                     cols_ed_eq = ['nombre', 'descripcion', 'visibilidad', 'requisitos', 'id']
-                    edited_eq_df = st.data_editor(
-                        df_equipos[cols_ed_eq].copy(), 
-                        column_config={
-                            "id": st.column_config.TextColumn("ID", disabled=True),
-                            "visibilidad": st.column_config.SelectboxColumn("Visibilidad", options=["Solo mi Laboratorio", "Mi Instituto", "Toda la Sede", "Público General"])
-                        }, 
-                        use_container_width=True, hide_index=True
-                    )
-                    
+                    edited_eq_df = st.data_editor(df_equipos[cols_ed_eq].copy(), column_config={"id": st.column_config.TextColumn("ID", disabled=True), "visibilidad": st.column_config.SelectboxColumn("Visibilidad", options=["Solo mi Laboratorio", "Mi Instituto", "Toda la Sede", "Público General"])}, use_container_width=True, hide_index=True)
                     if st.button("💾 Guardar Cambios en Equipos", type="secondary"):
                         for _, row in edited_eq_df.iterrows():
                             d = row.replace({np.nan: None}).to_dict()
                             if 'id' in d and str(d['id']).strip(): 
                                 d['lab_id'] = lab_id 
                                 supabase.table("equipos_lab").upsert(d).execute()
-                        st.success("Equipos actualizados.")
                         st.rerun()
-                
                 st.markdown("---")
                 with st.expander("➕ Registrar Nuevo Equipo", expanded=df_equipos.empty):
                     with st.form("form_nuevo_equipo"):
-                        n_eq = st.text_input("Nombre del Equipo (Ej: HPLC Agilent)")
+                        n_eq = st.text_input("Nombre del Equipo")
                         d_eq = st.text_input("Descripción / Ubicación")
-                        req_eq = st.text_area("Requisitos de Uso (Ej: Solo usuarios capacitados)")
+                        req_eq = st.text_area("Requisitos de Uso")
                         v_eq = st.selectbox("Visibilidad", ["Solo mi Laboratorio", "Mi Instituto", "Toda la Sede", "Público General"])
-                        
                         if st.form_submit_button("Crear Equipo", type="primary"):
                             try:
-                                supabase.table("equipos_lab").insert({
-                                    "nombre": n_eq, "descripcion": d_eq, "visibilidad": v_eq, 
-                                    "requisitos": req_eq, "lab_id": lab_id
-                                }).execute()
-                                st.success("Equipo registrado exitosamente.")
+                                supabase.table("equipos_lab").insert({"nombre": n_eq, "descripcion": d_eq, "visibilidad": v_eq, "requisitos": req_eq, "lab_id": lab_id}).execute()
+                                st.success("Equipo registrado.")
                                 st.rerun()
+                            except Exception as e: st.error(f"Error: {e}")
+
+    # --- NUEVA PESTAÑA: BITÁCORA ELECTRÓNICA ---
+    with tab_bitacora:
+        st.markdown("### 📔 Electronic Lab Notebook (ELN)")
+        
+        filtro_usuario = st.selectbox("Ver bitácora de:", ["Todos"] + list(set(nombres_equipo)))
+        
+        c_bit_form, c_bit_view = st.columns([1, 1.5], gap="large")
+        
+        with c_bit_form:
+            with st.container(border=True):
+                st.write("📝 **Nueva Entrada Manual**")
+                fecha_b = st.date_input("Fecha:", value=date.today())
+                texto_b = st.text_area("¿Qué hiciste hoy en el laboratorio?", height=150)
+                
+                st.write("📸 **O Digitaliza tu Bitácora Física**")
+                foto_b = st.camera_input("Capturar página de tu cuaderno", label_visibility="collapsed")
+                
+                if st.button("💾 Guardar en Bitácora", type="primary", use_container_width=True):
+                    contenido_final = texto_b
+                    
+                    if foto_b:
+                        with st.spinner("La IA está leyendo y transcribiendo tu letra..."):
+                            try:
+                                img = Image.open(foto_b).convert('RGB')
+                                prompt_vision = "Actúa como un transcriptor científico. Lee esta página de una bitácora de laboratorio y transcribe todo el texto escrito a mano de la forma más fiel y ordenada posible. Solo devuelve el texto, sin comentarios adicionales."
+                                transcripcion = model.generate_content([prompt_vision, img]).text
+                                contenido_final = f"{texto_b}\n\n---\n*Transcripción de foto:*\n{transcripcion}"
                             except Exception as e:
-                                st.error(f"Error al guardar: {e}")
+                                st.error("No se pudo leer bien la imagen.")
+                                contenido_final = texto_b
+                    
+                    if contenido_final.strip():
+                        try:
+                            supabase.table("bitacora").insert({
+                                "lab_id": lab_id, "usuario": usuario_actual, 
+                                "fecha": fecha_b.isoformat(), "contenido": contenido_final
+                            }).execute()
+                            st.success("¡Entrada guardada con éxito!")
+                            st.rerun()
+                        except Exception as e:
+                            st.error("Asegúrate de crear la tabla 'bitacora' en Supabase.")
+                    else:
+                        st.warning("Escribe algo o toma una foto antes de guardar.")
+                        
+        with c_bit_view:
+            st.write(f"**Historial de {filtro_usuario}:**")
+            if df_bitacora.empty:
+                st.info("Aún no hay registros en la bitácora del laboratorio.")
+            else:
+                df_b_show = df_bitacora if filtro_usuario == "Todos" else df_bitacora[df_bitacora['usuario'] == filtro_usuario]
+                if df_b_show.empty:
+                    st.info(f"No hay registros para {filtro_usuario}.")
+                else:
+                    for _, row in df_b_show.iterrows():
+                        st.markdown(f"""
+                        <div class="bitacora-entry">
+                            <small style="color: gray;">📅 {row['fecha']} | 👤 <b>{row['usuario']}</b></small><br>
+                            <span style="white-space: pre-wrap;">{row['contenido']}</span>
+                        </div>
+                        """, unsafe_allow_html=True)
 
     with tab_prot:
         tab_ejecutar, tab_crear = st.tabs(["🚀 Ejecutar", "📝 Nuevo"])
@@ -488,8 +498,7 @@ with col_mon:
                         if ":" in linea:
                             partes = linea.split(":")
                             item_db = df[df['nombre'].str.contains(partes[0].strip(), case=False, na=False)]
-                            if not item_db.empty:
-                                descuentos.append({"id": str(item_db.iloc[0]['id']), "Reactivo": item_db.iloc[0]['nombre'], "Stock": item_db.iloc[0]['cantidad_actual'], "Descuento": float(partes[1].strip()) * n_muestras, "Unidad": item_db.iloc[0]['unidad']})
+                            if not item_db.empty: descuentos.append({"id": str(item_db.iloc[0]['id']), "Reactivo": item_db.iloc[0]['nombre'], "Stock": item_db.iloc[0]['cantidad_actual'], "Descuento": float(partes[1].strip()) * n_muestras, "Unidad": item_db.iloc[0]['unidad']})
                     if descuentos:
                         st.dataframe(pd.DataFrame(descuentos), hide_index=True)
                         if st.button("✅ Descontar del Inventario", type="primary"):
@@ -550,7 +559,6 @@ with col_mon:
                     df_mov['created_at'] = pd.to_datetime(df_mov['created_at']).dt.tz_localize(None)
                     df_consumos = df_mov[df_mov['cantidad_cambio'] < 0].copy()
                     df_consumos['cantidad_cambio'] = df_consumos['cantidad_cambio'].abs()
-                    
                     hace_30_dias = pd.to_datetime(date.today()) - timedelta(days=30)
                     df_ultimos_30 = df_consumos[df_consumos['created_at'] >= hace_30_dias]
                     
@@ -560,11 +568,9 @@ with col_mon:
                         df_pred = pd.merge(df[['nombre', 'cantidad_actual', 'unidad']], resumen, left_on='nombre', right_on='nombre_item', how='inner')
                         df_pred['tasa_diaria'] = df_pred['consumo_30d'] / 30
                         df_pred['dias_restantes'] = np.where(df_pred['tasa_diaria'] > 0, df_pred['cantidad_actual'] / df_pred['tasa_diaria'], 9999)
-                        
                         df_pred['dias_restantes_num'] = df_pred['dias_restantes']
                         df_pred['dias_restantes'] = df_pred['dias_restantes'].apply(lambda x: "🚨 Se agota hoy/mañana" if x <= 1.5 else f"Aprox {int(x)} días")
                         df_pred['tasa_diaria'] = df_pred['tasa_diaria'].round(2)
-                        
                         st.dataframe(df_pred[['nombre', 'cantidad_actual', 'unidad', 'consumo_30d', 'tasa_diaria', 'dias_restantes']].sort_values(by='dias_restantes_num', ascending=True).drop(columns=['dias_restantes_num']), use_container_width=True, hide_index=True)
                     else: st.info("Aún no hay suficientes retiros para proyectar matemáticas.")
                 else: st.info("Registra movimientos para que la IA aprenda el consumo.")
@@ -599,13 +605,15 @@ with col_chat:
         with chat_box: st.chat_message(m["role"]).markdown(m["content"])
 
     v_in = speech_to_text(language='es-CL', start_prompt="🎙️ Hablar", stop_prompt="⏹️ Enviar", just_once=True, key='voice_input')
-    prompt = v_in if v_in else st.chat_input("Ej: Saqué 2 buffer...")
+    prompt = v_in if v_in else st.chat_input("Ej: Saqué 2 buffer / Agrega a mi bitácora...")
 
-    with st.expander("📸 Enviar Foto de Etiqueta"):
-        accion_foto = st.radio("¿Qué deseas hacer con la foto?", ["➕ Agregar como Nuevo", "🔄 Actualizar Existente"], horizontal=True)
+    with st.expander("📸 Procesar con Ojo IA"):
+        accion_foto = st.radio("¿Qué deseas hacer con la foto?", ["➕ Agregar Reactivo Nuevo", "🔄 Actualizar Reactivo", "📔 Digitalizar a Bitácora"], horizontal=True)
         item_a_actualizar = None
-        if accion_foto == "🔄 Actualizar Existente" and not df.empty: item_a_actualizar = st.selectbox("Selecciona reactivo:", df['nombre'].tolist())
-        foto_chat = st.camera_input("Capturar Etiqueta")
+        if accion_foto == "🔄 Actualizar Reactivo" and not df.empty: item_a_actualizar = st.selectbox("Selecciona reactivo:", df['nombre'].tolist())
+        
+        foto_chat = st.camera_input("Capturar Imagen", label_visibility="collapsed")
+        
         if foto_chat and st.button("🧠 Procesar Foto", type="primary", use_container_width=True):
             img = Image.open(foto_chat).convert('RGB')
             st.session_state.messages.append({"role": "user", "content": "📸 *Foto enviada.*"})
@@ -613,7 +621,7 @@ with col_chat:
             with st.chat_message("assistant"):
                 with st.spinner("Analizando..."):
                     try:
-                        if accion_foto == "➕ Agregar como Nuevo":
+                        if accion_foto == "➕ Agregar Reactivo Nuevo":
                             prompt_vision = "Extrae los datos de esta etiqueta química. Responde SOLO JSON: {\"nombre\": \"\", \"categoria\": \"\", \"cantidad_actual\": 0, \"unidad\": \"\"}"
                             res_ai = model.generate_content([prompt_vision, img]).text
                             data = json.loads(re.search(r'\{.*\}', res_ai, re.DOTALL).group())
@@ -621,7 +629,8 @@ with col_chat:
                             itm = res_ins.data[0]
                             supabase.table("movimiento").insert({"item_id": str(itm['id']), "nombre_item": itm['nombre'], "cantidad_cambio": itm['cantidad_actual'], "tipo": "Nuevo IA (Foto)", "usuario": usuario_actual, "lab_id": lab_id}).execute()
                             msg = f"📸 **Creado:** {itm['nombre']} | Stock: {itm['cantidad_actual']}"
-                        else:
+                        
+                        elif accion_foto == "🔄 Actualizar Reactivo":
                             prompt_vision = f"Esta es una foto del reactivo '{item_a_actualizar}'. Extrae la cantidad. Responde SOLO JSON: {{\"{item_a_actualizar}\": true, \"cantidad_actual\": 0}}"
                             res_ai = model.generate_content([prompt_vision, img]).text
                             data = json.loads(re.search(r'\{.*\}', res_ai, re.DOTALL).group())
@@ -630,8 +639,15 @@ with col_chat:
                             supabase.table("items").update({"cantidad_actual": nueva_cant}).eq("id", id_ac).execute()
                             supabase.table("movimiento").insert({"item_id": id_ac, "nombre_item": item_a_actualizar, "cantidad_cambio": nueva_cant, "tipo": "Actualizado IA (Foto)", "usuario": usuario_actual, "lab_id": lab_id}).execute()
                             msg = f"📸 **Actualizado:** {item_a_actualizar} ahora tiene {nueva_cant} en stock."
+                            
+                        elif accion_foto == "📔 Digitalizar a Bitácora":
+                            prompt_vision = "Actúa como un transcriptor científico. Lee esta página de una bitácora de laboratorio y transcribe todo el texto escrito a mano de la forma más fiel y ordenada posible. Solo devuelve el texto, sin comentarios."
+                            transcripcion = model.generate_content([prompt_vision, img]).text
+                            supabase.table("bitacora").insert({"lab_id": lab_id, "usuario": usuario_actual, "fecha": date.today().isoformat(), "contenido": f"*Digitalizado por IA:*\n{transcripcion}"}).execute()
+                            msg = f"📔 **Guardado en tu Bitácora:**\n\n{transcripcion}"
+
                         st.markdown(msg); st.session_state.messages.append({"role": "assistant", "content": msg}); st.rerun()
-                    except: st.error("No pude leer la etiqueta.")
+                    except Exception as e: st.error("No pude procesar la imagen.")
 
     if prompt:
         st.session_state.messages.append({"role": "user", "content": prompt})
@@ -640,8 +656,21 @@ with col_chat:
             with st.spinner("Pensando..."):
                 try:
                     d_ia = df[['id', 'nombre', 'cantidad_actual', 'ubicacion']].to_json(orient='records') if not df.empty else "[]"
-                    res_ai = model.generate_content(f"Inventario: {d_ia}\nUsa id si existe, si no 'NUEVO'. JSON: EJECUTAR_ACCION:{{\"id\":\"\",\"nombre\":\"\",\"cantidad\":0,\"unidad\":\"\",\"ubicacion\":\"\"}}\nUsuario: {prompt}").text
-                    if "EJECUTAR_ACCION:" in res_ai:
+                    prompt_sistema = f"""
+                    Inventario actual: {d_ia}
+                    Si el usuario pide guardar algo en la bitácora o diario, responde SOLO JSON: GUARDAR_BITACORA:{{\"contenido\": \"texto a guardar\"}}
+                    Si el usuario mueve inventario, usa id si existe, si no 'NUEVO'. Responde SOLO JSON: EJECUTAR_ACCION:{{\"id\":\"\",\"nombre\":\"\",\"cantidad\":0,\"unidad\":\"\",\"ubicacion\":\"\"}}
+                    Usuario: {prompt}
+                    """
+                    res_ai = model.generate_content(prompt_sistema).text
+                    
+                    if "GUARDAR_BITACORA:" in res_ai:
+                        data = json.loads(re.search(r'\{.*\}', res_ai, re.DOTALL).group())
+                        supabase.table("bitacora").insert({"lab_id": lab_id, "usuario": usuario_actual, "fecha": date.today().isoformat(), "contenido": data['contenido']}).execute()
+                        msg = f"📔 **Anotado en tu bitácora:** {data['contenido']}"
+                        st.markdown(msg); st.session_state.messages.append({"role": "assistant", "content": msg}); st.rerun()
+
+                    elif "EJECUTAR_ACCION:" in res_ai:
                         data = json.loads(re.search(r'\{.*\}', res_ai, re.DOTALL).group())
                         id_ac = str(data.get('id', 'NUEVO'))
                         if id_ac != "NUEVO" and (not df.empty and id_ac in df['id'].astype(str).values):
