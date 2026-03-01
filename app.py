@@ -5,12 +5,13 @@ import pandas as pd
 import json
 import re
 from streamlit_mic_recorder import speech_to_text
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, time
 import numpy as np
 from PIL import Image
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+import urllib.parse
 
 # --- 1. CONFIGURACIÓN Y ESTÉTICA ---
 st.set_page_config(page_title="Stck", layout="wide", page_icon="🔬")
@@ -49,7 +50,7 @@ if "usuario_autenticado" not in st.session_state:
 
 if st.session_state.usuario_autenticado is None:
     st.markdown("<h1 style='text-align: center;'>🔬 Stck</h1>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center; color: gray;'>Ecosistema de Gestión de Laboratorios y Proveedores</p>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; color: gray;'>Sistema de Gestión e Inventario para Laboratorios de Investigación</p>", unsafe_allow_html=True)
     
     col_espacio1, col_login, col_espacio2 = st.columns([1, 2, 1])
     with col_login:
@@ -165,6 +166,14 @@ def enviar_correo_compras(item_nombre, precio, operador):
         return True
     except: return False
 
+def generar_link_gcal(titulo, inicio, fin, descripcion=""):
+    fmt = "%Y%m%dT%H%M%SZ"
+    # Ajustar zona horaria a UTC para el enlace
+    inicio_utc = inicio + timedelta(hours=3) # Ajuste manual basico para Chile, ideal usar pytz en produccion
+    fin_utc = fin + timedelta(hours=3)
+    url = f"https://calendar.google.com/calendar/render?action=TEMPLATE&text={urllib.parse.quote(titulo)}&dates={inicio_utc.strftime(fmt)}/{fin_utc.strftime(fmt)}&details={urllib.parse.quote(descripcion)}"
+    return url
+
 # --- CARGA DE DATOS ---
 res_items = supabase.table("items").select("*").eq("lab_id", lab_id).execute()
 df = pd.DataFrame(res_items.data)
@@ -178,6 +187,18 @@ df['categoria'] = df['categoria'].replace("", "GENERAL")
 
 try: res_prot = supabase.table("protocolos").select("*").eq("lab_id", lab_id).execute(); df_prot = pd.DataFrame(res_prot.data)
 except: df_prot = pd.DataFrame(columns=["id", "nombre", "materiales_base"])
+
+# Carga de Equipos y Reservas
+try:
+    # A futuro: Aquí podemos filtrar para mostrar equipos de otros lab_id según visibilidad
+    res_equipos = supabase.table("equipos_lab").select("*").eq("lab_id", lab_id).execute()
+    df_equipos = pd.DataFrame(res_equipos.data)
+    
+    res_reservas = supabase.table("reservas").select("*").eq("lab_id", lab_id).execute()
+    df_reservas = pd.DataFrame(res_reservas.data)
+except:
+    df_equipos = pd.DataFrame(columns=["id", "nombre", "descripcion", "visibilidad"])
+    df_reservas = pd.DataFrame(columns=["id", "equipo_id", "usuario", "fecha_inicio", "fecha_fin"])
 
 def aplicar_estilos_inv(row):
     cant = row.get('cantidad_actual', 0)
@@ -203,11 +224,8 @@ if rol_actual == "proveedor":
     st.markdown("### 🚚 Portal de Proveedores Stck")
     tab_prov_cat, tab_prov_carga = st.tabs(["📦 Mi Catálogo Ofertado", "📥 Subir Lista de Precios"])
     with tab_prov_cat:
-        st.write("Estos son los reactivos que tu empresa tiene disponibles en la red Stck.")
         if df.empty: st.info("No has subido ningún producto todavía.")
-        else:
-            cols_prov = ['nombre', 'categoria', 'precio', 'unidad']
-            st.dataframe(df[cols_prov], use_container_width=True, hide_index=True)
+        else: st.dataframe(df[['nombre', 'categoria', 'precio', 'unidad']], use_container_width=True, hide_index=True)
     with tab_prov_carga:
         archivo_excel = st.file_uploader("Sube tu Excel de Catálogo", type=["xlsx", "csv"])
         if archivo_excel and st.button("🚀 Cargar Productos a la Red"):
@@ -229,9 +247,9 @@ col_chat, col_mon = st.columns([1, 1.6], gap="large")
 
 with col_mon:
     if rol_actual == "admin": 
-        tab_inv, tab_prot, tab_edit, tab_analisis, tab_equipo = st.tabs(["📦 Inv", "🧪 Prot", "⚙️ Edit", "📊 Analítica", "👥 Equipo"])
+        tab_inv, tab_prot, tab_equipos, tab_edit, tab_analisis, tab_equipo = st.tabs(["📦 Inv", "🧪 Prot", "📅 Equipos", "⚙️ Edit", "📊 Data", "👥 Acceso"])
     else: 
-        tab_inv, tab_prot, tab_edit = st.tabs(["📦 Inventario", "🧪 Protocolos", "⚙️ Edición"])
+        tab_inv, tab_prot, tab_equipos, tab_edit = st.tabs(["📦 Inventario", "🧪 Protocolos", "📅 Equipos", "⚙️ Edición"])
     
     with tab_inv:
         if not df.empty:
@@ -251,7 +269,6 @@ with col_mon:
                 st.error("🚨 **Alertas de Laboratorio**")
                 if not df_criticos.empty: 
                     st.warning(f"⚠️ **{len(df_criticos)} Reactivos Críticos / Fuera de Stock**")
-                    st.dataframe(df_criticos[['nombre', 'cantidad_actual', 'ubicacion']], use_container_width=True, hide_index=True)
                 if not df_vencidos.empty: st.warning(f"📅 **{len(df_vencidos)} Reactivos Vencen en < 30 días**")
         
         st.markdown("### 🗂️ Catálogo de Reactivos")
@@ -265,6 +282,84 @@ with col_mon:
                 with st.expander(f"📁 {cat}", expanded=False):
                     subset_cat = df_show[df_show['categoria'].astype(str).str.strip() == cat].sort_values(by='nombre', key=lambda col: col.str.lower())
                     st.dataframe(subset_cat[['nombre', 'cantidad_actual', 'unidad', 'ubicacion', 'posicion_caja', 'fecha_vencimiento']].style.apply(aplicar_estilos_inv, axis=1), use_container_width=True, hide_index=True)
+
+    with tab_equipos:
+        st.markdown("### 🗓️ Booking de Equipos (Beta)")
+        
+        c_eq_res, c_eq_agenda = st.columns([1, 1.2])
+        
+        with c_eq_res:
+            if df_equipos.empty:
+                st.info("Aún no has registrado equipos en tu laboratorio.")
+            else:
+                eq_seleccionado = st.selectbox("Seleccionar Equipo para Reservar:", df_equipos['nombre'].tolist())
+                eq_id = df_equipos[df_equipos['nombre'] == eq_seleccionado].iloc[0]['id']
+                vis_eq = df_equipos[df_equipos['nombre'] == eq_seleccionado].iloc[0].get('visibilidad', 'Privado')
+                
+                st.caption(f"👀 Visibilidad configurada: **{vis_eq}**")
+                
+                fecha_res = st.date_input("Fecha:")
+                t_ini = st.time_input("Hora Inicio:", value=time(9, 0))
+                t_fin = st.time_input("Hora Fin:", value=time(10, 0))
+                
+                if st.button("Reservar Bloque", type="primary", use_container_width=True):
+                    dt_ini = datetime.combine(fecha_res, t_ini)
+                    dt_fin = datetime.combine(fecha_res, t_fin)
+                    
+                    if dt_ini >= dt_fin: st.error("La hora de inicio debe ser anterior a la de fin.")
+                    else:
+                        try:
+                            supabase.table("reservas").insert({
+                                "equipo_id": eq_id, "usuario": usuario_actual, 
+                                "fecha_inicio": dt_ini.isoformat(), "fecha_fin": dt_fin.isoformat(), "lab_id": lab_id
+                            }).execute()
+                            st.success("✅ Reserva confirmada.")
+                            st.rerun()
+                        except Exception as e: st.error(f"Error al reservar: {e}")
+        
+        with c_eq_agenda:
+            st.write("**Agenda de Hoy y Futuro:**")
+            if not df_reservas.empty and not df_equipos.empty:
+                # Cruzar nombres de equipos
+                df_r = pd.merge(df_reservas, df_equipos[['id', 'nombre']], left_on='equipo_id', right_on='id', how='inner')
+                df_r['fecha_inicio'] = pd.to_datetime(df_r['fecha_inicio'])
+                df_r['fecha_fin'] = pd.to_datetime(df_r['fecha_fin'])
+                
+                # Filtrar solo futuras
+                df_futuras = df_r[df_r['fecha_fin'] >= pd.to_datetime('today')]
+                
+                if df_futuras.empty: st.info("No hay reservas próximas.")
+                else:
+                    df_futuras = df_futuras.sort_values(by='fecha_inicio')
+                    for _, row in df_futuras.iterrows():
+                        with st.container(border=True):
+                            st.markdown(f"**{row['nombre_y']}** (por {row['usuario']})")
+                            st.write(f"🕒 {row['fecha_inicio'].strftime('%d/%b %H:%M')} - {row['fecha_fin'].strftime('%H:%M')}")
+                            
+                            # GENERADOR DE LINK MAGICO A GOOGLE CALENDAR
+                            if row['usuario'] == usuario_actual:
+                                gcal_link = generar_link_gcal(
+                                    titulo=f"Uso Lab: {row['nombre_y']}", 
+                                    inicio=row['fecha_inicio'], fin=row['fecha_fin'], 
+                                    descripcion=f"Reserva de equipo gestionada vía Stck."
+                                )
+                                st.markdown(f"[📅 Agregar a mi Google Calendar]({gcal_link})", unsafe_allow_html=True)
+            else:
+                st.info("La agenda está vacía.")
+                
+        if rol_actual == "admin":
+            st.markdown("---")
+            with st.expander("⚙️ Agregar Nuevo Equipo al Booking"):
+                with st.form("form_nuevo_equipo"):
+                    n_eq = st.text_input("Nombre del Equipo (Ej: Termociclador BioRad)")
+                    d_eq = st.text_input("Descripción / Ubicación")
+                    v_eq = st.selectbox("Nivel de Visibilidad Pública", ["Solo mi Laboratorio", "Mi Instituto", "Toda la Sede", "Público General"])
+                    if st.form_submit_button("Guardar Equipo"):
+                        try:
+                            supabase.table("equipos_lab").insert({"nombre": n_eq, "descripcion": d_eq, "visibilidad": v_eq, "lab_id": lab_id}).execute()
+                            st.success("Equipo registrado.")
+                            st.rerun()
+                        except Exception as e: st.error(f"Asegúrate de haber creado la tabla en Supabase.")
 
     with tab_prot:
         tab_ejecutar, tab_crear = st.tabs(["🚀 Ejecutar", "📝 Nuevo"])
@@ -313,8 +408,8 @@ with col_mon:
                 
         if rol_actual == "admin" and not df.empty:
             st.markdown("---")
-            st.markdown("### 🛒 Panel de Cotizaciones y Compras")
-            st.caption(f"📧 **Destinatario de la solicitud:** `{correo_destinatario_compras}`")
+            st.markdown("### 🛒 Panel de Compras")
+            st.caption(f"📧 **Destinatario:** `{correo_destinatario_compras}`")
             c_comp1, c_comp2 = st.columns([2, 1])
             with c_comp1:
                 item_compra = st.selectbox("Seleccionar Reactivo a Comprar:", df['nombre'].tolist())
@@ -324,67 +419,42 @@ with col_mon:
                 st.write(f"**Última cotización:** {fecha_cot} | **Precio Referencial:** ${precio_ref}")
             with c_comp2:
                 st.write("")
-                if st.button("🛒 Iniciar Solicitud", use_container_width=True): st.session_state.confirmar_compra = item_compra
+                if st.button("🛒 Solicitar", use_container_width=True): st.session_state.confirmar_compra = item_compra
                 if st.session_state.get('confirmar_compra') == item_compra:
-                    st.warning("¿Confirmas enviar correo a adquisiciones?")
-                    c_si, c_no = st.columns(2)
-                    if c_si.button("✅ Enviar", type="primary"):
+                    if st.button("✅ Confirmar Enviar", type="primary"):
                         enviar_correo_compras(item_compra, precio_ref, usuario_actual)
-                        st.success("Solicitud enviada.")
-                        st.session_state.confirmar_compra = None
-                        st.rerun()
-                    if c_no.button("❌ Cancelar"):
                         st.session_state.confirmar_compra = None
                         st.rerun()
 
     if rol_actual == "admin":
-        # 📊 EL NUEVO MOTOR DE PREDICCIONES
         with tab_analisis:
             st.markdown("### 📈 Predicción de Consumo (Burn Rate)")
-            st.write("Stck analiza el historial de movimientos de tu laboratorio en los últimos 30 días para calcular a qué velocidad se gastan los reactivos y estimar cuándo te quedarás sin stock.")
-            
-            with st.spinner("Analizando Big Data del laboratorio..."):
+            with st.spinner("Analizando..."):
                 res_mov = supabase.table("movimiento").select("*").eq("lab_id", lab_id).execute()
                 df_mov = pd.DataFrame(res_mov.data)
                 
                 if not df_mov.empty and not df.empty:
                     df_mov['created_at'] = pd.to_datetime(df_mov['created_at']).dt.tz_localize(None)
-                    # Filtramos solo cuando se sacaron reactivos (cantidad negativa)
                     df_consumos = df_mov[df_mov['cantidad_cambio'] < 0].copy()
                     df_consumos['cantidad_cambio'] = df_consumos['cantidad_cambio'].abs()
                     
-                    # Filtramos últimos 30 días
                     hace_30_dias = pd.to_datetime(date.today()) - timedelta(days=30)
                     df_ultimos_30 = df_consumos[df_consumos['created_at'] >= hace_30_dias]
                     
                     if not df_ultimos_30.empty:
-                        # Sumar todo lo que se gastó de cada ítem
                         resumen = df_ultimos_30.groupby('nombre_item')['cantidad_cambio'].sum().reset_index()
                         resumen = resumen.rename(columns={'cantidad_cambio': 'consumo_30d'})
-                        
-                        # Juntarlo con el inventario actual
                         df_pred = pd.merge(df[['nombre', 'cantidad_actual', 'unidad']], resumen, left_on='nombre', right_on='nombre_item', how='inner')
-                        
-                        # Matemáticas: Tasa diaria = gasto / 30 días
                         df_pred['tasa_diaria'] = df_pred['consumo_30d'] / 30
-                        # Días restantes = stock actual / tasa diaria
                         df_pred['dias_restantes'] = np.where(df_pred['tasa_diaria'] > 0, df_pred['cantidad_actual'] / df_pred['tasa_diaria'], 9999)
                         
-                        # Formatear visualmente
                         df_pred['dias_restantes_num'] = df_pred['dias_restantes']
                         df_pred['dias_restantes'] = df_pred['dias_restantes'].apply(lambda x: "🚨 Se agota hoy/mañana" if x <= 1.5 else f"Aprox {int(x)} días")
                         df_pred['tasa_diaria'] = df_pred['tasa_diaria'].round(2)
                         
-                        st.dataframe(
-                            df_pred[['nombre', 'cantidad_actual', 'unidad', 'consumo_30d', 'tasa_diaria', 'dias_restantes']]
-                            .sort_values(by='dias_restantes_num', ascending=True)
-                            .drop(columns=['dias_restantes_num']), 
-                            use_container_width=True, hide_index=True
-                        )
-                    else:
-                        st.info("💡 Aún no hay suficientes retiros de reactivos registrados en los últimos 30 días para hacer una proyección matemática.")
-                else:
-                    st.info("💡 Registra movimientos en la tabla (sacando reactivos) para que Stck pueda aprender tu ritmo de consumo.")
+                        st.dataframe(df_pred[['nombre', 'cantidad_actual', 'unidad', 'consumo_30d', 'tasa_diaria', 'dias_restantes']].sort_values(by='dias_restantes_num', ascending=True).drop(columns=['dias_restantes_num']), use_container_width=True, hide_index=True)
+                    else: st.info("Aún no hay suficientes retiros para proyectar matemáticas.")
+                else: st.info("Registra movimientos para que la IA aprenda el consumo.")
 
         with tab_equipo:
             st.markdown("### 🤝 Gestión de Accesos")
@@ -395,19 +465,16 @@ with col_mon:
                     if nuevo_email:
                         try:
                             res_check = supabase.table("equipo").select("*").eq("email", nuevo_email).execute()
-                            if res_check.data:
-                                supabase.table("equipo").update({"lab_id": lab_id, "rol": rol_nuevo}).eq("email", nuevo_email).execute()
-                            else:
-                                supabase.table("equipo").insert({"email": nuevo_email, "lab_id": lab_id, "rol": rol_nuevo, "nombre": "Invitado"}).execute()
+                            if res_check.data: supabase.table("equipo").update({"lab_id": lab_id, "rol": rol_nuevo}).eq("email", nuevo_email).execute()
+                            else: supabase.table("equipo").insert({"email": nuevo_email, "lab_id": lab_id, "rol": rol_nuevo, "nombre": "Invitado"}).execute()
                             st.success(f"Acceso otorgado a {nuevo_email}.")
                             st.rerun() 
-                        except Exception as e: st.error(f"Error: {e}")
-            st.write("**Miembros con Acceso Activo:**")
+                        except: st.error("Error al dar acceso.")
+            st.write("**Miembros Activos:**")
             try:
                 miembros = supabase.table("equipo").select("nombre, email, rol, perfil_academico, institucion").eq("lab_id", lab_id).execute()
                 if miembros.data: st.dataframe(pd.DataFrame(miembros.data), hide_index=True, use_container_width=True)
-                else: st.info("No hay miembros agregados.")
-            except: st.info("Cargando miembros...")
+            except: pass
 
 # --- PANEL IA ---
 with col_chat:
@@ -424,48 +491,34 @@ with col_chat:
     with st.expander("📸 Enviar Foto de Etiqueta"):
         accion_foto = st.radio("¿Qué deseas hacer con la foto?", ["➕ Agregar como Nuevo", "🔄 Actualizar Existente"], horizontal=True)
         item_a_actualizar = None
-        
-        if accion_foto == "🔄 Actualizar Existente" and not df.empty:
-            item_a_actualizar = st.selectbox("Selecciona el reactivo a actualizar:", df['nombre'].tolist())
-            
+        if accion_foto == "🔄 Actualizar Existente" and not df.empty: item_a_actualizar = st.selectbox("Selecciona reactivo:", df['nombre'].tolist())
         foto_chat = st.camera_input("Capturar Etiqueta")
-        
         if foto_chat and st.button("🧠 Procesar Foto", type="primary", use_container_width=True):
             img = Image.open(foto_chat).convert('RGB')
-            st.session_state.messages.append({"role": "user", "content": "📸 *Foto enviada para análisis.*"})
-            with chat_box: st.chat_message("user").markdown("📸 *Foto enviada para análisis.*")
-            
+            st.session_state.messages.append({"role": "user", "content": "📸 *Foto enviada.*"})
+            with chat_box: st.chat_message("user").markdown("📸 *Foto enviada.*")
             with st.chat_message("assistant"):
-                with st.spinner("Analizando etiqueta..."):
+                with st.spinner("Analizando..."):
                     try:
                         if accion_foto == "➕ Agregar como Nuevo":
                             prompt_vision = "Extrae los datos de esta etiqueta química. Responde SOLO JSON: {\"nombre\": \"\", \"categoria\": \"\", \"cantidad_actual\": 0, \"unidad\": \"\"}"
                             res_ai = model.generate_content([prompt_vision, img]).text
                             data = json.loads(re.search(r'\{.*\}', res_ai, re.DOTALL).group())
-                            
                             res_ins = supabase.table("items").insert({"nombre": data.get('nombre', 'Desconocido'), "cantidad_actual": data.get('cantidad_actual', 0), "unidad": data.get('unidad', 'unidades'), "categoria": data.get('categoria', 'GENERAL'), "lab_id": lab_id}).execute()
                             itm = res_ins.data[0]
                             supabase.table("movimiento").insert({"item_id": str(itm['id']), "nombre_item": itm['nombre'], "cantidad_cambio": itm['cantidad_actual'], "tipo": "Nuevo IA (Foto)", "usuario": usuario_actual, "lab_id": lab_id}).execute()
-                            msg = f"📸 **Creado desde foto:** {itm['nombre']} | Stock: {itm['cantidad_actual']} {itm['unidad']}"
-                            
+                            msg = f"📸 **Creado:** {itm['nombre']} | Stock: {itm['cantidad_actual']}"
                         else:
-                            prompt_vision = f"Esta es una foto del reactivo '{item_a_actualizar}'. Extrae la cantidad/volumen que se lee en la etiqueta. Responde SOLO JSON: {{\"{item_a_actualizar}\": true, \"cantidad_actual\": 0}}"
+                            prompt_vision = f"Esta es una foto del reactivo '{item_a_actualizar}'. Extrae la cantidad. Responde SOLO JSON: {{\"{item_a_actualizar}\": true, \"cantidad_actual\": 0}}"
                             res_ai = model.generate_content([prompt_vision, img]).text
                             data = json.loads(re.search(r'\{.*\}', res_ai, re.DOTALL).group())
                             nueva_cant = data.get('cantidad_actual', 0)
-                            
                             id_ac = str(df[df['nombre'] == item_a_actualizar].iloc[0]['id'])
                             supabase.table("items").update({"cantidad_actual": nueva_cant}).eq("id", id_ac).execute()
                             supabase.table("movimiento").insert({"item_id": id_ac, "nombre_item": item_a_actualizar, "cantidad_cambio": nueva_cant, "tipo": "Actualizado IA (Foto)", "usuario": usuario_actual, "lab_id": lab_id}).execute()
-                            msg = f"📸 **Actualizado desde foto:** {item_a_actualizar} ahora tiene {nueva_cant} en stock."
-
-                        st.markdown(msg)
-                        st.session_state.messages.append({"role": "assistant", "content": msg})
-                        st.rerun()
-                    except Exception as e:
-                        err_msg = "No pude leer la etiqueta con claridad. Intenta con otra foto o escríbelo."
-                        st.error(err_msg)
-                        st.session_state.messages.append({"role": "assistant", "content": err_msg})
+                            msg = f"📸 **Actualizado:** {item_a_actualizar} ahora tiene {nueva_cant} en stock."
+                        st.markdown(msg); st.session_state.messages.append({"role": "assistant", "content": msg}); st.rerun()
+                    except: st.error("No pude leer la etiqueta.")
 
     if prompt:
         st.session_state.messages.append({"role": "user", "content": prompt})
@@ -479,10 +532,8 @@ with col_chat:
                         data = json.loads(re.search(r'\{.*\}', res_ai, re.DOTALL).group())
                         id_ac = str(data.get('id', 'NUEVO'))
                         if id_ac != "NUEVO" and (not df.empty and id_ac in df['id'].astype(str).values):
-                            # Calcular la diferencia para el registro
                             stock_viejo = df[df['id'].astype(str) == id_ac].iloc[0]['cantidad_actual']
                             cambio = data['cantidad'] - stock_viejo
-                            
                             supabase.table("items").update({"cantidad_actual": data['cantidad'], "ubicacion": data.get('ubicacion', '')}).eq("id", id_ac).execute()
                             itm = supabase.table("items").select("*").eq("id", id_ac).execute().data[0]
                             supabase.table("movimiento").insert({"item_id": id_ac, "nombre_item": itm['nombre'], "cantidad_cambio": cambio, "tipo": "Acción IA", "usuario": usuario_actual, "lab_id": lab_id}).execute()
@@ -494,10 +545,6 @@ with col_chat:
                             msg = f"📦 **Creado:** {itm['nombre']} | Stock: {itm['cantidad_actual']}"
                         
                         st.session_state.auto_search = itm['nombre']
-                        st.markdown(msg)
-                        st.session_state.messages.append({"role": "assistant", "content": msg})
-                        st.rerun() 
-                    else:
-                        st.markdown(res_ai)
-                        st.session_state.messages.append({"role": "assistant", "content": res_ai})
-                except Exception as e: st.error(f"Error IA: {e}")
+                        st.markdown(msg); st.session_state.messages.append({"role": "assistant", "content": msg}); st.rerun() 
+                    else: st.markdown(res_ai); st.session_state.messages.append({"role": "assistant", "content": res_ai})
+                except: st.error("Error IA.")
