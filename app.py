@@ -35,6 +35,8 @@ st.markdown("""
     .stTabs [aria-selected="true"] { color: #ffffff !important; background-color: #1a1a1a !important; border-bottom: 2px solid #1a1a1a !important; }
     .stButton>button { border-radius: 8px; font-weight: 500; }
     .badge-costo { background-color: #e8f5e9; color: #2e7d32; padding: 5px 10px; border-radius: 15px; font-weight: bold; font-size: 0.9em; }
+    .cuaderno-texto { font-size: 1.05em; line-height: 1.6; color: #222; font-family: 'Inter', sans-serif; margin-bottom: 10px; white-space: pre-wrap;}
+    .cuaderno-meta { font-size: 0.85em; color: #777; margin-bottom: 8px; font-family: 'Courier New', Courier, monospace;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -403,6 +405,7 @@ with col_mon:
         if modo_eq == "📊 Calendario":
             if not df_reservas.empty and not df_equipos.empty:
                 df_cal = pd.merge(df_reservas, df_equipos[['id', 'nombre']], left_on='equipo_id', right_on='id', how='inner', suffixes=('', '_eq'))
+                
                 calendar_events = []
                 equipos_unicos = df_cal['nombre' if 'nombre' in df_cal.columns else 'nombre_eq'].unique()
                 colores = ["#4285F4", "#0F9D58", "#F4B400", "#DB4437", "#673AB7", "#00ACC1", "#FF7043"]
@@ -423,16 +426,24 @@ with col_mon:
                     })
                 
                 calendar_options = {
-                    "headerToolbar": {"left": "prev,next today", "center": "title", "right": "timeGridDay,timeGridWeek,dayGridMonth"},
+                    "headerToolbar": {
+                        "left": "prev,next today",
+                        "center": "title",
+                        "right": "timeGridDay,timeGridWeek,dayGridMonth",
+                    },
                     "initialView": "timeGridWeek",
                     "slotMinTime": "07:00:00",
                     "slotMaxTime": "22:00:00",
                     "allDaySlot": False,
                     "height": 600,
                 }
-                try: calendar(events=calendar_events, options=calendar_options, key="lab_calendar_view")
-                except NameError: st.warning("Por favor, asegúrate de haber instalado 'streamlit-calendar' en tus requerimientos.")
-            else: st.info("La agenda del laboratorio está completamente libre.")
+                
+                try:
+                    calendar(events=calendar_events, options=calendar_options, key="lab_calendar_view")
+                except NameError:
+                    st.warning("Por favor, asegúrate de haber instalado 'streamlit-calendar' en tus requerimientos.")
+            else:
+                st.info("La agenda del laboratorio está completamente libre.")
 
         elif modo_eq == "📅 Agendar":
             c_eq_res, c_eq_agenda = st.columns([1, 1.2])
@@ -465,6 +476,8 @@ with col_mon:
                             else:
                                 try:
                                     supabase.table("reservas").insert({"equipo_id": str(datos_eq['id']), "usuario": usuario_actual, "fecha_inicio": dt_ini.isoformat(), "fecha_fin": dt_fin.isoformat(), "lab_id": lab_id}).execute()
+                                    admin_email = obtener_admin_email(lab_id)
+                                    enviar_correo_reserva(datos_eq['nombre'], fecha_res.strftime('%d/%m/%Y'), t_ini.strftime('%H:%M'), t_fin.strftime('%H:%M'), usuario_actual, admin_email, st.session_state.usuario_autenticado)
                                     st.success("✅ Reserva guardada.")
                                     st.rerun()
                                 except Exception as e: st.error(f"Error al reservar: {e}")
@@ -524,7 +537,14 @@ with col_mon:
             link_evidencia = st.text_input("📎 Enlace a Drive, Foto o Excel (Opcional)")
             if st.button("💾 Guardar Entrada", type="primary"):
                 if texto_metodo.strip():
-                    supabase.table("bitacora").insert({"lab_id": lab_id, "usuario": usuario_actual, "fecha": date.today().isoformat(), "contenido": texto_metodo, "link_adjunto": link_evidencia}).execute()
+                    # Para entradas manuales, el 'contenido' es el texto, y el 'resultado' es una nota estática
+                    supabase.table("bitacora").insert({
+                        "lab_id": lab_id, "usuario": usuario_actual, 
+                        "fecha": date.today().isoformat(), 
+                        "contenido": texto_metodo, 
+                        "link_adjunto": link_evidencia,
+                        "resultado": "Registro manual (Sin acciones de IA)."
+                    }).execute()
                     st.rerun()
                 else: st.warning("No puedes guardar una hoja en blanco.")
                     
@@ -543,16 +563,18 @@ with col_mon:
                     except: pass
                 
                 # --- DISEÑO TIPO NOTION: HOJA BLANCA CONTINUA ---
+                # 1. LA FECHA Y EL AUTOR
                 st.markdown(f"<span style='color:#666; font-size:0.9em; font-family: monospace;'>📅 {fecha_str} {hora_str} | 👤 <b>{row['usuario']}</b></span>", unsafe_allow_html=True)
                 
-                # TEXTO NARRATIVO FLUIDO (Sin cajas)
-                st.markdown(f"<div style='font-size:1.05em; line-height:1.6; margin-top: 8px; margin-bottom: 8px; color:#222;'>{row.get('contenido', '')}</div>", unsafe_allow_html=True)
+                # 2. EL TEXTO PRINCIPAL DEL USUARIO (Su redacción real y fluida)
+                st.markdown(f"<div style='font-size:1.05em; line-height:1.6; margin-top: 8px; margin-bottom: 8px; color:#222; white-space: pre-wrap;'>{row.get('contenido', '')}</div>", unsafe_allow_html=True)
                 
+                # 3. LOS ENLACES DE EVIDENCIA
                 link = str(row.get('link_adjunto', '')).strip()
                 if link.startswith('http'):
                     st.markdown(f"📎 [**Evidencia Adjunta**]({link})")
                 
-                # EL TOGGLE DESPLEGABLE CON LOS DATOS DE LA IA (Escondido)
+                # 4. LOS METADATOS TÉCNICOS DE LA IA (Ocultos en el desplegable)
                 res_ia = str(row.get('resultado', '')).strip()
                 if res_ia and res_ia != "None":
                     with st.expander("▶ Ver registros de la IA (Inventario y Protocolos)"):
@@ -756,15 +778,13 @@ with col_chat:
 
                     Analiza el mensaje del usuario y devuelve ÚNICAMENTE un JSON con esta estructura exacta:
                     {{
-                        "entrada_cuaderno": "Transcribe aquí de forma fluida todo el relato del usuario. Esto será el texto principal de su Bitácora.",
                         "protocolo": {{"ejecutar": false, "nombre": "", "muestras": 1}},
-                        "bitacora": {{"guardar": true}},
                         "inventario_manual": [],
                         "reserva": {{"generar": false, "equipo_nombre": "", "fecha_YYYY_MM_DD": "", "hora_inicio_HH_MM": "", "hora_fin_HH_MM": ""}}
                     }}
 
                     Reglas:
-                    1. "entrada_cuaderno" debe ser el texto narrativo completo para que el humano lo lea.
+                    1. NO devuelvas ni modifiques el texto del usuario. Solo completa las variables lógicas si corresponden.
                     2. Si ejecutó un protocolo, activa "protocolo" y calcula muestras.
                     3. Si pide reservar un equipo, activa "reserva.generar" deduciendo fecha/hora según hoy ({hoy_str}).
                     Usuario: {prompt}
@@ -775,8 +795,6 @@ with col_chat:
                     
                     if match:
                         data = json.loads(match.group())
-                        
-                        texto_principal_usuario = data.get('entrada_cuaderno', prompt)
                         log_ia_acciones = []
                         
                         # 1. RESERVA DE EQUIPO
@@ -840,26 +858,22 @@ with col_chat:
                             else:
                                 log_ia_acciones.append(f"⚠️ *No encontré el protocolo '{p_nombre}' para descontar.*")
 
-                        # 3. GUARDAR BITÁCORA UNIFICADA
-                        bit = data.get('bitacora', {})
-                        if bit.get('guardar') or prot.get('ejecutar') or res_data.get('generar') or texto_principal_usuario:
-                            
-                            metadatos_ia = "\n".join(log_ia_acciones) if log_ia_acciones else ""
-                            
-                            supabase.table("bitacora").insert({
-                                "lab_id": lab_id, 
-                                "usuario": usuario_actual, 
-                                "fecha": date.today().isoformat(),
-                                "contenido": texto_principal_usuario,
-                                "resultado": metadatos_ia
-                            }).execute()
-                            
-                            msg_final = f"📔 **Bitácora Guardada.**\n\n" + metadatos_ia
-                            st.markdown(msg_final)
-                            st.session_state.messages.append({"role": "assistant", "content": msg_final})
-                            st.rerun()
-                        else:
-                            st.markdown("No logré identificar ninguna acción a realizar.")
+                        # 3. GUARDAR BITÁCORA UNIFICADA (TIPO NOTION PURO)
+                        metadatos_ia = "\n".join(log_ia_acciones) if log_ia_acciones else "Solo registro de bitácora. No se requirió acción en el inventario o calendario."
+                        
+                        supabase.table("bitacora").insert({
+                            "lab_id": lab_id, 
+                            "usuario": usuario_actual, 
+                            "fecha": date.today().isoformat(),
+                            "contenido": prompt, # ¡AQUI ESTÁ LA MAGIA! Tu texto exacto, intacto.
+                            "resultado": metadatos_ia # El resumen técnico va al escondite.
+                        }).execute()
+                        
+                        msg_final = f"📔 **Bitácora Guardada Exitosamente.**\n\n" + metadatos_ia
+                        st.markdown(msg_final)
+                        st.session_state.messages.append({"role": "assistant", "content": msg_final})
+                        st.rerun()
+
                     else:
                         st.markdown("No pude procesar la instrucción correctamente.")
                 except Exception as e: st.error(f"Error IA: {e}")
