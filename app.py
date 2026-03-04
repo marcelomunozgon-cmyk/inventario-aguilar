@@ -419,11 +419,13 @@ with col_mon:
             if not df_criticos.empty or not df_vencidos.empty:
                 st.error("🚨 **Alertas del Laboratorio**")
                 if not df_criticos.empty: 
-                    with st.expander(f"⚠️ **{len(df_criticos)} Reactivos Críticos / Fuera de Stock** (Haz clic para ver la lista)"):
-                        st.dataframe(df_criticos[['nombre', 'cantidad_actual', 'umbral_minimo', 'ubicacion', 'unidad']], hide_index=True, use_container_width=True)
+                    with st.expander(f"⚠️ **{len(df_criticos)} Reactivos Críticos / Fuera de Stock** (Haz clic para ver)"):
+                        df_crit_show = df_criticos[['nombre', 'cantidad_actual', 'umbral_minimo', 'ubicacion', 'unidad']].copy()
+                        st.dataframe(df_crit_show.style.format({'cantidad_actual': lambda x: f"{x:g}", 'umbral_minimo': lambda x: f"{x:g}"}), hide_index=True, use_container_width=True)
                 if not df_vencidos.empty: 
-                    with st.expander(f"📅 **{len(df_vencidos)} Reactivos Vencen en < 30 días** (Haz clic para ver la lista)"):
-                        st.dataframe(df_vencidos[['nombre', 'fecha_vencimiento', 'cantidad_actual', 'ubicacion']], hide_index=True, use_container_width=True)
+                    with st.expander(f"📅 **{len(df_vencidos)} Reactivos Vencen en < 30 días** (Haz clic para ver)"):
+                        df_venc_show = df_vencidos[['nombre', 'fecha_vencimiento', 'cantidad_actual', 'ubicacion']].copy()
+                        st.dataframe(df_venc_show.style.format({'cantidad_actual': lambda x: f"{x:g}"}), hide_index=True, use_container_width=True)
         
         subtab_cat, subtab_edit = st.tabs(["🗂️ Catálogo Rápido", "✍️ Gestionar Inventario (Edición)"])
         
@@ -628,7 +630,7 @@ with col_mon:
                             st.rerun()
                         except Exception as e: st.error(f"Error: {e}")
 
-    # --- PESTAÑA: ELN TIPO NOTION (CON ROLLBACK A PRUEBA DE BALAS) ---
+    # --- PESTAÑA: ELN TIPO NOTION (CON ROLLBACK PERFECTO Y HORA) ---
     with tab_bitacora:
         st.markdown("### 📔 Cuaderno de Laboratorio")
         
@@ -703,12 +705,12 @@ with col_mon:
                 
                 with col_del:
                     st.markdown("<div style='margin-top: 5px;'></div>", unsafe_allow_html=True)
-                    # --- EL MOTOR DE ROLLBACK MEJORADO ---
-                    if st.button("🗑️", key=f"del_{row['id']}", help="Eliminar nota y restaurar reactivos al inventario"):
+                    # --- EL MOTOR DE ROLLBACK (BÚSQUEDA POR ATRIBUTO DATA-ID) ---
+                    if st.button("🗑️", key=f"del_{row['id']}", help="Eliminar nota y restaurar reactivos"):
                         res_ia_str = str(row.get('resultado', ''))
                         
-                        # Extrae usando el ID oculto de la IA
-                        pattern_new = r"📉\s*([0-9.]+).*?"
+                        # Regex perfecta: extrae la cantidad y el UUID secreto del atributo data-id
+                        pattern_new = r"📉\s*([0-9.]+).*?data-id='([^']+)'"
                         matches_new = re.findall(pattern_new, res_ia_str)
                         
                         for m in matches_new:
@@ -864,7 +866,7 @@ with col_mon:
                 if miembros.data: st.dataframe(pd.DataFrame(miembros.data), hide_index=True, use_container_width=True)
             except Exception as e: st.error(f"❌ Error al cargar la lista: {e}")
 
-# --- PANEL IA ORQUESTADOR CON IDs EXACTOS ---
+# --- PANEL IA ORQUESTADOR ---
 with col_chat:
     st.markdown("### 💬 Secretario IA")
     chat_box = st.container(height=400, border=False)
@@ -926,26 +928,26 @@ with col_chat:
                     historial_str = "\n".join([f"{'Usuario' if m['role']=='user' else 'IA'}: {m['content']}" for m in st.session_state.messages[-8:-1]])
                     
                     prompt_sistema = f"""
-                    Eres la IA del LIMS Stck. Hoy es {hoy_str}.
-                    Inventario Disponible (ID, Nombre, Stock): {d_ia}
+                    Eres la Inteligencia Artificial del LIMS Stck. Hoy es {hoy_str}.
+                    Inventario: {d_ia}
                     Protocolos: {d_prot}
                     Historial: {historial_str}
 
                     El usuario dice: "{prompt}"
 
-                    Devuelve ÚNICAMENTE un JSON con esta estructura:
+                    Devuelve ÚNICAMENTE un JSON con esta estructura exacta:
                     {{
-                        "respuesta_chat": "Si es un pasaje, pregunta '¿Usaste placa o frasco extra (sí/no)?'. Si ya responde a esa pregunta (ej 'no', 'usé 1'), di 'Entendido y descontado.'",
-                        "entrada_cuaderno": "Copia EXACTAMENTE sus palabras (ej: 'Hoy hice pasaje...'). Si es una respuesta a tu pregunta (ej 'sí', 'no', '1 placa'), DEBE QUEDAR VACÍO.",
+                        "respuesta_chat": "Si es un pasaje celular, confirma y pregunta: '¿Usaste placa o material extra?'. Si ya responde a esa pregunta (ej 'no', 'usé 1'), di 'Entendido y descontado.'",
+                        "entrada_cuaderno": "Copia EXACTAMENTE sus palabras. Si es una respuesta a tu pregunta, DEBE QUEDAR VACÍO.",
                         "protocolo_detectado": {{"nombre": "Nombre EXACTO del protocolo", "muestras": 1}},
-                        "descuentos_protocolo": [{{"id_item": "ID_EXACTO_DEL_INVENTARIO", "cantidad_total_a_restar": 0.0}}],
-                        "descuentos_extra": [{{"id_item": "ID_EXACTO_DEL_INVENTARIO", "cantidad_a_restar": 0.0}}]
+                        "descuentos_protocolo": [{{"nombre_item_inventario": "Nombre exacto en inventario", "cantidad_total_a_restar": 0.0}}],
+                        "descuentos_extra": [{{"nombre_item_inventario": "Nombre exacto en inventario", "cantidad_a_restar": 0.0}}]
                     }}
 
                     REGLAS INFLEXIBLES:
-                    1. PRECISIÓN DE ID: Al aplicar un protocolo, lee su receta. Busca en el Inventario el reactivo correspondiente y extrae su "id". Si hay varios parecidos (ej: PBS vs D-PBS), elige el que MEJOR calce con la receta. ¡Usa siempre el ID, nunca el nombre!
-                    2. MULTIPLICACIÓN: Multiplica la cantidad que diga la receta por el número de muestras y pon el total en 'cantidad_total_a_restar'.
-                    3. ANTI-BUCLES: Si el usuario responde 'no' o 'nada', "entrada_cuaderno" DEBE SER VACÍO, no ejecutes protocolos de nuevo.
+                    1. MAPEO EXACTO DE NOMBRES: Si la receta dice "PBS", y el inventario tiene "PBS" y "D-PBS", debes enviar en 'nombre_item_inventario' EXACTAMENTE "PBS". ¡Copia el nombre del inventario letra por letra!
+                    2. EXTRACCIÓN NUMÉRICA: Extrae el PRIMER número de la receta, multiplícalo por las muestras y ponlo en cantidad.
+                    3. ANTI-BUCLES: Si el usuario responde 'no' o 'nada', "entrada_cuaderno" DEBE SER VACÍO y "protocolo_detectado" vacío.
                     """
                     
                     res_ai = model.generate_content(prompt_sistema).text
@@ -961,7 +963,7 @@ with col_chat:
                         if es_respuesta_corta:
                             data['entrada_cuaderno'] = ""
 
-                        # 1. PROTOCOLOS (MATEMÁTICA PURA RESUELTA POR LA IA USANDO IDs)
+                        # 1. PROTOCOLOS Y BÚSQUEDA ESTRICTA
                         p_dict = data.get('protocolo_detectado', {})
                         d_prot = data.get('descuentos_protocolo', [])
                         
@@ -971,13 +973,19 @@ with col_chat:
                             log_ia_acciones.append(f"🔗 <b>Protocolo:</b> {p_nombre} (x{p_muestras})")
                             
                             for desc in d_prot:
-                                id_item = str(desc.get('id_item', '')).strip()
+                                nom_item = desc.get('nombre_item_inventario')
                                 cant_total = desc.get('cantidad_total_a_restar', 0)
                                 
-                                if id_item and cant_total > 0:
-                                    # Búsqueda exacta por ID (Adiós al error PBS vs D-PBS)
-                                    item_db = df[df['id'].astype(str) == id_item]
+                                if nom_item and cant_total > 0:
+                                    # CANDADO 1: Búsqueda idéntica al 100% primero (Evita PBS vs D-PBS)
+                                    item_db = df[df['nombre'].str.strip().str.lower() == nom_item.strip().lower()]
+                                    
+                                    # CANDADO 2: Si no lo encuentra idéntico, busca palabra completa
+                                    if item_db.empty:
+                                        item_db = df[df['nombre'].str.contains(re.escape(nom_item), case=False, na=False, regex=True)]
+                                        
                                     if not item_db.empty:
+                                        id_item = str(item_db.iloc[0]['id'])
                                         stock_actual = float(item_db.iloc[0]['cantidad_actual'])
                                         stock_nuevo = stock_actual - float(cant_total)
                                         
@@ -991,19 +999,24 @@ with col_chat:
                                         supabase.table("items").update({"cantidad_actual": val_stock}).eq("id", id_item).execute()
                                         supabase.table("movimiento").insert({"item_id": id_item, "nombre_item": nombre_real, "cantidad_cambio": val_cambio, "tipo": f"Uso IA: {p_nombre}", "usuario": usuario_actual, "lab_id": lab_id}).execute()
                                         
-                                        # MARCADOR INVISIBLE PARA ROLLBACK: lista_descuentos.append(f"&nbsp;&nbsp;&nbsp; - 📉 {val_mostrar} {unidad_item} de {nombre_real} <i>(Protocolo)</i>")
+                                        # MARCADOR INVISIBLE EN HTML PARA EL ROLLBACK DE LA PAPELERA
+                                        lista_descuentos.append(f"&nbsp;&nbsp;&nbsp; - 📉 {val_mostrar} {unidad_item} de {nombre_real} <span data-id='{id_item}' style='display:none'></span> <i>(Protocolo)</i>")
                                     else:
-                                        lista_descuentos.append(f"&nbsp;&nbsp;&nbsp; - ⚠️ Error: ID '{id_item}' no hallado.")
+                                        lista_descuentos.append(f"&nbsp;&nbsp;&nbsp; - ⚠️ No encontré '{nom_item}' en inventario.")
 
                         # 2. AJUSTES EXTRA (Placas)
                         ajustes = data.get('descuentos_extra', [])
                         for aj in ajustes:
-                            id_ac = str(aj.get('id_item', '')).strip()
+                            nom_man = aj.get('nombre_item_inventario')
                             cant_man = aj.get('cantidad_a_restar', 0)
                             
-                            if id_ac and float(cant_man) > 0:
-                                item_db = df[df['id'].astype(str) == id_ac]
+                            if nom_man and float(cant_man) > 0:
+                                item_db = df[df['nombre'].str.strip().str.lower() == nom_man.strip().lower()]
+                                if item_db.empty:
+                                    item_db = df[df['nombre'].str.contains(re.escape(nom_man), case=False, na=False, regex=True)]
+                                    
                                 if not item_db.empty:
+                                    id_ac = str(item_db.iloc[0]['id'])
                                     stock_actual = float(item_db.iloc[0]['cantidad_actual'])
                                     stock_nuevo = stock_actual - float(cant_man)
                                     
@@ -1021,9 +1034,9 @@ with col_chat:
                                         st.session_state.messages.append({"role": "assistant", "content": f"✅ Descontado: -{val_mostrar} {unidad_item} de {nombre_item}"})
                                         st.rerun()
                                     else:
-                                        lista_descuentos.append(f"&nbsp;&nbsp;&nbsp; - 📉 {val_mostrar} {unidad_item} de {nombre_item} <i>(Extra)</i>")
+                                        lista_descuentos.append(f"&nbsp;&nbsp;&nbsp; - 📉 {val_mostrar} {unidad_item} de {nombre_item} <span data-id='{id_ac}' style='display:none'></span> <i>(Extra)</i>")
 
-                        # ENSAMBLAJE FINAL
+                        # ENSAMBLAJE FINAL DEL HTML
                         if lista_descuentos:
                             log_ia_acciones.append("<b>📦 Descontado:</b>")
                             log_ia_acciones.extend(lista_descuentos)
