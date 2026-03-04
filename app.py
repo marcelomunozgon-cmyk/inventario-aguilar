@@ -37,7 +37,7 @@ st.markdown("""
     .stButton>button { border-radius: 8px; font-weight: 500; }
     .badge-costo { background-color: #e8f5e9; color: #2e7d32; padding: 5px 10px; border-radius: 15px; font-weight: bold; font-size: 0.9em; }
     
-    /* DISEÑO TIPO DATA GRID (LISTA DENSA) */
+    /* DISEÑO TIPO DATA GRID (LISTA DENSA MEJORADA) */
     .grid-container {
         background-color: #ffffff;
         border: 1px solid #e0e0e0;
@@ -53,7 +53,7 @@ st.markdown("""
     }
     .grid-row > summary {
         display: flex;
-        align-items: center;
+        align-items: flex-start;
         padding: 12px 15px;
         cursor: pointer;
         list-style: none;
@@ -67,25 +67,26 @@ st.markdown("""
         width: 25px;
         color: #888;
         font-size: 1.1em;
+        margin-top: 2px;
     }
     .grid-text {
         flex-grow: 1;
         font-size: 0.95em;
         color: #222;
         font-weight: 500;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
+        white-space: pre-wrap; /* Permite que el texto baje de línea */
         padding-right: 15px;
+        line-height: 1.5;
     }
     .grid-meta {
         font-size: 0.85em;
         color: #777;
         white-space: nowrap;
         text-align: right;
+        margin-top: 2px;
     }
     .grid-details {
-        padding: 15px 15px 15px 40px;
+        padding: 0px 15px 15px 40px;
         background-color: #fafafa;
         border-top: 1px dashed #eee;
         font-size: 0.9em;
@@ -93,8 +94,8 @@ st.markdown("""
         line-height: 1.6;
     }
     .ai-box {
-        margin-top: 10px;
-        padding: 10px;
+        margin-top: 15px;
+        padding: 12px;
         background-color: #f0f4f8;
         border-left: 3px solid #4285F4;
         border-radius: 0 4px 4px 0;
@@ -567,7 +568,7 @@ with col_mon:
                             st.rerun()
                         except Exception as e: st.error(f"Error: {e}")
 
-    # --- PESTAÑA: ELN DATA GRID (TIPO NOTION / TASK LIST) ---
+    # --- PESTAÑA: ELN DATA GRID MEJORADO ---
     with tab_bitacora:
         st.markdown("### 📔 Cuaderno de Laboratorio")
         
@@ -586,7 +587,7 @@ with col_mon:
                         "fecha": date.today().isoformat(), 
                         "contenido": texto_metodo, 
                         "link_adjunto": link_evidencia,
-                        "resultado": "Registro manual."
+                        "resultado": ""
                     }).execute()
                     st.rerun()
                 else: st.warning("No puedes guardar una hoja en blanco.")
@@ -598,7 +599,6 @@ with col_mon:
         else:
             df_b_show = df_bitacora if filtro_usuario == "Todos" else df_bitacora[df_bitacora['usuario'] == filtro_usuario]
             
-            # MAGIA HTML/CSS: Contenedor tipo Data Grid (Lista Densa)
             html_cuaderno = "<div class='grid-container'>"
             
             for _, row in df_b_show.iterrows():
@@ -611,24 +611,24 @@ with col_mon:
                     except: pass
                 
                 texto_crudo = str(row.get('contenido', '')).strip()
-                texto_primera_linea = texto_crudo.split('\n')[0]
                 res_ia = str(row.get('resultado', '')).strip()
                 link = str(row.get('link_adjunto', '')).strip()
                 
+                # HTML Nativo: El texto no se duplica en los detalles
                 html_cuaderno += f"""
                 <details class='grid-row'>
                     <summary>
                         <div class='grid-icon'>🔬</div>
-                        <div class='grid-text' title="{html_lib.escape(texto_crudo)}">{html_lib.escape(texto_primera_linea)}</div>
+                        <div class='grid-text'>{html_lib.escape(texto_crudo)}</div>
                         <div class='grid-meta'>{row['usuario'].split(' ')[0]} &nbsp;|&nbsp; {fecha_str} {hora_str}</div>
                     </summary>
                     <div class='grid-details'>
-                        <div style='margin-bottom: 10px; font-size: 1.05em; color: #222; white-space: pre-wrap;'>{html_lib.escape(texto_crudo)}</div>
                 """
                 
+                # Si hay registros de la IA, los inyectamos en formato limpio (sin estrellitas de markdown)
                 if res_ia and res_ia != "None":
                     res_ia_html = res_ia.replace('\n', '<br>')
-                    html_cuaderno += f"<div class='ai-box'>🤖 <b>Registros IA:</b><br>{res_ia_html}</div>"
+                    html_cuaderno += f"<div class='ai-box'>🤖 <b>Registros Automáticos (IA):</b><br><br>{res_ia_html}</div>"
                 
                 if link.startswith('http'):
                     html_cuaderno += f"<div style='margin-top:10px;'>📎 <a href='{link}' target='_blank'>Abrir Evidencia Adjunta</a></div>"
@@ -766,13 +766,13 @@ with col_mon:
                 if miembros.data: st.dataframe(pd.DataFrame(miembros.data), hide_index=True, use_container_width=True)
             except Exception as e: st.error(f"❌ Error al cargar la lista: {e}")
 
-# --- PANEL IA ORQUESTADOR CON COPILOTO Y MEMORIA ---
+# --- PANEL IA ORQUESTADOR (COPILOTO ESTRICTO) ---
 with col_chat:
-    st.markdown("### 💬 Copiloto IA")
+    st.markdown("### 💬 Secretario IA")
     chat_box = st.container(height=400, border=False)
     
     if "messages" not in st.session_state: 
-        st.session_state.messages = [{"role": "assistant", "content": f"¡Hola! Dime qué hiciste hoy en el laboratorio."}]
+        st.session_state.messages = [{"role": "assistant", "content": f"¡Hola! Dime qué hiciste o qué necesitas reservar."}]
     
     for m in st.session_state.messages:
         with chat_box: st.chat_message(m["role"]).markdown(m["content"])
@@ -826,29 +826,32 @@ with col_chat:
                     d_eq = df_equipos[['id', 'nombre']].to_json(orient='records') if not df_equipos.empty else "[]"
                     hoy_str = date.today().isoformat()
                     
-                    historial_str = "\n".join([f"{'Usuario' if m['role']=='user' else 'IA'}: {m['content']}" for m in st.session_state.messages[-6:-1]])
+                    historial_str = "\n".join([f"{'Usuario' if m['role']=='user' else 'IA'}: {m['content']}" for m in st.session_state.messages[-10:-1]])
+                    rutinas_str = ", ".join(st.session_state.rutinas_diarias["mostradas"])
                     
                     prompt_sistema = f"""
-                    Eres el Copiloto IA del LIMS. Hoy es {hoy_str}.
+                    Eres el Orquestador IA del LIMS. Hoy es {hoy_str}.
                     Inventario actual: {d_ia}
-                    Protocolos registrados: {d_prot}
+                    Protocolos: {d_prot}
                     
-                    Historial reciente:
-                    {historial_str}
+                    Historial reciente: {historial_str}
+                    Rutinas ya recordadas hoy: [{rutinas_str}]
 
-                    Analiza el último mensaje del Usuario: "{prompt}" y devuelve ÚNICAMENTE un JSON con esta estructura:
+                    Analiza el ÚLTIMO mensaje del Usuario: "{prompt}" y devuelve ÚNICAMENTE un JSON con esta estructura:
                     {{
-                        "respuesta_chat": "Lo que dirás al usuario. Si hizo un protocolo que consume material fungible (placas, tubos), puedes preguntar UNA VEZ si gastó algo extra. Si el usuario responde 'no' o da una cantidad, solo di 'Entendido'.",
-                        "bitacora": {{"guardar": true, "texto": "Copia exacta de las palabras del usuario si es un reporte nuevo"}},
+                        "mensaje_inicial": "Respuesta conversacional (ej. 'Entendido.').",
+                        "pregunta_final": "Pregunta de seguimiento (ej. '¿Gastaste una placa extra?').",
+                        "bitacora": {{"guardar": false, "entrada_cuaderno": ""}},
                         "protocolo": {{"ejecutar": false, "nombre": "", "muestras": 1}},
-                        "ajustes_inventario": [{{"nombre": "item", "restar": 0}}],
-                        "reserva": {{"generar": false, "equipo_nombre": "", "fecha_YYYY_MM_DD": "", "hora_inicio_HH_MM": "", "hora_fin_HH_MM": ""}}
+                        "inventario_ajustes": [{{"id": "id_del_item", "cantidad_a_restar": 0}}],
+                        "reserva": {{"generar": false, "equipo_nombre": "", "fecha_YYYY_MM_DD": "", "hora_inicio_HH_MM": "", "hora_fin_HH_MM": ""}},
+                        "nuevas_rutinas_recordadas": ["palabra"]
                     }}
 
-                    Reglas CRÍTICAS ANTI-BUCLES:
-                    1. Si el usuario está respondiendo a una pregunta tuya (ej: "no", "usé 2 placas", "nada más"), OBLIGATORIAMENTE pon "bitacora.guardar": false y "protocolo.ejecutar": false. ¡NO DUPLIQUES REGISTROS!
-                    2. Si el usuario da un número en su respuesta (ej: "usé 1 placa de 6"), ponlo en "ajustes_inventario". Si dice "no", déjalo vacío.
-                    3. NUNCA preguntes por volúmenes de reactivos que ya están dentro de un protocolo.
+                    REGLAS CRÍTICAS:
+                    1. ANTI-BUCLES: Si el usuario responde 'no', 'nada' o similar a una pregunta tuya, PON "bitacora.guardar": false Y "protocolo.ejecutar": false. Deja "pregunta_final" vacío.
+                    2. CERO INVENTOS: Solo usa 'inventario_ajustes' si el usuario dictó un número explícito. NO PREGUNTES POR REACTIVOS BASE DEL PROTOCOLO.
+                    3. TEXTO INTACTO: Si "bitacora.guardar" es true, "entrada_cuaderno" DEBE SER LAS PALABRAS EXACTAS DEL USUARIO.
                     """
                     
                     res_ai = model.generate_content(prompt_sistema).text
@@ -856,9 +859,23 @@ with col_chat:
                     
                     if match:
                         data = json.loads(match.group())
-                        log_ia_acciones = []
                         
-                        # 1. RESERVA DE EQUIPO
+                        # Filtro de Seguridad Manual anti-duplicados
+                        texto_minuscula = prompt.lower().strip()
+                        es_respuesta_corta = len(texto_minuscula.split()) <= 4 and any(w in texto_minuscula for w in ['no', 'nada', 'ninguno', 'ninguna', 'listo', 'ya', 'si', 'sí', 'ok'])
+                        if es_respuesta_corta:
+                            data['bitacora']['guardar'] = False
+                            data['protocolo']['ejecutar'] = False
+
+                        nuevas_rutinas = data.get('nuevas_rutinas_recordadas', [])
+                        if nuevas_rutinas: st.session_state.rutinas_diarias["mostradas"].extend(nuevas_rutinas)
+                        
+                        log_ia_reservas = []
+                        log_protocolo_usado = ""
+                        lista_descuentos = []
+                        log_alertas = []
+                        
+                        # 1. RESERVA
                         res_data = data.get('reserva', {})
                         if res_data.get('generar') and res_data.get('equipo_nombre'):
                             eq_nom = res_data.get('equipo_nombre')
@@ -881,11 +898,11 @@ with col_chat:
                                 
                                 if not solapamiento:
                                     supabase.table("reservas").insert({"equipo_id": str(eq_id), "usuario": usuario_actual, "fecha_inicio": dt_ini.isoformat(), "fecha_fin": dt_fin.isoformat(), "lab_id": lab_id}).execute()
-                                    log_ia_acciones.append(f"✅ Equipo Reservado: {eq_match.iloc[0]['nombre']} ({f_res} de {h_ini} a {h_fin})")
+                                    log_ia_reservas.append(f"✅ <b>Equipo Reservado:</b> {eq_match.iloc[0]['nombre']} ({f_res} de {h_ini} a {h_fin})")
                                 else:
-                                    log_ia_acciones.append(f"❌ Fallo Reserva: El {eq_match.iloc[0]['nombre']} ya está ocupado.")
+                                    log_ia_reservas.append(f"❌ <b>Fallo:</b> El {eq_match.iloc[0]['nombre']} ya está ocupado.")
 
-                        # 2. PROTOCOLO AUTOMÁTICO (MULTIPLICACIÓN INMORTAL)
+                        # 2. PROTOCOLO EXACTO (Uso de HTML para que no falle en Streamlit Markdown)
                         prot = data.get('protocolo', {})
                         if prot.get('ejecutar') and prot.get('nombre'):
                             p_nombre = prot.get('nombre')
@@ -895,8 +912,7 @@ with col_chat:
                             if not prot_match.empty:
                                 nombre_prot_oficial = prot_match.iloc[0]['nombre']
                                 info_p = str(prot_match.iloc[0]['materiales_base'])
-                                
-                                log_ia_acciones.append(f"🧪 **Protocolo:** {nombre_prot_oficial} (x{p_muestras})")
+                                log_protocolo_usado = f"🧪 <b>Protocolo Vinculado:</b> {nombre_prot_oficial} (x{p_muestras} muestras)"
                                 
                                 if info_p and info_p != "nan" and info_p != "None":
                                     for linea in info_p.split('\n'):
@@ -909,61 +925,78 @@ with col_chat:
                                             except ValueError: continue 
                                                 
                                             cant_total = cant_base * p_muestras
-                                            
                                             item_db = df[df['nombre'].str.contains(re.escape(item_str), case=False, na=False, regex=True)]
                                             
                                             if not item_db.empty:
                                                 id_item = str(item_db.iloc[0]['id'])
                                                 stock_actual = float(item_db.iloc[0]['cantidad_actual'])
                                                 stock_nuevo = stock_actual - cant_total
+                                                umbral = float(item_db.iloc[0]['umbral_minimo'])
                                                 unidad_item = item_db.iloc[0]['unidad']
                                                 nombre_item = item_db.iloc[0]['nombre']
                                                 
                                                 supabase.table("items").update({"cantidad_actual": stock_nuevo}).eq("id", id_item).execute()
                                                 supabase.table("movimiento").insert({"item_id": id_item, "nombre_item": nombre_item, "cantidad_cambio": -cant_total, "tipo": f"Uso IA: {nombre_prot_oficial}", "usuario": usuario_actual, "lab_id": lab_id}).execute()
                                                 
-                                                log_ia_acciones.append(f"&nbsp;&nbsp;&nbsp; 📉 -{cant_total} {unidad_item} de {nombre_item}")
+                                                lista_descuentos.append(f"&nbsp;&nbsp;&nbsp; 📉 {cant_total} {unidad_item} de {nombre_item} <i>(Protocolo)</i>")
+                                                
+                                                if umbral > 0 and stock_nuevo <= umbral:
+                                                    log_alertas.append(f"🚨 <b>ALERTA CRÍTICA:</b> {nombre_item} bajó del mínimo.")
                                             else:
-                                                log_ia_acciones.append(f"&nbsp;&nbsp;&nbsp; ⚠️ No encontré '{item_str}' en inventario.")
+                                                lista_descuentos.append(f"&nbsp;&nbsp;&nbsp; ⚠️ No encontré '{item_str}' en inventario.")
 
-                        # 3. AJUSTES EXTRA (Cuando el usuario responde "usé 2 placas")
-                        ajustes = data.get('ajustes_inventario', [])
+                        # 3. AJUSTES EXTRA (La respuesta a tu placa)
+                        ajustes = data.get('inventario_ajustes', [])
                         for aj in ajustes:
-                            nom_ac = aj.get('nombre')
-                            cant_restar = aj.get('restar', 0)
-                            if nom_ac and cant_restar > 0:
-                                item_db = df[df['nombre'].str.contains(re.escape(nom_ac), case=False, na=False, regex=True)]
+                            id_ac = aj.get('id')
+                            cant_restar = aj.get('cantidad_a_restar', 0)
+                            if id_ac and cant_restar != 0:
+                                item_db = df[df['id'].astype(str) == str(id_ac)]
                                 if not item_db.empty:
-                                    id_ac = str(item_db.iloc[0]['id'])
                                     stock_actual = float(item_db.iloc[0]['cantidad_actual'])
                                     stock_nuevo = stock_actual - cant_restar
                                     nombre_item = item_db.iloc[0]['nombre']
                                     unidad_item = item_db.iloc[0]['unidad']
                                     
                                     supabase.table("items").update({"cantidad_actual": stock_nuevo}).eq("id", id_ac).execute()
-                                    supabase.table("movimiento").insert({"item_id": id_ac, "nombre_item": nombre_item, "cantidad_cambio": -cant_restar, "tipo": "Ajuste IA", "usuario": usuario_actual, "lab_id": lab_id}).execute()
-                                    log_ia_acciones.append(f"📦 Descontado extra: -{cant_restar} {unidad_item} de {nombre_item}")
+                                    supabase.table("movimiento").insert({"item_id": id_ac, "nombre_item": nombre_item, "cantidad_cambio": -cant_restar, "tipo": "Ajuste Conversacional IA", "usuario": usuario_actual, "lab_id": lab_id}).execute()
+                                    lista_descuentos.append(f"&nbsp;&nbsp;&nbsp; 📉 {cant_restar} {unidad_item} de {nombre_item} <i>(Extra)</i>")
 
-                        # 4. GUARDAR BITÁCORA (SOLO SI ES UNA ACCIÓN NUEVA)
+                        # CONSTRUIR STRING UNIFICADO DE IA
+                        res_parts = []
+                        if log_ia_reservas: res_parts.extend(log_ia_reservas)
+                        if log_protocolo_usado: res_parts.append(log_protocolo_usado)
+                        if lista_descuentos:
+                            res_parts.append("📦 <b>Descontado:</b>")
+                            res_parts.extend(lista_descuentos)
+                        if log_alertas: res_parts.extend(log_alertas)
+                        
+                        metadatos_ia = "<br>".join(res_parts) if res_parts else ""
+
+                        # 4. GUARDAR BITÁCORA
                         bit = data.get('bitacora', {})
-                        if bit.get('guardar') == True and bit.get('texto'):
-                            texto_principal = bit.get('texto')
-                            metadatos_ia = "<br>".join(log_ia_acciones) if log_ia_acciones else ""
-                            
+                        if bit.get('guardar') and bit.get('entrada_cuaderno'):
                             supabase.table("bitacora").insert({
                                 "lab_id": lab_id, 
                                 "usuario": usuario_actual, 
                                 "fecha": date.today().isoformat(),
-                                "contenido": texto_principal,
+                                "contenido": bit.get('entrada_cuaderno'),
                                 "resultado": metadatos_ia 
                             }).execute()
 
-                        # 5. RESPONDER AL USUARIO EN EL CHAT
-                        msg_final = data.get('respuesta_chat', 'Anotado.')
+                        # 5. RESPONDER AL CHAT
+                        msg_final = ""
+                        if data.get('mensaje_inicial'): msg_final += f"{data['mensaje_inicial']}\n\n"
+                        # Para el chat, convertimos el HTML a Markdown simple para que se lea bien en la cajita
+                        if log_protocolo_usado: msg_final += "✅ Inventario descontado.\n\n"
+                        if data.get('pregunta_final') and not es_respuesta_corta: 
+                            msg_final += f"*{data['pregunta_final']}*"
+                        if not msg_final.strip(): msg_final = "Anotado."
+                            
                         st.markdown(msg_final)
                         st.session_state.messages.append({"role": "assistant", "content": msg_final})
                         st.rerun()
 
                     else:
-                        st.markdown("Comando procesado.")
+                        st.markdown("No pude procesar la instrucción.")
                 except Exception as e: st.error(f"Error IA: {e}")
