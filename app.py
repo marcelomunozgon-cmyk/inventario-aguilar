@@ -690,7 +690,7 @@ with col_chat:
     chat_box = st.container(height=400, border=False)
     
     if "messages" not in st.session_state: 
-        st.session_state.messages = [{"role": "assistant", "content": f"¡Hola! Dime qué hiciste o qué necesitas reservar. Si haces cultivos, te recordaré algunas rutinas."}]
+        st.session_state.messages = [{"role": "assistant", "content": f"¡Hola! Dime qué hiciste o qué necesitas reservar."}]
     
     for m in st.session_state.messages:
         with chat_box: st.chat_message(m["role"]).markdown(m["content"])
@@ -748,33 +748,30 @@ with col_chat:
                     rutinas_str = ", ".join(st.session_state.rutinas_diarias["mostradas"])
                     
                     prompt_sistema = f"""
-                    Eres el Orquestador IA del LIMS Stck. Tienes MEMORIA y eres PROACTIVO. Hoy es {hoy_str}.
-                    Inventario: {d_ia}
-                    Protocolos: {d_prot}
-                    Equipos: {d_eq}
+                    Eres el Orquestador IA del LIMS Stck. Eres un asistente ESTRICTO y preciso. Hoy es {hoy_str}.
+                    Inventario actual: {d_ia}
+                    Protocolos registrados: {d_prot}
                     
-                    Historial reciente:
+                    Historial reciente de la conversación (para que sepas el contexto):
                     {historial_str}
-
                     Rutinas ya recordadas hoy (NO LAS VUELVAS A MENCIONAR): [{rutinas_str}]
 
-                    Analiza el último mensaje del Usuario ({prompt}) y devuelve ÚNICAMENTE un JSON con esta estructura exacta:
+                    Analiza el ÚLTIMO mensaje del Usuario: "{prompt}" y devuelve ÚNICAMENTE un JSON con esta estructura exacta:
                     {{
-                        "mensaje_inicial": "Recordatorios de rutina SI NO ESTÁN en la lista de rutinas ya recordadas. Si es una orden simple, déjalo vacío o pon 'Entendido.'",
-                        "pregunta_final": "Pregunta de seguimiento (ej. '¿Gastaste alguna placa nueva?'). ¡NUNCA preguntes por volúmenes de reactivos que ya están en el protocolo!",
+                        "mensaje_inicial": "Tu respuesta conversacional. (ej. 'Entendido.').",
+                        "pregunta_final": "Pregunta de seguimiento SI aplica. ¡Déjalo vacío si el usuario ya respondió 'no', o 'nada'!",
                         "bitacora": {{"guardar": false, "entrada_cuaderno": ""}},
                         "protocolo": {{"ejecutar": false, "nombre": "", "muestras": 1}},
                         "inventario_ajustes": [{{"id": "id_del_item", "cantidad_a_restar": 0}}],
                         "reserva": {{"generar": false, "equipo_nombre": "", "fecha_YYYY_MM_DD": "", "hora_inicio_HH_MM": "", "hora_fin_HH_MM": ""}},
-                        "nuevas_rutinas_recordadas": ["incubadora", "etc"]
+                        "nuevas_rutinas_recordadas": ["palabra"]
                     }}
 
-                    Reglas MUY ESTRICTAS:
-                    1. NO PREGUNTES POR VOLÚMENES: Si el usuario ejecuta un protocolo, el sistema descontará los reactivos base automáticamente.
-                    2. CERO INVENTOS EN INVENTARIO: NUNCA pongas ítems en "inventario_ajustes" a menos que el usuario mencione un NÚMERO EXPLÍCITO.
-                    3. BITÁCORA FIEL: Si vas a guardar en bitácora, copia las palabras exactas del usuario.
-                    4. EVITA BUCLES: Si el usuario responde "no" o "nada más" a tu pregunta anterior, pon en "mensaje_inicial": "Entendido.", vacía "pregunta_final" y deja TODO LO DEMÁS en false/vacío. NUNCA vuelvas a ejecutar el protocolo ni a preguntar lo mismo.
-                    5. SOLO EJECUTA PROTOCOLOS UNA VEZ: Si el usuario está respondiendo a una pregunta sobre un protocolo que ya se ejecutó en el mensaje anterior, NO vuelvas a poner "protocolo.ejecutar" en true.
+                    REGLAS DE ORO (INCUMPLIRLAS ES UN ERROR CRÍTICO):
+                    1. NO PREGUNTES POR VOLÚMENES NI REACTIVOS BASE: El sistema ya los descuenta de la receta. ¡PROHIBIDO preguntar cuánto DMEM, PBS, Tripsina, etc., usó! 
+                    2. EVITA BUCLES (CRÍTICO): Si el usuario responde 'no', 'ninguno', 'nada' o similar a tu pregunta anterior, DEBES dejar 'pregunta_final' vacío. NO vuelvas a ejecutar el protocolo, NO guardes bitácora nueva. Solo pon 'mensaje_inicial': 'Entendido.'
+                    3. CERO INVENTOS EN INVENTARIO: Solo usa 'inventario_ajustes' si el usuario menciona un NÚMERO EXPLÍCITO de algún material (ej. 'usé 2 placas').
+                    4. TEXTO DE BITÁCORA: Si es una acción nueva de laboratorio, "entrada_cuaderno" debe ser la frase EXACTA dictada por el usuario, sin resúmenes.
                     """
                     
                     res_ai = model.generate_content(prompt_sistema).text
@@ -813,11 +810,11 @@ with col_chat:
                                     supabase.table("reservas").insert({"equipo_id": str(eq_id), "usuario": usuario_actual, "fecha_inicio": dt_ini.isoformat(), "fecha_fin": dt_fin.isoformat(), "lab_id": lab_id}).execute()
                                     log_ia_acciones.append(f"✅ **Equipo Reservado:** {eq_match.iloc[0]['nombre']} ({f_res} de {h_ini} a {h_fin})")
                                 else:
-                                    log_ia_acciones.append(f"❌ **Fallo Reserva:** El {eq_match.iloc[0]['nombre']} ya está ocupado en ese horario.")
+                                    log_ia_acciones.append(f"❌ **Fallo Reserva:** El equipo ya está ocupado en ese horario.")
                             else:
                                 log_ia_acciones.append(f"❌ **Fallo Reserva:** No encontré el equipo '{eq_nom}'.")
 
-                        # 2. PROTOCOLO AUTOMÁTICO (AHORA CON MULTIPLICACIÓN MATEMÁTICA EN UI)
+                        # 2. PROTOCOLO AUTOMÁTICO CON MATEMÁTICAS EXACTAS
                         prot = data.get('protocolo', {})
                         if prot.get('ejecutar') and prot.get('nombre'):
                             p_nombre = prot.get('nombre')
@@ -828,38 +825,48 @@ with col_chat:
                                 nombre_prot_oficial = prot_match.iloc[0]['nombre']
                                 info_p = prot_match.iloc[0]['materiales_base']
                                 
-                                desglose_txt = [f"🧪 **Protocolo Aplicado:** {nombre_prot_oficial} (x{p_muestras} muestras)\n*Desglose exacto descontado:*"]
+                                desglose_txt = [f"🧪 **Protocolo Aplicado:** {nombre_prot_oficial} (x{p_muestras} muestras)\n*Desglose:*"]
                                 
-                                for linea in info_p.split('\n'):
-                                    if ":" in linea:
-                                        partes = linea.split(":")
-                                        item_str = partes[0].strip()
-                                        cant_base = float(partes[1].strip())
-                                        cant_total = cant_base * p_muestras # MULTIPLICACIÓN TOTAL
-                                        
-                                        item_db = df[df['nombre'].str.contains(item_str, case=False, na=False)]
-                                        if not item_db.empty:
-                                            id_item = str(item_db.iloc[0]['id'])
-                                            stock_actual = item_db.iloc[0]['cantidad_actual']
-                                            stock_nuevo = stock_actual - cant_total
-                                            umbral = item_db.iloc[0]['umbral_minimo']
-                                            unidad_item = item_db.iloc[0]['unidad']
-                                            nombre_item = item_db.iloc[0]['nombre']
+                                if not info_p or not str(info_p).strip():
+                                    desglose_txt.append("  - ⚠️ El protocolo no tiene reactivos registrados en su receta.")
+                                else:
+                                    for linea in info_p.split('\n'):
+                                        if ":" in linea:
+                                            partes = linea.split(":")
+                                            item_str = partes[0].strip()
+                                            try:
+                                                cant_base = float(partes[1].strip())
+                                            except ValueError:
+                                                continue 
+                                                
+                                            cant_total = cant_base * p_muestras 
                                             
-                                            supabase.table("items").update({"cantidad_actual": int(stock_nuevo)}).eq("id", id_item).execute()
-                                            supabase.table("movimiento").insert({"item_id": id_item, "nombre_item": nombre_item, "cantidad_cambio": -cant_total, "tipo": f"Uso IA: {nombre_prot_oficial}", "usuario": usuario_actual, "lab_id": lab_id}).execute()
+                                            # Búsqueda estricta para evitar fallos por paréntesis
+                                            item_db = df[df['nombre'].str.contains(re.escape(item_str), case=False, na=False, regex=True)]
                                             
-                                            desglose_txt.append(f"  - 📉 {cant_total} {unidad_item} de **{nombre_item}**")
-                                            
-                                            if umbral > 0 and stock_nuevo <= umbral:
-                                                log_ia_acciones.append(f"🚨 **ALERTA CRÍTICA:** {nombre_item} cayó por debajo del umbral mínimo ({int(stock_nuevo)} restantes).")
+                                            if not item_db.empty:
+                                                id_item = str(item_db.iloc[0]['id'])
+                                                stock_actual = float(item_db.iloc[0]['cantidad_actual'])
+                                                stock_nuevo = stock_actual - cant_total
+                                                umbral = float(item_db.iloc[0]['umbral_minimo'])
+                                                unidad_item = item_db.iloc[0]['unidad']
+                                                nombre_item = item_db.iloc[0]['nombre']
+                                                
+                                                supabase.table("items").update({"cantidad_actual": stock_nuevo}).eq("id", id_item).execute()
+                                                supabase.table("movimiento").insert({"item_id": id_item, "nombre_item": nombre_item, "cantidad_cambio": -cant_total, "tipo": f"Uso IA: {nombre_prot_oficial}", "usuario": usuario_actual, "lab_id": lab_id}).execute()
+                                                
+                                                desglose_txt.append(f"  - 📉 {cant_total} {unidad_item} de **{nombre_item}**")
+                                                
+                                                if umbral > 0 and stock_nuevo <= umbral:
+                                                    log_ia_acciones.append(f"🚨 **ALERTA CRÍTICA:** {nombre_item} bajó del mínimo ({stock_nuevo} restantes).")
+                                            else:
+                                                desglose_txt.append(f"  - ⚠️ *Aviso:* No encontré el reactivo '{item_str}' en tu inventario.")
                                 
-                                # Insertamos el desglose al principio de las acciones de la IA
                                 log_ia_acciones = desglose_txt + log_ia_acciones
                             else:
                                 log_ia_acciones.append(f"⚠️ *No encontré el protocolo '{p_nombre}'.*")
 
-                        # 3. AJUSTES DE INVENTARIO MANUALES / CONVERSACIONALES
+                        # 3. AJUSTES EXTRA / MANUALES
                         ajustes = data.get('inventario_ajustes', [])
                         for aj in ajustes:
                             id_ac = aj.get('id')
@@ -867,20 +874,20 @@ with col_chat:
                             if id_ac and cant_restar != 0:
                                 item_db = df[df['id'].astype(str) == str(id_ac)]
                                 if not item_db.empty:
-                                    stock_actual = item_db.iloc[0]['cantidad_actual']
+                                    stock_actual = float(item_db.iloc[0]['cantidad_actual'])
                                     stock_nuevo = stock_actual - cant_restar
                                     nombre_item = item_db.iloc[0]['nombre']
                                     unidad_item = item_db.iloc[0]['unidad']
                                     
-                                    supabase.table("items").update({"cantidad_actual": int(stock_nuevo)}).eq("id", id_ac).execute()
-                                    supabase.table("movimiento").insert({"item_id": id_ac, "nombre_item": nombre_item, "cantidad_cambio": -cant_restar, "tipo": "Ajuste Conversacional IA", "usuario": usuario_actual, "lab_id": lab_id}).execute()
+                                    supabase.table("items").update({"cantidad_actual": stock_nuevo}).eq("id", id_ac).execute()
+                                    supabase.table("movimiento").insert({"item_id": id_ac, "nombre_item": nombre_item, "cantidad_cambio": -cant_restar, "tipo": "Ajuste IA Extra", "usuario": usuario_actual, "lab_id": lab_id}).execute()
                                     log_ia_acciones.append(f"  - 📉 {cant_restar} {unidad_item} de **{nombre_item}** (Ajuste extra)")
 
                         # 4. GUARDAR BITÁCORA
                         bit = data.get('bitacora', {})
                         if bit.get('guardar') and bit.get('entrada_cuaderno'):
                             texto_principal_usuario = bit.get('entrada_cuaderno')
-                            metadatos_ia = "\n".join(log_ia_acciones) if log_ia_acciones else "Ninguna acción automática en inventario o calendario."
+                            metadatos_ia = "\n".join(log_ia_acciones) if log_ia_acciones else "Ninguna acción automática de inventario."
                             
                             supabase.table("bitacora").insert({
                                 "lab_id": lab_id, 
@@ -890,7 +897,7 @@ with col_chat:
                                 "resultado": metadatos_ia 
                             }).execute()
 
-                        # 5. CONSTRUIR RESPUESTA TIPO SANDWICH PARA EL CHAT
+                        # 5. RESPONDER AL USUARIO EN EL CHAT
                         msg_final = ""
                         if data.get('mensaje_inicial'): 
                             msg_final += f"{data['mensaje_inicial']}\n\n"
