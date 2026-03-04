@@ -229,6 +229,25 @@ def enviar_correo_reserva(equipo_nombre, fecha_str, hora_ini, hora_fin, usuario_
         return True
     except: return False
 
+def enviar_correo_compras(item_nombre, precio, operador):
+    try:
+        sender = st.secrets["EMAIL_SENDER"]
+        password = st.secrets["EMAIL_PASSWORD"]
+        receiver = st.secrets.get("EMAIL_RECEIVER", sender)
+        msg = MIMEMultipart()
+        msg['From'] = sender
+        msg['To'] = receiver
+        msg['Subject'] = f"🛒 SOLICITUD DE COMPRA: {item_nombre} - Stck"
+        body = f"<html><body><h2>Solicitud de Cotización / Compra</h2><p>Se ha solicitado reabastecer el siguiente ítem:</p><ul><li><b>Reactivo:</b> {item_nombre}</li><li><b>Último precio referencial:</b> ${precio}</li><li><b>Solicitado por:</b> {operador}</li></ul></body></html>"
+        msg.attach(MIMEText(body, 'html'))
+        server = smtplib.SMTP('smtp.gmail.com', 587)
+        server.starttls()
+        server.login(sender, password)
+        server.send_message(msg)
+        server.quit()
+        return True
+    except: return False
+
 def generar_link_gcal(titulo, inicio, fin, descripcion=""):
     fmt = "%Y%m%dT%H%M%SZ"
     inicio_utc = inicio + timedelta(hours=3) 
@@ -406,6 +425,8 @@ with col_mon:
                             else:
                                 try:
                                     supabase.table("reservas").insert({"equipo_id": str(datos_eq['id']), "usuario": usuario_actual, "fecha_inicio": dt_ini.isoformat(), "fecha_fin": dt_fin.isoformat(), "lab_id": lab_id}).execute()
+                                    admin_email = obtener_admin_email(lab_id)
+                                    enviar_correo_reserva(datos_eq['nombre'], fecha_res.strftime('%d/%m/%Y'), t_ini.strftime('%H:%M'), t_fin.strftime('%H:%M'), usuario_actual, admin_email, st.session_state.usuario_autenticado)
                                     st.success("✅ Reserva guardada.")
                                     st.rerun()
                                 except Exception as e: st.error(f"Error: {e}")
@@ -413,9 +434,11 @@ with col_mon:
                 st.write("**Tus Próximas Reservas:**")
                 if not df_reservas.empty and not df_equipos.empty:
                     df_r = pd.merge(df_reservas, df_equipos[['id', 'nombre']], left_on='equipo_id', right_on='id', how='inner', suffixes=('', '_eq'))
-                    df_r['fecha_inicio'] = pd.to_datetime(df_r['fecha_inicio'])
-                    df_r['fecha_fin'] = pd.to_datetime(df_r['fecha_fin'])
-                    df_futuras = df_r[(df_r['fecha_fin'] >= pd.to_datetime('today', utc=True)) & (df_r['usuario'] == usuario_actual)].sort_values(by='fecha_inicio')
+                    # FIX DE ZONA HORARIA APLICADO AQUÍ:
+                    df_r['fecha_inicio'] = pd.to_datetime(df_r['fecha_inicio']).dt.tz_localize(None)
+                    df_r['fecha_fin'] = pd.to_datetime(df_r['fecha_fin']).dt.tz_localize(None)
+                    
+                    df_futuras = df_r[(df_r['fecha_fin'] >= pd.to_datetime('today').tz_localize(None)) & (df_r['usuario'] == usuario_actual)].sort_values(by='fecha_inicio')
                     if df_futuras.empty: st.info("No tienes reservas activas.")
                     else:
                         for _, row in df_futuras.iterrows():
@@ -437,11 +460,10 @@ with col_mon:
                 df_cal['Fin'] = pd.to_datetime(df_cal['fecha_fin']).dt.tz_localize(None)
                 df_cal['Equipo'] = df_cal['nombre_eq']
                 
-                limite_fecha = pd.to_datetime('today') + timedelta(days=vista_dias)
-                df_filtro = df_cal[(df_cal['Inicio'] >= pd.to_datetime('today') - timedelta(days=1)) & (df_cal['Inicio'] <= limite_fecha)]
+                limite_fecha = pd.to_datetime('today').tz_localize(None) + timedelta(days=vista_dias)
+                df_filtro = df_cal[(df_cal['Inicio'] >= pd.to_datetime('today').tz_localize(None) - timedelta(days=1)) & (df_cal['Inicio'] <= limite_fecha)]
                 
                 if not df_filtro.empty:
-                    # GANTT CHART CON ALTAIR
                     chart = alt.Chart(df_filtro).mark_bar(cornerRadius=5, height=20).encode(
                         x=alt.X('Inicio:T', title='Timeline (Horas/Días)'),
                         x2='Fin:T',
@@ -482,7 +504,6 @@ with col_mon:
                                 st.rerun()
                             except Exception as e: st.error(f"Error: {e}")
 
-    # --- PESTAÑA: BITÁCORA ORIGAMI (DESPLEGABLE) ---
     with tab_bitacora:
         st.markdown("### 📔 Bitácora Inteligente")
         if rol_actual == "admin": filtro_usuario = st.selectbox("Ver notas de:", ["Todos"] + list(set(nombres_equipo)))
@@ -508,18 +529,14 @@ with col_mon:
             df_b_show = df_bitacora if filtro_usuario == "Todos" else df_bitacora[df_bitacora['usuario'] == filtro_usuario]
             for _, row in df_b_show.iterrows():
                 titulo_corto = str(row.get('contenido', 'Nota de Laboratorio'))
-                if "\n" in titulo_corto: titulo_corto = titulo_corto.split("\n")[0] # Solo la primera linea como titulo
+                if "\n" in titulo_corto: titulo_corto = titulo_corto.split("\n")[0]
                 
-                # ESTILO CUADERNO DESPLEGABLE
                 with st.expander(f"📅 {row['fecha']} | 👤 {row['usuario']} — {titulo_corto[:70]}..."):
                     st.markdown(f"**Resumen principal:**\n{row.get('contenido', '')}")
-                    
-                    # Panel IA / Resultados internos
                     res = str(row.get('resultado', '')).strip()
                     if res:
                         st.markdown("---")
                         st.markdown(f"🤖 **Acciones de IA y Resultados:**\n\n{res}")
-                    
                     if str(row.get('link_adjunto')).startswith('http'):
                         st.markdown(f"📎 [**Ver Evidencia Adjunta**]({row.get('link_adjunto')})")
 
@@ -688,7 +705,7 @@ with col_chat:
                             msg = f"📸 **Creado:** {itm['nombre']} | Stock: {itm['cantidad_actual']}"
                         
                         elif accion_foto == "🔄 Actualizar Reactivo":
-                            prompt_vision = f"Lee la etiqueta o el QR. Es del reactivo '{item_a_actualizar}'. Extrae la cantidad física que ves. Responde SOLO JSON: {{\"{item_a_actualizar}\": true, \"cantidad_actual\": 0}}"
+                            prompt_vision = f"Lee la etiqueta o el Código QR de esta imagen. Es del reactivo '{item_a_actualizar}'. Extrae la cantidad física que ves. Responde SOLO JSON: {{\"{item_a_actualizar}\": true, \"cantidad_actual\": 0}}"
                             res_ai = model.generate_content([prompt_vision, img]).text
                             data = json.loads(re.search(r'\{.*\}', res_ai, re.DOTALL).group())
                             nueva_cant = data.get('cantidad_actual', 0)
@@ -698,7 +715,7 @@ with col_chat:
                             msg = f"📸 **Actualizado:** {item_a_actualizar} ahora tiene {nueva_cant} en stock."
 
                         st.markdown(msg); st.session_state.messages.append({"role": "assistant", "content": msg}); st.rerun()
-                    except Exception as e: st.error("Error al procesar la imagen.")
+                    except Exception as e: st.error("Error al procesar la imagen. Intenta con más luz o acercando la cámara.")
 
     if prompt:
         st.session_state.messages.append({"role": "user", "content": prompt})
@@ -757,7 +774,6 @@ with col_chat:
                                 dt_ini = datetime.fromisoformat(f"{f_res}T{h_ini}:00")
                                 dt_fin = datetime.fromisoformat(f"{f_res}T{h_fin}:00")
                                 
-                                # Check Overlap simplificado
                                 solapamiento = False
                                 if not df_reservas.empty:
                                     df_r_eq = df_reservas[df_reservas['equipo_id'] == str(eq_id)].copy()
