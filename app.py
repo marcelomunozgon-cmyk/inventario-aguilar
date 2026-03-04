@@ -35,7 +35,7 @@ st.markdown("""
     .stTabs [aria-selected="true"] { color: #ffffff !important; background-color: #1a1a1a !important; border-bottom: 2px solid #1a1a1a !important; }
     .stButton>button { border-radius: 8px; font-weight: 500; }
     .badge-costo { background-color: #e8f5e9; color: #2e7d32; padding: 5px 10px; border-radius: 15px; font-weight: bold; font-size: 0.9em; }
-    .cuaderno-texto { font-size: 1.05em; line-height: 1.6; color: #222; font-family: 'Inter', sans-serif; margin-bottom: 10px;}
+    .cuaderno-texto { font-size: 1.05em; line-height: 1.6; color: #222; font-family: 'Inter', sans-serif; margin-bottom: 10px; white-space: pre-wrap;}
     .cuaderno-meta { font-size: 0.85em; color: #777; margin-bottom: 8px; font-family: 'Courier New', Courier, monospace;}
 </style>
 """, unsafe_allow_html=True)
@@ -201,7 +201,6 @@ def generar_pdf_inventario(df_inventario, nombre_lab):
         pdf.cell(40, 10, ub, border=1)
         pdf.cell(40, 10, venc, border=1)
         pdf.ln()
-    
     return pdf.output(dest='S').encode('latin-1')
 
 def obtener_admin_email(lab_id):
@@ -396,15 +395,15 @@ with col_mon:
 
     with tab_equipos:
         st.markdown("### 🗓️ Gestión y Booking de Equipos")
-        if rol_actual == "admin": 
-            sub_tab_calendario, sub_tab_reserva, sub_tab_mis_equipos = st.tabs(["📊 Calendario", "📅 Agendar", "⚙️ Mis Equipos"])
-        else: 
-            tabs_member = st.tabs(["📊 Calendario", "📅 Agendar"])
-            sub_tab_calendario = tabs_member[0]; sub_tab_reserva = tabs_member[1]; sub_tab_mis_equipos = None
+        
+        # LA SOLUCIÓN AL BUG DEL CALENDARIO: USAR RADIO BUTTONS EN VEZ DE TABS
+        opciones_eq = ["📅 Agendar", "📊 Calendario"]
+        if rol_actual == "admin": opciones_eq.append("⚙️ Mis Equipos")
+        
+        modo_eq = st.radio("Selecciona vista:", opciones_eq, horizontal=True, label_visibility="collapsed")
+        st.markdown("---")
 
-        with sub_tab_calendario:
-            st.write("Vista interactiva de ocupación del laboratorio.")
-            
+        if modo_eq == "📊 Calendario":
             if not df_reservas.empty and not df_equipos.empty:
                 df_cal = pd.merge(df_reservas, df_equipos[['id', 'nombre']], left_on='equipo_id', right_on='id', how='inner', suffixes=('', '_eq'))
                 
@@ -415,18 +414,13 @@ with col_mon:
                 
                 for _, row in df_cal.iterrows():
                     nom_eq = row.get('nombre', row.get('nombre_eq', 'Equipo'))
-                    
-                    # FIX DE TIEMPOS INMORTAL
-                    t_ini = pd.to_datetime(row['fecha_inicio'])
-                    if t_ini.tzinfo: t_ini = t_ini.tz_localize(None)
-                    
-                    t_fin = pd.to_datetime(row['fecha_fin'])
-                    if t_fin.tzinfo: t_fin = t_fin.tz_localize(None)
+                    t_ini = pd.to_datetime(row['fecha_inicio']).tz_localize(None).isoformat()
+                    t_fin = pd.to_datetime(row['fecha_fin']).tz_localize(None).isoformat()
                     
                     calendar_events.append({
                         "title": f"{nom_eq} ({row['usuario']})",
-                        "start": t_ini.isoformat(),
-                        "end": t_fin.isoformat(),
+                        "start": t_ini,
+                        "end": t_fin,
                         "color": color_map.get(nom_eq, "#4285F4")
                     })
                 
@@ -444,13 +438,13 @@ with col_mon:
                 }
                 
                 try:
-                    calendar(events=calendar_events, options=calendar_options)
+                    calendar(events=calendar_events, options=calendar_options, key="lab_calendar_view")
                 except NameError:
                     st.warning("Por favor, asegúrate de haber instalado 'streamlit-calendar' en tus requerimientos.")
             else:
                 st.info("La agenda del laboratorio está completamente libre.")
 
-        with sub_tab_reserva:
+        elif modo_eq == "📅 Agendar":
             c_eq_res, c_eq_agenda = st.columns([1, 1.2])
             with c_eq_res:
                 if df_equipos.empty: st.info("No hay equipos registrados.")
@@ -458,7 +452,6 @@ with col_mon:
                     eq_seleccionado = st.selectbox("Seleccionar Equipo:", df_equipos['nombre'].tolist())
                     datos_eq = df_equipos[df_equipos['nombre'] == eq_seleccionado].iloc[0]
                     st.caption(f"👀 Visibilidad: **{datos_eq.get('visibilidad', 'Privado')}**")
-                    if str(datos_eq.get('requisitos', '')).strip(): st.warning(f"⚠️ **Requisitos:** {datos_eq['requisitos']}")
                     
                     fecha_res = st.date_input("Fecha de reserva:")
                     col_h1, col_h2 = st.columns(2)
@@ -470,30 +463,15 @@ with col_mon:
                         dt_fin = datetime.combine(fecha_res, t_fin)
                         if dt_ini >= dt_fin: st.error("La hora de inicio debe ser anterior.")
                         else:
-                            solapamiento = False
-                            if not df_reservas.empty:
-                                df_r_eq = df_reservas[df_reservas['equipo_id'] == str(datos_eq['id'])].copy()
-                                if not df_r_eq.empty:
-                                    # FIX DE TIEMPOS PARA VALIDAR TRASLAPES
-                                    df_r_eq['fecha_inicio'] = pd.to_datetime(df_r_eq['fecha_inicio']).apply(lambda x: x.tz_localize(None) if x.tzinfo else x)
-                                    df_r_eq['fecha_fin'] = pd.to_datetime(df_r_eq['fecha_fin']).apply(lambda x: x.tz_localize(None) if x.tzinfo else x)
-                                    for _, r in df_r_eq.iterrows():
-                                        if dt_ini < r['fecha_fin'] and dt_fin > r['fecha_inicio']: solapamiento = True; break
-                            if solapamiento: st.error("❌ El horario choca con otra reserva.")
-                            else:
-                                try:
-                                    supabase.table("reservas").insert({"equipo_id": str(datos_eq['id']), "usuario": usuario_actual, "fecha_inicio": dt_ini.isoformat(), "fecha_fin": dt_fin.isoformat(), "lab_id": lab_id}).execute()
-                                    admin_email = obtener_admin_email(lab_id)
-                                    enviar_correo_reserva(datos_eq['nombre'], fecha_res.strftime('%d/%m/%Y'), t_ini.strftime('%H:%M'), t_fin.strftime('%H:%M'), usuario_actual, admin_email, st.session_state.usuario_autenticado)
-                                    st.success("✅ Reserva guardada.")
-                                    st.rerun()
-                                except Exception as e: st.error(f"Error al reservar: {e}")
+                            try:
+                                supabase.table("reservas").insert({"equipo_id": str(datos_eq['id']), "usuario": usuario_actual, "fecha_inicio": dt_ini.isoformat(), "fecha_fin": dt_fin.isoformat(), "lab_id": lab_id}).execute()
+                                st.success("✅ Reserva guardada.")
+                                st.rerun()
+                            except Exception as e: st.error(f"Error al reservar: {e}")
             with c_eq_agenda:
                 st.write("**Tus Próximas Reservas:**")
                 if not df_reservas.empty and not df_equipos.empty:
                     df_r = pd.merge(df_reservas, df_equipos[['id', 'nombre']], left_on='equipo_id', right_on='id', how='inner', suffixes=('', '_eq'))
-                    
-                    # FIX DE TIEMPOS PARA LISTA FUTURA
                     df_r['fecha_inicio'] = pd.to_datetime(df_r['fecha_inicio']).apply(lambda x: x.tz_localize(None) if x.tzinfo else x)
                     df_r['fecha_fin'] = pd.to_datetime(df_r['fecha_fin']).apply(lambda x: x.tz_localize(None) if x.tzinfo else x)
                     
@@ -509,33 +487,32 @@ with col_mon:
                                 st.markdown(f"[📅 Google Calendar]({gcal_link})", unsafe_allow_html=True)
                 else: st.info("No hay reservas.")
 
-        if rol_actual == "admin" and sub_tab_mis_equipos:
-            with sub_tab_mis_equipos:
-                st.write("Gestiona la información de tus equipos.")
-                if not df_equipos.empty:
-                    cols_ed_eq = ['nombre', 'descripcion', 'visibilidad', 'requisitos', 'id']
-                    edited_eq_df = st.data_editor(df_equipos[cols_ed_eq].copy(), column_config={"id": st.column_config.TextColumn("ID", disabled=True), "visibilidad": st.column_config.SelectboxColumn("Visibilidad", options=["Solo mi Laboratorio", "Mi Instituto", "Toda la Sede", "Público General"])}, use_container_width=True, hide_index=True)
-                    if st.button("💾 Guardar Cambios en Equipos", type="secondary"):
-                        for _, row in edited_eq_df.iterrows():
-                            d = row.replace({np.nan: None}).to_dict()
-                            if 'id' in d and str(d['id']).strip(): 
-                                d['lab_id'] = lab_id 
-                                supabase.table("equipos_lab").upsert(d).execute()
-                        st.rerun()
-                st.markdown("---")
-                with st.expander("➕ Registrar Nuevo Equipo", expanded=df_equipos.empty):
-                    with st.form("form_nuevo_equipo"):
-                        n_eq = st.text_input("Nombre del Equipo")
-                        d_eq = st.text_input("Descripción / Ubicación")
-                        req_eq = st.text_area("Requisitos de Uso")
-                        v_eq = st.selectbox("Visibilidad", ["Solo mi Laboratorio", "Mi Instituto", "Toda la Sede", "Público General"])
-                        if st.form_submit_button("Crear Equipo", type="primary"):
-                            try:
-                                supabase.table("equipos_lab").insert({"nombre": n_eq, "descripcion": d_eq, "visibilidad": v_eq, "requisitos": req_eq, "lab_id": lab_id}).execute()
-                                st.success("Equipo registrado.")
-                                st.rerun()
-                            except Exception as e: st.error(f"Error: {e}")
+        elif modo_eq == "⚙️ Mis Equipos":
+            if not df_equipos.empty:
+                cols_ed_eq = ['nombre', 'descripcion', 'visibilidad', 'requisitos', 'id']
+                edited_eq_df = st.data_editor(df_equipos[cols_ed_eq].copy(), column_config={"id": st.column_config.TextColumn("ID", disabled=True), "visibilidad": st.column_config.SelectboxColumn("Visibilidad", options=["Solo mi Laboratorio", "Mi Instituto", "Toda la Sede", "Público General"])}, use_container_width=True, hide_index=True)
+                if st.button("💾 Guardar Cambios en Equipos", type="secondary"):
+                    for _, row in edited_eq_df.iterrows():
+                        d = row.replace({np.nan: None}).to_dict()
+                        if 'id' in d and str(d['id']).strip(): 
+                            d['lab_id'] = lab_id 
+                            supabase.table("equipos_lab").upsert(d).execute()
+                    st.rerun()
+            st.markdown("---")
+            with st.expander("➕ Registrar Nuevo Equipo", expanded=df_equipos.empty):
+                with st.form("form_nuevo_equipo"):
+                    n_eq = st.text_input("Nombre del Equipo")
+                    d_eq = st.text_input("Descripción / Ubicación")
+                    req_eq = st.text_area("Requisitos de Uso")
+                    v_eq = st.selectbox("Visibilidad", ["Solo mi Laboratorio", "Mi Instituto", "Toda la Sede", "Público General"])
+                    if st.form_submit_button("Crear Equipo", type="primary"):
+                        try:
+                            supabase.table("equipos_lab").insert({"nombre": n_eq, "descripcion": d_eq, "visibilidad": v_eq, "requisitos": req_eq, "lab_id": lab_id}).execute()
+                            st.success("Equipo registrado.")
+                            st.rerun()
+                        except Exception as e: st.error(f"Error: {e}")
 
+    # --- PESTAÑA: BITÁCORA TIPO NOTION (ELN REAL Y ORDENADO) ---
     with tab_bitacora:
         st.markdown("### 📔 Cuaderno de Laboratorio (ELN)")
         
@@ -563,24 +540,28 @@ with col_mon:
                 hora_str = ""
                 if 'created_at' in row and pd.notna(row['created_at']) and str(row['created_at']).strip():
                     try:
-                        dt_obj = pd.to_datetime(row['created_at'])
-                        if dt_obj.tzinfo: dt_obj = dt_obj.tz_convert(None) # Estabiliza la hora
+                        dt_obj = pd.to_datetime(row['created_at']).tz_localize(None)
                         hora_str = dt_obj.strftime('%H:%M')
                     except: pass
                 
                 meta_texto = f"📅 {fecha_str} " + (f"a las 🕒 {hora_str} " if hora_str else "") + f"| 👤 <b>{row['usuario']}</b>"
                 
                 with st.container(border=True):
+                    # 1. LA FECHA Y EL AUTOR
                     st.markdown(f"<div class='cuaderno-meta'>{meta_texto}</div>", unsafe_allow_html=True)
+                    
+                    # 2. EL TEXTO PRINCIPAL DEL USUARIO (Su redacción real)
                     st.markdown(f"<div class='cuaderno-texto'>{row.get('contenido', '')}</div>", unsafe_allow_html=True)
                     
+                    # 3. LOS ENLACES DE EVIDENCIA
                     link = str(row.get('link_adjunto', '')).strip()
                     if link.startswith('http'):
                         st.markdown(f"📎 [**Ver Evidencia Adjunta**]({link})")
                     
+                    # 4. LOS METADATOS TÉCNICOS DE LA IA (Ocultos en el desplegable)
                     res_ia = str(row.get('resultado', '')).strip()
-                    if res_ia:
-                        with st.expander("🤖 Detalles Técnicos & Descuentos de Inventario (IA)"):
+                    if res_ia and res_ia != "None":
+                        with st.expander("⚙️ Detalles Técnicos y Descuentos (IA)"):
                             st.markdown(res_ia)
 
     with tab_prot:
@@ -771,7 +752,6 @@ with col_chat:
                     d_eq = df_equipos[['id', 'nombre']].to_json(orient='records') if not df_equipos.empty else "[]"
                     hoy_str = date.today().isoformat()
                     
-                    # PROMPT IA ACTUALIZADO PARA NOTION-STYLE ELN
                     prompt_sistema = f"""
                     Eres el Orquestador IA del LIMS Stck. Hoy es {hoy_str}.
                     Inventario: {d_ia}
@@ -780,7 +760,7 @@ with col_chat:
 
                     Analiza el mensaje del usuario y devuelve ÚNICAMENTE un JSON con esta estructura exacta:
                     {{
-                        "entrada_cuaderno": "Escribe aquí la historia completa, detallada y en lenguaje natural de todo lo que el usuario dijo que hizo. Redáctalo como una bitácora profesional en primera persona.",
+                        "entrada_cuaderno": "Redacta de forma narrativa y en primera persona todo lo que el usuario relató. Este será el cuerpo principal de su Bitácora.",
                         "protocolo": {{"ejecutar": false, "nombre": "", "muestras": 1}},
                         "bitacora": {{"guardar": true}},
                         "inventario_manual": [],
@@ -788,9 +768,9 @@ with col_chat:
                     }}
 
                     Reglas:
-                    1. "entrada_cuaderno" es lo que el humano leerá. ¡Hazlo extenso y detallado! No lo resumas a una frase.
-                    2. Si ejecutó un protocolo, activa "protocolo" (calcula muestras).
-                    3. Si pide reservar un equipo, activa "reserva.generar" deduciendo fecha/hora según hoy ({hoy_str}).
+                    1. "entrada_cuaderno" es obligatorio. Debe contener TODO el texto humano, no un resumen corto.
+                    2. Si el usuario menciona que ejecutó un protocolo, activa "protocolo".
+                    3. Si pide reservar un equipo, activa "reserva.generar" deduciendo la fecha según hoy ({hoy_str}).
                     Usuario: {prompt}
                     """
                     
@@ -820,11 +800,8 @@ with col_chat:
                                 solapamiento = False
                                 if not df_reservas.empty:
                                     df_r_eq = df_reservas[df_reservas['equipo_id'] == str(eq_id)].copy()
-                                    
-                                    # FIX DE SOLAPAMIENTO EN IA
                                     df_r_eq['fecha_inicio'] = pd.to_datetime(df_r_eq['fecha_inicio']).apply(lambda x: x.tz_localize(None) if x.tzinfo else x)
                                     df_r_eq['fecha_fin'] = pd.to_datetime(df_r_eq['fecha_fin']).apply(lambda x: x.tz_localize(None) if x.tzinfo else x)
-                                    
                                     for _, r in df_r_eq.iterrows():
                                         if dt_ini < r['fecha_fin'] and dt_fin > r['fecha_inicio']: solapamiento = True; break
                                 
@@ -867,19 +844,18 @@ with col_chat:
                             else:
                                 log_ia_acciones.append(f"⚠️ *No encontré el protocolo '{p_nombre}' para descontar.*")
 
-                        # 3. GUARDAR BITÁCORA UNIFICADA (TIPO NOTION)
+                        # 3. GUARDAR BITÁCORA UNIFICADA
                         bit = data.get('bitacora', {})
                         if bit.get('guardar') or prot.get('ejecutar') or res_data.get('generar') or texto_principal_usuario:
                             
-                            # Los "resultados" de la BD ahora guardan los logs técnicos de la IA
                             metadatos_ia = "\n".join(log_ia_acciones) if log_ia_acciones else "Ninguna acción automática ejecutada en el inventario o calendario."
                             
                             supabase.table("bitacora").insert({
                                 "lab_id": lab_id, 
                                 "usuario": usuario_actual, 
                                 "fecha": date.today().isoformat(),
-                                "contenido": texto_principal_usuario, # El texto humano gigante
-                                "resultado": metadatos_ia # Lo que va escondido en el desplegable
+                                "contenido": texto_principal_usuario, # Ahora es el texto humano completo
+                                "resultado": metadatos_ia # Ahora solo aloja acciones de la IA
                             }).execute()
                             
                             msg_final = f"📔 **Bitácora Guardada.**\n\n" + metadatos_ia
