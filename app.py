@@ -234,25 +234,6 @@ def enviar_correo_reserva(equipo_nombre, fecha_str, hora_ini, hora_fin, usuario_
         return True
     except: return False
 
-def enviar_correo_compras(item_nombre, precio, operador):
-    try:
-        sender = st.secrets["EMAIL_SENDER"]
-        password = st.secrets["EMAIL_PASSWORD"]
-        receiver = st.secrets.get("EMAIL_RECEIVER", sender)
-        msg = MIMEMultipart()
-        msg['From'] = sender
-        msg['To'] = receiver
-        msg['Subject'] = f"🛒 SOLICITUD DE COMPRA: {item_nombre} - Stck"
-        body = f"<html><body><h2>Solicitud de Cotización / Compra</h2><p>Se ha solicitado reabastecer el siguiente ítem:</p><ul><li><b>Reactivo:</b> {item_nombre}</li><li><b>Último precio referencial:</b> ${precio}</li><li><b>Solicitado por:</b> {operador}</li></ul></body></html>"
-        msg.attach(MIMEText(body, 'html'))
-        server = smtplib.SMTP('smtp.gmail.com', 587)
-        server.starttls()
-        server.login(sender, password)
-        server.send_message(msg)
-        server.quit()
-        return True
-    except: return False
-
 def generar_link_gcal(titulo, inicio, fin, descripcion=""):
     fmt = "%Y%m%dT%H%M%SZ"
     inicio_utc = inicio + timedelta(hours=3) 
@@ -286,7 +267,6 @@ except:
     df_equipos = pd.DataFrame(columns=["id", "nombre", "descripcion", "visibilidad", "requisitos"])
     df_reservas = pd.DataFrame(columns=["id", "equipo_id", "usuario", "fecha_inicio", "fecha_fin"])
 
-# Carga de Bitácora
 try:
     res_bitacora = supabase.table("bitacora").select("*").eq("lab_id", lab_id).order("created_at", desc=True).execute()
     df_bitacora = pd.DataFrame(res_bitacora.data)
@@ -537,7 +517,6 @@ with col_mon:
             link_evidencia = st.text_input("📎 Enlace a Drive, Foto o Excel (Opcional)")
             if st.button("💾 Guardar Entrada", type="primary"):
                 if texto_metodo.strip():
-                    # Para entradas manuales, el 'contenido' es el texto, y el 'resultado' es una nota estática
                     supabase.table("bitacora").insert({
                         "lab_id": lab_id, "usuario": usuario_actual, 
                         "fecha": date.today().isoformat(), 
@@ -563,18 +542,14 @@ with col_mon:
                     except: pass
                 
                 # --- DISEÑO TIPO NOTION: HOJA BLANCA CONTINUA ---
-                # 1. LA FECHA Y EL AUTOR
                 st.markdown(f"<span style='color:#666; font-size:0.9em; font-family: monospace;'>📅 {fecha_str} {hora_str} | 👤 <b>{row['usuario']}</b></span>", unsafe_allow_html=True)
                 
-                # 2. EL TEXTO PRINCIPAL DEL USUARIO (Su redacción real y fluida)
                 st.markdown(f"<div style='font-size:1.05em; line-height:1.6; margin-top: 8px; margin-bottom: 8px; color:#222; white-space: pre-wrap;'>{row.get('contenido', '')}</div>", unsafe_allow_html=True)
                 
-                # 3. LOS ENLACES DE EVIDENCIA
                 link = str(row.get('link_adjunto', '')).strip()
                 if link.startswith('http'):
                     st.markdown(f"📎 [**Evidencia Adjunta**]({link})")
                 
-                # 4. LOS METADATOS TÉCNICOS DE LA IA (Ocultos en el desplegable)
                 res_ia = str(row.get('resultado', '')).strip()
                 if res_ia and res_ia != "None":
                     with st.expander("▶ Ver registros de la IA (Inventario y Protocolos)"):
@@ -582,38 +557,26 @@ with col_mon:
                 
                 st.markdown("<hr style='border: 0; border-top: 1px dashed #ddd; margin: 25px 0;'>", unsafe_allow_html=True)
 
+    # --- NUEVA PESTAÑA: PROTOCOLOS (SOLO LISTA Y EDICIÓN) ---
     with tab_prot:
-        tab_ejecutar, tab_crear = st.tabs(["🚀 Ejecutar & Finanzas", "📝 Nuevo Protocolo"])
-        with tab_ejecutar:
-            if df_prot.empty: st.info("Sin protocolos.")
+        tab_lista, tab_crear = st.tabs(["📋 Mis Protocolos (Editar)", "📝 Nuevo Protocolo"])
+        with tab_lista:
+            if df_prot.empty: st.info("No hay protocolos creados.")
             else:
-                p_sel = st.selectbox("Protocolo a realizar:", df_prot['nombre'].tolist())
-                n_muestras = st.number_input("Cantidad de Muestras:", min_value=1, value=1)
-                
-                if st.button("🔍 Previsualizar e Impacto Financiero"):
-                    info_p = df_prot[df_prot['nombre'] == p_sel]['materiales_base'].values[0]
-                    descuentos = []
-                    costo_total_exp = 0
-                    for linea in info_p.split('\n'):
-                        if ":" in linea:
-                            partes = linea.split(":")
-                            item_db = df[df['nombre'].str.contains(partes[0].strip(), case=False, na=False)]
-                            if not item_db.empty: 
-                                desc_cant = float(partes[1].strip()) * n_muestras
-                                precio_ref = item_db.iloc[0]['precio']
-                                if precio_ref > 0 and item_db.iloc[0]['cantidad_actual'] > 0:
-                                    costo_item = (desc_cant / item_db.iloc[0]['cantidad_actual']) * precio_ref
-                                    costo_total_exp += costo_item
-                                descuentos.append({"id": str(item_db.iloc[0]['id']), "Reactivo": item_db.iloc[0]['nombre'], "Stock": item_db.iloc[0]['cantidad_actual'], "Descontar": desc_cant, "Unidad": item_db.iloc[0]['unidad']})
-                    if descuentos:
-                        st.dataframe(pd.DataFrame(descuentos).drop(columns=['id']), hide_index=True)
-                        if costo_total_exp > 0: st.markdown(f"<div class='badge-costo'>💰 Costo Aproximado del Experimento: ${int(costo_total_exp):,} CLP</div><br>", unsafe_allow_html=True)
-                        if st.button("✅ Descontar del Inventario Solo Aquí", type="primary"):
-                            crear_punto_restauracion(df)
-                            for d in descuentos:
-                                supabase.table("items").update({"cantidad_actual": int(d["Stock"] - d["Descontar"])}).eq("id", d["id"]).execute()
-                                supabase.table("movimiento").insert({"item_id": d["id"], "nombre_item": d["Reactivo"], "cantidad_cambio": -d["Descontar"], "tipo": f"Uso Kit: {p_sel}", "usuario": usuario_actual, "lab_id": lab_id}).execute()
-                            st.rerun()
+                st.write("Modifica los nombres o las recetas de tus protocolos en esta tabla:")
+                cols_ed_p = ['id', 'nombre', 'materiales_base']
+                edited_p_df = st.data_editor(
+                    df_prot[cols_ed_p].copy(), 
+                    column_config={"id": st.column_config.TextColumn("ID", disabled=True), "nombre": "Nombre del Protocolo", "materiales_base": "Receta (Reactivo : Cantidad)"}, 
+                    use_container_width=True, hide_index=True)
+                if st.button("💾 Guardar Cambios en Protocolos", type="secondary"):
+                    for _, row in edited_p_df.iterrows():
+                        d = row.replace({np.nan: None}).to_dict()
+                        if 'id' in d and str(d['id']).strip(): 
+                            d['lab_id'] = lab_id 
+                            supabase.table("protocolos").upsert(d).execute()
+                    st.rerun()
+                    
         with tab_crear:
             with st.form("form_nuevo_prot"):
                 n_prot = st.text_input("Nombre (Ej: Ensayo DNAzimas)")
@@ -681,6 +644,36 @@ with col_mon:
                         st.dataframe(df_pred[['nombre', 'cantidad_actual', 'unidad', 'consumo_30d', 'tasa_diaria', 'dias_restantes']].sort_values(by='dias_restantes_num', ascending=True).drop(columns=['dias_restantes_num']), use_container_width=True, hide_index=True)
                     else: st.info("Aún no hay suficientes retiros para proyectar matemáticas.")
                 else: st.info("Registra movimientos para que la IA aprenda el consumo.")
+
+            # SECCIÓN FINANZAS MOVIDA A ANALÍTICA
+            st.markdown("---")
+            st.markdown("### 💰 Costeo y Simulación de Protocolos")
+            if df_prot.empty: st.info("Sin protocolos para evaluar.")
+            else:
+                p_sel = st.selectbox("Seleccionar protocolo para evaluar costo:", df_prot['nombre'].tolist())
+                n_muestras = st.number_input("Cantidad de Muestras proyectadas:", min_value=1, value=1)
+                
+                if st.button("🔍 Calcular Impacto Financiero", type="secondary"):
+                    info_p = df_prot[df_prot['nombre'] == p_sel]['materiales_base'].values[0]
+                    descuentos = []
+                    costo_total_exp = 0
+                    for linea in info_p.split('\n'):
+                        if ":" in linea:
+                            partes = linea.split(":")
+                            item_db = df[df['nombre'].str.contains(partes[0].strip(), case=False, na=False)]
+                            if not item_db.empty: 
+                                desc_cant = float(partes[1].strip()) * n_muestras
+                                precio_ref = item_db.iloc[0]['precio']
+                                if precio_ref > 0 and item_db.iloc[0]['cantidad_actual'] > 0:
+                                    costo_item = (desc_cant / item_db.iloc[0]['cantidad_actual']) * precio_ref
+                                    costo_total_exp += costo_item
+                                descuentos.append({"id": str(item_db.iloc[0]['id']), "Reactivo": item_db.iloc[0]['nombre'], "Stock": item_db.iloc[0]['cantidad_actual'], "Requerido": desc_cant, "Unidad": item_db.iloc[0]['unidad']})
+                    if descuentos:
+                        st.dataframe(pd.DataFrame(descuentos).drop(columns=['id']), hide_index=True)
+                        if costo_total_exp > 0: 
+                            st.markdown(f"<div class='badge-costo'>💰 Presupuesto estimado: ${int(costo_total_exp):,} CLP</div>", unsafe_allow_html=True)
+                        else:
+                            st.info("No hay precios registrados para los reactivos de este protocolo. Agrégalos en Edición Masiva.")
 
             st.markdown("---")
             st.markdown("### 📄 Generador de Reportes (ISO/GLP)")
@@ -784,7 +777,7 @@ with col_chat:
                     }}
 
                     Reglas:
-                    1. NO devuelvas ni modifiques el texto del usuario. Solo completa las variables lógicas si corresponden.
+                    1. NO devuelvas ni modifiques el texto del usuario en el JSON. Solo completa las variables lógicas si corresponden.
                     2. Si ejecutó un protocolo, activa "protocolo" y calcula muestras.
                     3. Si pide reservar un equipo, activa "reserva.generar" deduciendo fecha/hora según hoy ({hoy_str}).
                     Usuario: {prompt}
@@ -858,15 +851,15 @@ with col_chat:
                             else:
                                 log_ia_acciones.append(f"⚠️ *No encontré el protocolo '{p_nombre}' para descontar.*")
 
-                        # 3. GUARDAR BITÁCORA UNIFICADA (TIPO NOTION PURO)
-                        metadatos_ia = "\n".join(log_ia_acciones) if log_ia_acciones else "Solo registro de bitácora. No se requirió acción en el inventario o calendario."
+                        # 3. GUARDAR BITÁCORA UNIFICADA
+                        metadatos_ia = "\n".join(log_ia_acciones) if log_ia_acciones else "Registro manual en el cuaderno (Sin automatizaciones de IA)."
                         
                         supabase.table("bitacora").insert({
                             "lab_id": lab_id, 
                             "usuario": usuario_actual, 
                             "fecha": date.today().isoformat(),
-                            "contenido": prompt, # ¡AQUI ESTÁ LA MAGIA! Tu texto exacto, intacto.
-                            "resultado": metadatos_ia # El resumen técnico va al escondite.
+                            "contenido": prompt, # GUARDA EL TEXTO ORIGINAL DEL USUARIO INTACTO
+                            "resultado": metadatos_ia 
                         }).execute()
                         
                         msg_final = f"📔 **Bitácora Guardada Exitosamente.**\n\n" + metadatos_ia
