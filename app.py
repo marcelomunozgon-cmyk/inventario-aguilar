@@ -30,6 +30,7 @@ st.markdown("""
     .stTabs [data-baseweb="tab"] { height: 50px; background-color: transparent; border-radius: 4px 4px 0px 0px; color: #888; font-weight: 500; white-space: nowrap; }
     .stTabs [aria-selected="true"] { color: #ffffff !important; background-color: #1a1a1a !important; border-bottom: 2px solid #1a1a1a !important; }
     .stButton>button { border-radius: 8px; font-weight: 500; }
+    .bitacora-entry { background-color: #fcfcfc; padding: 20px; border-radius: 8px; border-left: 5px solid #ffaa00; margin-bottom: 15px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); font-family: 'Georgia', serif;}
     .badge-costo { background-color: #e8f5e9; color: #2e7d32; padding: 5px 10px; border-radius: 15px; font-weight: bold; font-size: 0.9em; }
     .streamlit-expanderHeader { font-size: 1.1em !important; font-weight: 500; color: #111; }
 </style>
@@ -404,6 +405,19 @@ with col_mon:
                     if str(datos_eq.get('requisitos', '')).strip(): st.warning(f"⚠️ **Requisitos:** {datos_eq['requisitos']}")
                     
                     fecha_res = st.date_input("Fecha de reserva:")
+                    st.markdown(f"**Disponibilidad para el {fecha_res.strftime('%d/%m/%Y')}:**")
+                    df_r_dia = pd.DataFrame()
+                    if not df_reservas.empty:
+                        df_r_eq = df_reservas[df_reservas['equipo_id'] == str(datos_eq['id'])].copy()
+                        if not df_r_eq.empty:
+                            df_r_eq['fecha_inicio'] = pd.to_datetime(df_r_eq['fecha_inicio'])
+                            df_r_eq['fecha_fin'] = pd.to_datetime(df_r_eq['fecha_fin'])
+                            df_r_dia = df_r_eq[df_r_eq['fecha_inicio'].dt.date == fecha_res].sort_values(by='fecha_inicio')
+                    
+                    if not df_r_dia.empty:
+                        for _, row in df_r_dia.iterrows(): st.markdown(f"🚫 `{row['fecha_inicio'].strftime('%H:%M')} - {row['fecha_fin'].strftime('%H:%M')}` (Reservado por {row['usuario']})")
+                    else: st.success("✅ Todo el día está libre.")
+                    
                     col_h1, col_h2 = st.columns(2)
                     with col_h1: t_ini = st.time_input("Hora Inicio:", value=time(9, 0))
                     with col_h2: t_fin = st.time_input("Hora Fin:", value=time(10, 0))
@@ -414,13 +428,9 @@ with col_mon:
                         if dt_ini >= dt_fin: st.error("La hora de inicio debe ser anterior.")
                         else:
                             solapamiento = False
-                            if not df_reservas.empty:
-                                df_r_eq = df_reservas[df_reservas['equipo_id'] == str(datos_eq['id'])].copy()
-                                if not df_r_eq.empty:
-                                    df_r_eq['fecha_inicio'] = pd.to_datetime(df_r_eq['fecha_inicio']).dt.tz_localize(None)
-                                    df_r_eq['fecha_fin'] = pd.to_datetime(df_r_eq['fecha_fin']).dt.tz_localize(None)
-                                    for _, r in df_r_eq.iterrows():
-                                        if dt_ini < r['fecha_fin'] and dt_fin > r['fecha_inicio']: solapamiento = True; break
+                            if not df_r_dia.empty:
+                                for _, r in df_r_dia.iterrows():
+                                    if dt_ini < r['fecha_fin'] and dt_fin > r['fecha_inicio']: solapamiento = True; break
                             if solapamiento: st.error("❌ El horario choca con otra reserva.")
                             else:
                                 try:
@@ -429,12 +439,11 @@ with col_mon:
                                     enviar_correo_reserva(datos_eq['nombre'], fecha_res.strftime('%d/%m/%Y'), t_ini.strftime('%H:%M'), t_fin.strftime('%H:%M'), usuario_actual, admin_email, st.session_state.usuario_autenticado)
                                     st.success("✅ Reserva guardada.")
                                     st.rerun()
-                                except Exception as e: st.error(f"Error: {e}")
+                                except Exception as e: st.error(f"Error al reservar: {e}")
             with c_eq_agenda:
                 st.write("**Tus Próximas Reservas:**")
                 if not df_reservas.empty and not df_equipos.empty:
                     df_r = pd.merge(df_reservas, df_equipos[['id', 'nombre']], left_on='equipo_id', right_on='id', how='inner', suffixes=('', '_eq'))
-                    # FIX DE ZONA HORARIA APLICADO AQUÍ:
                     df_r['fecha_inicio'] = pd.to_datetime(df_r['fecha_inicio']).dt.tz_localize(None)
                     df_r['fecha_fin'] = pd.to_datetime(df_r['fecha_fin']).dt.tz_localize(None)
                     
@@ -443,7 +452,7 @@ with col_mon:
                     else:
                         for _, row in df_futuras.iterrows():
                             with st.container(border=True):
-                                nom_eq = row.get('nombre_eq', row.get('nombre', 'Equipo'))
+                                nom_eq = row.get('nombre', row.get('nombre_eq', 'Equipo Reservado'))
                                 st.markdown(f"**{nom_eq}**")
                                 st.write(f"🕒 {row['fecha_inicio'].strftime('%d/%b %H:%M')} - {row['fecha_fin'].strftime('%H:%M')}")
                                 gcal_link = generar_link_gcal(titulo=f"Uso Lab: {nom_eq}", inicio=row['fecha_inicio'], fin=row['fecha_fin'], descripcion=f"Reserva en Stck.")
@@ -458,7 +467,9 @@ with col_mon:
                 df_cal = pd.merge(df_reservas, df_equipos[['id', 'nombre']], left_on='equipo_id', right_on='id', how='inner', suffixes=('', '_eq'))
                 df_cal['Inicio'] = pd.to_datetime(df_cal['fecha_inicio']).dt.tz_localize(None)
                 df_cal['Fin'] = pd.to_datetime(df_cal['fecha_fin']).dt.tz_localize(None)
-                df_cal['Equipo'] = df_cal['nombre_eq']
+                
+                # FIX DE COLUMNAS APLICADO AQUI:
+                df_cal['Equipo'] = df_cal['nombre'] if 'nombre' in df_cal.columns else df_cal['nombre_eq']
                 
                 limite_fecha = pd.to_datetime('today').tz_localize(None) + timedelta(days=vista_dias)
                 df_filtro = df_cal[(df_cal['Inicio'] >= pd.to_datetime('today').tz_localize(None) - timedelta(days=1)) & (df_cal['Inicio'] <= limite_fecha)]
@@ -826,7 +837,6 @@ with col_chat:
                         if bit.get('guardar') or prot.get('ejecutar') or res_data.get('generar'):
                             texto_resultado_usuario = bit.get('resultado', '')
                             
-                            # Compilar lo que hizo la IA + Resultados del usuario
                             cuerpo_resultados = "\n".join(log_ia_acciones)
                             if texto_resultado_usuario: cuerpo_resultados += f"\n\n**Tus Resultados:**\n{texto_resultado_usuario}"
                             
