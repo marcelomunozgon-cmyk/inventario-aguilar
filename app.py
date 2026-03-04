@@ -524,7 +524,7 @@ with col_mon:
                         "fecha": date.today().isoformat(), 
                         "contenido": texto_metodo, 
                         "link_adjunto": link_evidencia,
-                        "resultado": "Registro manual (Sin acciones de IA)."
+                        "resultado": "Registro manual (Sin acciones automáticas de IA)."
                     }).execute()
                     st.rerun()
                 else: st.warning("No puedes guardar una hoja en blanco.")
@@ -620,7 +620,6 @@ with col_mon:
                         df_pred['dias_restantes'] = df_pred['dias_restantes'].apply(lambda x: "🚨 Se agota hoy/mañana" if x <= 1.5 else f"Aprox {int(x)} días")
                         df_pred['tasa_diaria'] = df_pred['tasa_diaria'].round(2)
                         
-                        # EL FIX ESTÁ AQUÍ (Orden de operaciones en dataframe)
                         df_mostrar = df_pred.sort_values(by='dias_restantes_num', ascending=True)[['nombre', 'cantidad_actual', 'unidad', 'consumo_30d', 'tasa_diaria', 'dias_restantes']]
                         st.dataframe(df_mostrar, use_container_width=True, hide_index=True)
                     else: st.info("Aún no hay suficientes retiros para proyectar matemáticas.")
@@ -761,7 +760,8 @@ with col_chat:
 
                     Analiza el último mensaje del Usuario ({prompt}) y devuelve ÚNICAMENTE un JSON con esta estructura exacta:
                     {{
-                        "respuesta_chat": "Lo que le dirás al usuario en el chat. Haz recordatorios (ej. revisar agua/CO2 de incubadora si hacen cultivos) SOLO SI la palabra clave NO está en las rutinas ya recordadas. Haz preguntas aclaratorias si falta descontar materiales.",
+                        "mensaje_inicial": "Recordatorios de rutina (ej. chequear CO2) SI NO ESTÁN en la lista de rutinas ya recordadas. Si es una orden simple, déjalo vacío o pon 'Entendido.'",
+                        "pregunta_final": "Pregunta de seguimiento (ej. '¿Gastaste alguna placa nueva?'). ¡NUNCA preguntes por volúmenes de reactivos que ya están en el protocolo!",
                         "bitacora": {{"guardar": false, "entrada_cuaderno": ""}},
                         "protocolo": {{"ejecutar": false, "nombre": "", "muestras": 1}},
                         "inventario_ajustes": [{{"id": "id_del_item", "cantidad_a_restar": 0}}],
@@ -769,10 +769,10 @@ with col_chat:
                         "nuevas_rutinas_recordadas": ["incubadora", "etc"]
                     }}
 
-                    Reglas Clave:
-                    1. Si es una actividad de laboratorio (no una respuesta corta a una pregunta tuya), pon "bitacora.guardar" en true y COPIA EXACTAMENTE LAS PALABRAS del usuario en "entrada_cuaderno". ¡No resumas!
-                    2. Si le recuerdas algo de rutina ahora, agrega su palabra clave a "nuevas_rutinas_recordadas" para no molestarlo luego.
-                    3. Si el usuario responde a una pregunta anterior tuya (ej. "Sí, usé 2 placas"), búscalas en el Inventario y usa "inventario_ajustes" para RESTAR.
+                    Reglas MUY ESTRICTAS:
+                    1. NO PREGUNTES POR VOLÚMENES: Si el usuario ejecuta un protocolo, el sistema descontará los reactivos base automáticamente. Tú no debes preguntar cuánto medio o reactivo usó.
+                    2. CERO INVENTOS EN INVENTARIO: NUNCA pongas ítems en "inventario_ajustes" a menos que el usuario mencione un NÚMERO EXPLÍCITO (ej. "gasté 1 placa"). Si solo dice "hice un pasaje", actívate en "protocolo" y limítate a preguntarle en "pregunta_final" si gastó material fungible.
+                    3. BITÁCORA FIEL: Si vas a guardar en bitácora, "entrada_cuaderno" debe ser EXACTAMENTE la frase o relato del usuario. No lo resumas.
                     """
                     
                     res_ai = model.generate_content(prompt_sistema).text
@@ -784,8 +784,6 @@ with col_chat:
                         
                         nuevas_rutinas = data.get('nuevas_rutinas_recordadas', [])
                         if nuevas_rutinas: st.session_state.rutinas_diarias["mostradas"].extend(nuevas_rutinas)
-                        
-                        respuesta_chat = data.get('respuesta_chat', 'Hecho.')
                         
                         # 1. RESERVA DE EQUIPO
                         res_data = data.get('reserva', {})
@@ -865,7 +863,7 @@ with col_chat:
                         bit = data.get('bitacora', {})
                         if bit.get('guardar') and bit.get('entrada_cuaderno'):
                             texto_principal_usuario = bit.get('entrada_cuaderno')
-                            metadatos_ia = "\n".join(log_ia_acciones) if log_ia_acciones else "Ninguna acción automática en inventario o calendario."
+                            metadatos_ia = "\n".join(log_ia_acciones) if log_ia_acciones else "Registro en bitácora sin acciones en inventario."
                             
                             supabase.table("bitacora").insert({
                                 "lab_id": lab_id, 
@@ -875,9 +873,19 @@ with col_chat:
                                 "resultado": metadatos_ia 
                             }).execute()
 
-                        # 5. RESPONDER AL USUARIO EN EL CHAT
-                        msg_final = f"{respuesta_chat}\n\n"
-                        if log_ia_acciones: msg_final += "\n".join(log_ia_acciones)
+                        # 5. CONSTRUIR RESPUESTA TIPO SANDWICH PARA EL CHAT
+                        msg_final = ""
+                        if data.get('mensaje_inicial'): 
+                            msg_final += f"{data['mensaje_inicial']}\n\n"
+                        
+                        if log_ia_acciones: 
+                            msg_final += "\n".join(log_ia_acciones) + "\n\n"
+                            
+                        if data.get('pregunta_final'): 
+                            msg_final += f"*{data['pregunta_final']}*"
+                            
+                        if not msg_final.strip():
+                            msg_final = "Hecho."
                             
                         st.markdown(msg_final)
                         st.session_state.messages.append({"role": "assistant", "content": msg_final})
