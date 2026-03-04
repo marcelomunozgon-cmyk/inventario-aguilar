@@ -184,7 +184,7 @@ def generar_pdf_inventario(df_inventario, nombre_lab):
     pdf.cell(40, 10, 'Vencimiento', border=1)
     pdf.ln()
 
-    # Contenido de tabla (sanitizado para evitar errores de codificación FPDF)
+    # Contenido de tabla
     pdf.set_font("Arial", size=9)
     for _, row in df_inventario.iterrows():
         nombre = str(row['nombre']).encode('latin-1', 'replace').decode('latin-1')[:45]
@@ -377,7 +377,6 @@ with col_mon:
                     subset_cat = df_show[df_show['categoria'].astype(str).str.strip() == cat].sort_values(by='nombre', key=lambda col: col.str.lower())
                     st.dataframe(subset_cat[['nombre', 'cantidad_actual', 'unidad', 'ubicacion', 'posicion_caja', 'fecha_vencimiento']].style.apply(aplicar_estilos_inv, axis=1), use_container_width=True, hide_index=True)
 
-            # EL NUEVO CREADOR DE CÓDIGOS QR
             st.markdown("---")
             with st.expander("🖨️ Generar Etiquetas Físicas (QR)"):
                 st.write("Selecciona un reactivo para generar su Código QR. Puedes imprimirlo y pegarlo en el frasco.")
@@ -451,9 +450,11 @@ with col_mon:
                     else:
                         for _, row in df_futuras.iterrows():
                             with st.container(border=True):
-                                st.markdown(f"**{row['nombre_y']}**")
+                                # Fix a prueba de balas para el nombre de la columna unida
+                                nombre_equipo = row.get('nombre', row.get('nombre_y', 'Equipo Reservado'))
+                                st.markdown(f"**{nombre_equipo}**")
                                 st.write(f"🕒 {row['fecha_inicio'].strftime('%d/%b %H:%M')} - {row['fecha_fin'].strftime('%H:%M')}")
-                                gcal_link = generar_link_gcal(titulo=f"Uso Lab: {row['nombre_y']}", inicio=row['fecha_inicio'], fin=row['fecha_fin'], descripcion=f"Reserva gestionada en Stck.")
+                                gcal_link = generar_link_gcal(titulo=f"Uso Lab: {nombre_equipo}", inicio=row['fecha_inicio'], fin=row['fecha_fin'], descripcion=f"Reserva gestionada en Stck.")
                                 st.markdown(f"[📅 Agregar a mi Google Calendar]({gcal_link})", unsafe_allow_html=True)
                 else: st.info("No hay reservas.")
                     
@@ -661,7 +662,6 @@ with col_mon:
                     else: st.info("Aún no hay suficientes retiros para proyectar matemáticas.")
                 else: st.info("Registra movimientos para que la IA aprenda el consumo.")
 
-            # EL NUEVO GENERADOR DE PDF DE AUDITORÍA
             st.markdown("---")
             st.markdown("### 📄 Generador de Reportes (ISO/GLP)")
             st.write("Descarga un PDF inmutable con la foto actual de tu inventario.")
@@ -727,7 +727,6 @@ with col_chat:
                             msg = f"📸 **Creado:** {itm['nombre']} | Stock: {itm['cantidad_actual']}"
                         
                         elif accion_foto == "🔄 Actualizar Reactivo":
-                            # Nueva indicación para que también lea Códigos QR
                             prompt_vision = f"Lee la etiqueta o el Código QR de esta imagen. Es del reactivo '{item_a_actualizar}'. Extrae la cantidad física que ves. Responde SOLO JSON: {{\"{item_a_actualizar}\": true, \"cantidad_actual\": 0}}"
                             res_ai = model.generate_content([prompt_vision, img]).text
                             data = json.loads(re.search(r'\{.*\}', res_ai, re.DOTALL).group())
@@ -743,7 +742,7 @@ with col_chat:
     if prompt:
         st.session_state.messages.append({"role": "user", "content": prompt})
         with chat_box: st.chat_message("user").markdown(prompt)
-        with chat_message("assistant"):
+        with st.chat_message("assistant"):
             with st.spinner("Pensando..."):
                 try:
                     d_ia = df[['id', 'nombre', 'cantidad_actual', 'ubicacion']].to_json(orient='records') if not df.empty else "[]"
