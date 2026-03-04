@@ -210,8 +210,6 @@ rol_actual = str(st.session_state.get('rol', 'miembro')).strip().lower()
 correo_destinatario_compras = st.secrets.get("EMAIL_RECEIVER", "No configurado")
 
 if 'auto_search' not in st.session_state: st.session_state.auto_search = ""
-if "backup_inventario" not in st.session_state: st.session_state.backup_inventario = None
-def crear_punto_restauracion(df_actual): st.session_state.backup_inventario = df_actual.copy()
 
 def generar_qr(texto):
     qr = qrcode.QRCode(version=1, error_correction=qrcode.constants.ERROR_CORRECT_L, box_size=10, border=4)
@@ -392,15 +390,16 @@ if rol_actual == "proveedor":
     st.stop()
 
 # =====================================================================
-# INTERFAZ PARA LABORATORIOS
+# INTERFAZ PARA LABORATORIOS (NUEVO ORDEN DE PESTAÑAS)
 # =====================================================================
 col_chat, col_mon = st.columns([1, 1.6], gap="large")
 
 with col_mon:
+    # ORDEN PRIORITARIO: Inventario -> Bitácora -> Protocolos -> Equipos -> Analítica -> Usuarios
     if rol_actual == "admin": 
-        tab_inv, tab_prot, tab_equipos, tab_bitacora, tab_analisis, tab_usuarios = st.tabs(["📦 Inventario", "🧪 Protocolos", "📅 Equipos", "📔 Bitácora", "📊 Analítica", "👥 Usuarios"])
+        tab_inv, tab_bitacora, tab_prot, tab_equipos, tab_analisis, tab_usuarios = st.tabs(["📦 Inventario", "📔 Bitácora", "🧪 Protocolos", "📅 Equipos", "📊 Analítica", "👥 Usuarios"])
     else: 
-        tab_inv, tab_prot, tab_equipos, tab_bitacora = st.tabs(["📦 Inventario", "🧪 Protocolos", "📅 Equipos", "📔 Bitácora"])
+        tab_inv, tab_bitacora, tab_prot, tab_equipos = st.tabs(["📦 Inventario", "📔 Bitácora", "🧪 Protocolos", "📅 Equipos"])
     
     with tab_inv:
         if not df.empty:
@@ -524,6 +523,143 @@ with col_mon:
                             st.session_state.confirmar_compra = None
                             st.rerun()
 
+    with tab_bitacora:
+        st.markdown("### 📔 Cuaderno de Laboratorio")
+        
+        c_filt, c_btn = st.columns([2, 1])
+        with c_filt:
+            if rol_actual == "admin": filtro_usuario = st.selectbox("Ver cuaderno de:", ["Todos"] + list(set(nombres_equipo)), label_visibility="collapsed")
+            else: filtro_usuario = usuario_actual; st.write(f"📖 **Cuaderno de {usuario_actual}**")
+        
+        with st.expander("📝 Escribir nueva entrada manual", expanded=False):
+            texto_metodo = st.text_area("Anota libremente todo lo que hiciste hoy...", height=150)
+            link_evidencia = st.text_input("📎 Enlace a Drive, Foto o Excel (Opcional)")
+            if st.button("💾 Guardar Entrada", type="primary"):
+                if texto_metodo.strip():
+                    supabase.table("bitacora").insert({
+                        "lab_id": lab_id, "usuario": usuario_actual, 
+                        "fecha": date.today().isoformat(), 
+                        "contenido": texto_metodo, 
+                        "link_adjunto": link_evidencia,
+                        "resultado": ""
+                    }).execute()
+                    st.rerun()
+                else: st.warning("No puedes guardar una hoja en blanco.")
+                    
+        st.markdown("<br>", unsafe_allow_html=True)
+        
+        if df_bitacora.empty: 
+            st.info("El cuaderno está vacío. ¡Escribe o háblale a la IA!")
+        else:
+            df_b_show = df_bitacora if filtro_usuario == "Todos" else df_bitacora[df_bitacora['usuario'] == filtro_usuario]
+            chile_tz = pytz.timezone('America/Santiago')
+            
+            st.markdown("<div style='font-family: \"Inter\", sans-serif; max-width: 850px;'>", unsafe_allow_html=True)
+            
+            for _, row in df_b_show.iterrows():
+                fecha_str = row.get('fecha', '')
+                hora_str = ""
+                
+                if 'created_at' in row and pd.notna(row['created_at']) and str(row['created_at']).strip():
+                    try:
+                        dt_obj = pd.to_datetime(row['created_at'])
+                        if dt_obj.tzinfo is None:
+                            dt_obj = dt_obj.tz_localize('UTC') 
+                        dt_local = dt_obj.tz_convert(chile_tz)
+                        hora_str = dt_local.strftime('%H:%M')
+                    except Exception as e: 
+                        pass
+                
+                contenido_esc = html_lib.escape(str(row.get('contenido', '')).strip())
+                res_ia = str(row.get('resultado', '')).strip()
+                link = str(row.get('link_adjunto', '')).strip()
+                
+                col_text, col_del = st.columns([15, 1])
+                
+                with col_text:
+                    html_cuaderno = f"""
+                    <details class='notion-toggle' style='margin-bottom: 0; border-bottom: none; padding-bottom: 0;'>
+                        <summary>
+                            <div style="padding-top: 2px;">{contenido_esc}</div>
+                        </summary>
+                        <div class='cuaderno-meta-box'>
+                            <div style='margin-bottom: 8px; color: #555; font-size: 0.95em;'>🕒 {fecha_str} {hora_str} &nbsp;|&nbsp; 👤 <b>{row['usuario']}</b></div>
+                    """
+                    
+                    if res_ia and res_ia != "None":
+                        html_cuaderno += f"<div>{res_ia}</div>"
+                    
+                    if link.startswith('http'):
+                        html_cuaderno += f"<div style='margin-top:8px;'>📎 <a href='{link}' target='_blank'>Ver Evidencia Adjunta</a></div>"
+                        
+                    html_cuaderno += "</div></details>"
+                    st.markdown(html_cuaderno, unsafe_allow_html=True)
+                
+                with col_del:
+                    st.markdown("<div style='margin-top: 5px;'></div>", unsafe_allow_html=True)
+                    if st.button("🗑️", key=f"del_{row['id']}", help="Eliminar nota y restaurar reactivos"):
+                        res_ia_str = str(row.get('resultado', ''))
+                        
+                        # Extrae usando el data-id oficial HTML
+                        pattern_new = r"📉\s*([0-9.]+).*?data-id='([^']+)'"
+                        matches_new = re.findall(pattern_new, res_ia_str)
+                        
+                        for m in matches_new:
+                            cant_revertir = float(m[0])
+                            item_id = m[1].strip()
+                            
+                            res_item = supabase.table("items").select("id, cantidad_actual, nombre").eq("id", item_id).execute()
+                            if res_item.data:
+                                stock_actual = float(res_item.data[0]['cantidad_actual'])
+                                stock_nuevo = stock_actual + cant_revertir
+                                nombre_real = res_item.data[0]['nombre']
+                                
+                                val_stock = int(stock_nuevo) if stock_nuevo.is_integer() else stock_nuevo
+                                val_cambio = int(cant_revertir) if cant_revertir.is_integer() else cant_revertir
+                                
+                                supabase.table("items").update({"cantidad_actual": val_stock}).eq("id", item_id).execute()
+                                supabase.table("movimiento").insert({
+                                    "item_id": item_id, 
+                                    "nombre_item": nombre_real, 
+                                    "cantidad_cambio": val_cambio, 
+                                    "tipo": "Reversión (Borrado de Bitácora)", 
+                                    "usuario": usuario_actual, 
+                                    "lab_id": lab_id
+                                }).execute()
+                                
+                        supabase.table("bitacora").delete().eq("id", row['id']).execute()
+                        st.rerun()
+                
+                st.markdown("<hr style='margin: 10px 0; border: 0; border-top: 1px dashed #eee;'>", unsafe_allow_html=True)
+            st.markdown("</div>", unsafe_allow_html=True)
+
+    with tab_prot:
+        tab_lista, tab_crear = st.tabs(["📋 Mis Protocolos (Editar)", "📝 Nuevo Protocolo"])
+        with tab_lista:
+            if df_prot.empty: st.info("No hay protocolos creados.")
+            else:
+                st.write("Modifica los nombres o las recetas de tus protocolos en esta tabla:")
+                cols_ed_p = ['id', 'nombre', 'materiales_base']
+                edited_p_df = st.data_editor(
+                    df_prot[cols_ed_p].copy(), 
+                    column_config={"id": st.column_config.TextColumn("ID", disabled=True), "nombre": "Nombre del Protocolo", "materiales_base": "Receta Libre (Ej: Usa 2 ml de DMEM...)"}, 
+                    use_container_width=True, hide_index=True)
+                if st.button("💾 Guardar Cambios en Protocolos", type="secondary"):
+                    for _, row in edited_p_df.iterrows():
+                        d = row.replace({np.nan: None}).to_dict()
+                        if 'id' in d and str(d['id']).strip(): 
+                            d['lab_id'] = lab_id 
+                            supabase.table("protocolos").upsert(d).execute()
+                    st.rerun()
+                    
+        with tab_crear:
+            with st.form("form_nuevo_prot"):
+                n_prot = st.text_input("Nombre (Ej: Ensayo DNAzimas)")
+                mat_base = st.text_area("Receta (Escribe libremente, ej: 'Usa 2 ml de DMEM y 1 placa')")
+                if st.form_submit_button("💾 Guardar"):
+                    supabase.table("protocolos").insert({"nombre": n_prot, "materiales_base": mat_base, "lab_id": lab_id}).execute()
+                    st.rerun()
+                    
     with tab_equipos:
         st.markdown("### 🗓️ Gestión y Booking de Equipos")
         opciones_eq = ["📅 Agendar", "📊 Calendario"]
@@ -630,145 +766,6 @@ with col_mon:
                             st.rerun()
                         except Exception as e: st.error(f"Error: {e}")
 
-    # --- PESTAÑA: ELN TIPO NOTION (CON ROLLBACK PERFECTO Y HORA) ---
-    with tab_bitacora:
-        st.markdown("### 📔 Cuaderno de Laboratorio")
-        
-        c_filt, c_btn = st.columns([2, 1])
-        with c_filt:
-            if rol_actual == "admin": filtro_usuario = st.selectbox("Ver cuaderno de:", ["Todos"] + list(set(nombres_equipo)), label_visibility="collapsed")
-            else: filtro_usuario = usuario_actual; st.write(f"📖 **Cuaderno de {usuario_actual}**")
-        
-        with st.expander("📝 Escribir nueva entrada manual", expanded=False):
-            texto_metodo = st.text_area("Anota libremente todo lo que hiciste hoy...", height=150)
-            link_evidencia = st.text_input("📎 Enlace a Drive, Foto o Excel (Opcional)")
-            if st.button("💾 Guardar Entrada", type="primary"):
-                if texto_metodo.strip():
-                    supabase.table("bitacora").insert({
-                        "lab_id": lab_id, "usuario": usuario_actual, 
-                        "fecha": date.today().isoformat(), 
-                        "contenido": texto_metodo, 
-                        "link_adjunto": link_evidencia,
-                        "resultado": ""
-                    }).execute()
-                    st.rerun()
-                else: st.warning("No puedes guardar una hoja en blanco.")
-                    
-        st.markdown("<br>", unsafe_allow_html=True)
-        
-        if df_bitacora.empty: 
-            st.info("El cuaderno está vacío. ¡Escribe o háblale a la IA!")
-        else:
-            df_b_show = df_bitacora if filtro_usuario == "Todos" else df_bitacora[df_bitacora['usuario'] == filtro_usuario]
-            chile_tz = pytz.timezone('America/Santiago')
-            
-            st.markdown("<div style='font-family: \"Inter\", sans-serif; max-width: 850px;'>", unsafe_allow_html=True)
-            
-            for _, row in df_b_show.iterrows():
-                fecha_str = row.get('fecha', '')
-                hora_str = ""
-                
-                if 'created_at' in row and pd.notna(row['created_at']) and str(row['created_at']).strip():
-                    try:
-                        dt_obj = pd.to_datetime(row['created_at'])
-                        if dt_obj.tzinfo is None:
-                            dt_obj = dt_obj.tz_localize('UTC') 
-                        dt_local = dt_obj.tz_convert(chile_tz)
-                        hora_str = dt_local.strftime('%H:%M')
-                    except Exception as e: 
-                        pass
-                
-                contenido_esc = html_lib.escape(str(row.get('contenido', '')).strip())
-                res_ia = str(row.get('resultado', '')).strip()
-                link = str(row.get('link_adjunto', '')).strip()
-                
-                col_text, col_del = st.columns([15, 1])
-                
-                with col_text:
-                    html_cuaderno = f"""
-                    <details class='notion-toggle' style='margin-bottom: 0; border-bottom: none; padding-bottom: 0;'>
-                        <summary>
-                            <div style="padding-top: 2px;">{contenido_esc}</div>
-                        </summary>
-                        <div class='cuaderno-meta-box'>
-                            <div style='margin-bottom: 8px; color: #555; font-size: 0.95em;'>🕒 {fecha_str} {hora_str} &nbsp;|&nbsp; 👤 <b>{row['usuario']}</b></div>
-                    """
-                    
-                    if res_ia and res_ia != "None":
-                        html_cuaderno += f"<div>{res_ia}</div>"
-                    
-                    if link.startswith('http'):
-                        html_cuaderno += f"<div style='margin-top:8px;'>📎 <a href='{link}' target='_blank'>Ver Evidencia Adjunta</a></div>"
-                        
-                    html_cuaderno += "</div></details>"
-                    st.markdown(html_cuaderno, unsafe_allow_html=True)
-                
-                with col_del:
-                    st.markdown("<div style='margin-top: 5px;'></div>", unsafe_allow_html=True)
-                    # --- EL MOTOR DE ROLLBACK (BÚSQUEDA POR ATRIBUTO DATA-ID) ---
-                    if st.button("🗑️", key=f"del_{row['id']}", help="Eliminar nota y restaurar reactivos"):
-                        res_ia_str = str(row.get('resultado', ''))
-                        
-                        # Regex perfecta: extrae la cantidad y el UUID secreto del atributo data-id
-                        pattern_new = r"📉\s*([0-9.]+).*?data-id='([^']+)'"
-                        matches_new = re.findall(pattern_new, res_ia_str)
-                        
-                        for m in matches_new:
-                            cant_revertir = float(m[0])
-                            item_id = m[1].strip()
-                            
-                            res_item = supabase.table("items").select("id, cantidad_actual, nombre").eq("id", item_id).execute()
-                            if res_item.data:
-                                stock_actual = float(res_item.data[0]['cantidad_actual'])
-                                stock_nuevo = stock_actual + cant_revertir
-                                nombre_real = res_item.data[0]['nombre']
-                                
-                                val_stock = int(stock_nuevo) if stock_nuevo.is_integer() else stock_nuevo
-                                val_cambio = int(cant_revertir) if cant_revertir.is_integer() else cant_revertir
-                                
-                                supabase.table("items").update({"cantidad_actual": val_stock}).eq("id", item_id).execute()
-                                supabase.table("movimiento").insert({
-                                    "item_id": item_id, 
-                                    "nombre_item": nombre_real, 
-                                    "cantidad_cambio": val_cambio, 
-                                    "tipo": "Reversión (Borrado de Bitácora)", 
-                                    "usuario": usuario_actual, 
-                                    "lab_id": lab_id
-                                }).execute()
-                                
-                        supabase.table("bitacora").delete().eq("id", row['id']).execute()
-                        st.rerun()
-                
-                st.markdown("<hr style='margin: 10px 0; border: 0; border-top: 1px dashed #eee;'>", unsafe_allow_html=True)
-            st.markdown("</div>", unsafe_allow_html=True)
-
-    with tab_prot:
-        tab_lista, tab_crear = st.tabs(["📋 Mis Protocolos (Editar)", "📝 Nuevo Protocolo"])
-        with tab_lista:
-            if df_prot.empty: st.info("No hay protocolos creados.")
-            else:
-                st.write("Modifica los nombres o las recetas de tus protocolos en esta tabla:")
-                cols_ed_p = ['id', 'nombre', 'materiales_base']
-                edited_p_df = st.data_editor(
-                    df_prot[cols_ed_p].copy(), 
-                    column_config={"id": st.column_config.TextColumn("ID", disabled=True), "nombre": "Nombre del Protocolo", "materiales_base": "Receta Libre (Ej: Usa 2 ml de DMEM...)"}, 
-                    use_container_width=True, hide_index=True)
-                if st.button("💾 Guardar Cambios en Protocolos", type="secondary"):
-                    for _, row in edited_p_df.iterrows():
-                        d = row.replace({np.nan: None}).to_dict()
-                        if 'id' in d and str(d['id']).strip(): 
-                            d['lab_id'] = lab_id 
-                            supabase.table("protocolos").upsert(d).execute()
-                    st.rerun()
-                    
-        with tab_crear:
-            with st.form("form_nuevo_prot"):
-                n_prot = st.text_input("Nombre (Ej: Ensayo DNAzimas)")
-                mat_base = st.text_area("Receta (Escribe libremente, ej: 'Usa 2 ml de DMEM y 1 placa')")
-                if st.form_submit_button("💾 Guardar"):
-                    supabase.table("protocolos").insert({"nombre": n_prot, "materiales_base": mat_base, "lab_id": lab_id}).execute()
-                    st.rerun()
-
     if rol_actual == "admin":
         with tab_analisis:
             st.markdown("### 📈 Predicción de Consumo (Burn Rate)")
@@ -866,7 +863,7 @@ with col_mon:
                 if miembros.data: st.dataframe(pd.DataFrame(miembros.data), hide_index=True, use_container_width=True)
             except Exception as e: st.error(f"❌ Error al cargar la lista: {e}")
 
-# --- PANEL IA ORQUESTADOR ---
+# --- PANEL IA ORQUESTADOR CON LECTOR NATURAL Y MARCADORES INMORTALES ---
 with col_chat:
     st.markdown("### 💬 Secretario IA")
     chat_box = st.container(height=400, border=False)
@@ -929,25 +926,25 @@ with col_chat:
                     
                     prompt_sistema = f"""
                     Eres la Inteligencia Artificial del LIMS Stck. Hoy es {hoy_str}.
-                    Inventario: {d_ia}
+                    Inventario Disponible (ID, Nombre, Stock): {d_ia}
                     Protocolos: {d_prot}
                     Historial: {historial_str}
 
                     El usuario dice: "{prompt}"
 
-                    Devuelve ÚNICAMENTE un JSON con esta estructura exacta:
+                    Devuelve ÚNICAMENTE un JSON con esta estructura:
                     {{
-                        "respuesta_chat": "Si es un pasaje celular, confirma y pregunta: '¿Usaste placa o material extra?'. Si ya responde a esa pregunta (ej 'no', 'usé 1'), di 'Entendido y descontado.'",
-                        "entrada_cuaderno": "Copia EXACTAMENTE sus palabras. Si es una respuesta a tu pregunta, DEBE QUEDAR VACÍO.",
+                        "respuesta_chat": "Si es un pasaje celular, confirma y pregunta SOLO: '¿Usaste alguna placa o frasco nuevo (sí/no)?'. Si ya responde a esa pregunta (ej 'no', 'usé 1'), responde 'Entendido y descontado.'",
+                        "entrada_cuaderno": "Copia EXACTAMENTE sus palabras (ej: 'Hoy hice pasaje...'). Si es una respuesta a tu pregunta (ej 'sí', 'no', '1 placa'), DEBE QUEDAR VACÍO.",
                         "protocolo_detectado": {{"nombre": "Nombre EXACTO del protocolo", "muestras": 1}},
-                        "descuentos_protocolo": [{{"nombre_item_inventario": "Nombre exacto en inventario", "cantidad_total_a_restar": 0.0}}],
-                        "descuentos_extra": [{{"nombre_item_inventario": "Nombre exacto en inventario", "cantidad_a_restar": 0.0}}]
+                        "descuentos_protocolo": [{{"id_item": "ID_EXACTO_DEL_INVENTARIO", "cantidad_total_a_restar": 0.0}}],
+                        "descuentos_extra": [{{"id_item": "ID_EXACTO_DEL_INVENTARIO", "cantidad_a_restar": 0.0}}]
                     }}
 
                     REGLAS INFLEXIBLES:
-                    1. MAPEO EXACTO DE NOMBRES: Si la receta dice "PBS", y el inventario tiene "PBS" y "D-PBS", debes enviar en 'nombre_item_inventario' EXACTAMENTE "PBS". ¡Copia el nombre del inventario letra por letra!
-                    2. EXTRACCIÓN NUMÉRICA: Extrae el PRIMER número de la receta, multiplícalo por las muestras y ponlo en cantidad.
-                    3. ANTI-BUCLES: Si el usuario responde 'no' o 'nada', "entrada_cuaderno" DEBE SER VACÍO y "protocolo_detectado" vacío.
+                    1. PRECISIÓN DE ID: Al aplicar un protocolo, lee su receta. Busca en el Inventario el reactivo correspondiente y extrae su "id". Si hay varios parecidos (ej: PBS vs D-PBS), elige el que MEJOR calce con la receta. ¡Usa siempre el ID, nunca el nombre!
+                    2. MULTIPLICACIÓN: Extrae el primer número de la receta, multiplícalo por las muestras y ponlo en 'cantidad_total_a_restar'.
+                    3. ANTI-BUCLES: Si el usuario responde 'no' o 'nada', "entrada_cuaderno" DEBE SER VACÍO, no ejecutes protocolos de nuevo.
                     """
                     
                     res_ai = model.generate_content(prompt_sistema).text
@@ -963,7 +960,7 @@ with col_chat:
                         if es_respuesta_corta:
                             data['entrada_cuaderno'] = ""
 
-                        # 1. PROTOCOLOS Y BÚSQUEDA ESTRICTA
+                        # 1. PROTOCOLOS (MATEMÁTICA PURA CON IDs)
                         p_dict = data.get('protocolo_detectado', {})
                         d_prot = data.get('descuentos_protocolo', [])
                         
@@ -973,19 +970,12 @@ with col_chat:
                             log_ia_acciones.append(f"🔗 <b>Protocolo:</b> {p_nombre} (x{p_muestras})")
                             
                             for desc in d_prot:
-                                nom_item = desc.get('nombre_item_inventario')
+                                id_item = str(desc.get('id_item', '')).strip()
                                 cant_total = desc.get('cantidad_total_a_restar', 0)
                                 
-                                if nom_item and cant_total > 0:
-                                    # CANDADO 1: Búsqueda idéntica al 100% primero (Evita PBS vs D-PBS)
-                                    item_db = df[df['nombre'].str.strip().str.lower() == nom_item.strip().lower()]
-                                    
-                                    # CANDADO 2: Si no lo encuentra idéntico, busca palabra completa
-                                    if item_db.empty:
-                                        item_db = df[df['nombre'].str.contains(re.escape(nom_item), case=False, na=False, regex=True)]
-                                        
+                                if id_item and cant_total > 0:
+                                    item_db = df[df['id'].astype(str) == id_item]
                                     if not item_db.empty:
-                                        id_item = str(item_db.iloc[0]['id'])
                                         stock_actual = float(item_db.iloc[0]['cantidad_actual'])
                                         stock_nuevo = stock_actual - float(cant_total)
                                         
@@ -999,24 +989,19 @@ with col_chat:
                                         supabase.table("items").update({"cantidad_actual": val_stock}).eq("id", id_item).execute()
                                         supabase.table("movimiento").insert({"item_id": id_item, "nombre_item": nombre_real, "cantidad_cambio": val_cambio, "tipo": f"Uso IA: {p_nombre}", "usuario": usuario_actual, "lab_id": lab_id}).execute()
                                         
-                                        # MARCADOR INVISIBLE EN HTML PARA EL ROLLBACK DE LA PAPELERA
                                         lista_descuentos.append(f"&nbsp;&nbsp;&nbsp; - 📉 {val_mostrar} {unidad_item} de {nombre_real} <span data-id='{id_item}' style='display:none'></span> <i>(Protocolo)</i>")
                                     else:
-                                        lista_descuentos.append(f"&nbsp;&nbsp;&nbsp; - ⚠️ No encontré '{nom_item}' en inventario.")
+                                        lista_descuentos.append(f"&nbsp;&nbsp;&nbsp; - ⚠️ Error: ID '{id_item}' no hallado.")
 
-                        # 2. AJUSTES EXTRA (Placas)
+                        # 2. AJUSTES EXTRA (Placas, con IDs)
                         ajustes = data.get('descuentos_extra', [])
                         for aj in ajustes:
-                            nom_man = aj.get('nombre_item_inventario')
+                            id_ac = str(aj.get('id_item', '')).strip()
                             cant_man = aj.get('cantidad_a_restar', 0)
                             
-                            if nom_man and float(cant_man) > 0:
-                                item_db = df[df['nombre'].str.strip().str.lower() == nom_man.strip().lower()]
-                                if item_db.empty:
-                                    item_db = df[df['nombre'].str.contains(re.escape(nom_man), case=False, na=False, regex=True)]
-                                    
+                            if id_ac and float(cant_man) > 0:
+                                item_db = df[df['id'].astype(str) == id_ac]
                                 if not item_db.empty:
-                                    id_ac = str(item_db.iloc[0]['id'])
                                     stock_actual = float(item_db.iloc[0]['cantidad_actual'])
                                     stock_nuevo = stock_actual - float(cant_man)
                                     
@@ -1031,7 +1016,7 @@ with col_chat:
                                     supabase.table("movimiento").insert({"item_id": id_ac, "nombre_item": nombre_item, "cantidad_cambio": val_cambio, "tipo": "Ajuste Conversacional IA", "usuario": usuario_actual, "lab_id": lab_id}).execute()
                                     
                                     if es_respuesta_corta:
-                                        st.session_state.messages.append({"role": "assistant", "content": f"✅ Descontado: -{val_mostrar} {unidad_item} de {nombre_item}"})
+                                        st.session_state.messages.append({"role": "assistant", "content": f"✅ Descontado extra: -{val_mostrar} {unidad_item} de {nombre_item}"})
                                         st.rerun()
                                     else:
                                         lista_descuentos.append(f"&nbsp;&nbsp;&nbsp; - 📉 {val_mostrar} {unidad_item} de {nombre_item} <span data-id='{id_ac}' style='display:none'></span> <i>(Extra)</i>")
