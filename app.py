@@ -760,7 +760,7 @@ with col_chat:
 
                     Analiza el último mensaje del Usuario ({prompt}) y devuelve ÚNICAMENTE un JSON con esta estructura exacta:
                     {{
-                        "mensaje_inicial": "Recordatorios de rutina (ej. chequear CO2) SI NO ESTÁN en la lista de rutinas ya recordadas. Si es una orden simple, déjalo vacío o pon 'Entendido.'",
+                        "mensaje_inicial": "Recordatorios de rutina SI NO ESTÁN en la lista de rutinas ya recordadas. Si es una orden simple, déjalo vacío o pon 'Entendido.'",
                         "pregunta_final": "Pregunta de seguimiento (ej. '¿Gastaste alguna placa nueva?'). ¡NUNCA preguntes por volúmenes de reactivos que ya están en el protocolo!",
                         "bitacora": {{"guardar": false, "entrada_cuaderno": ""}},
                         "protocolo": {{"ejecutar": false, "nombre": "", "muestras": 1}},
@@ -770,9 +770,11 @@ with col_chat:
                     }}
 
                     Reglas MUY ESTRICTAS:
-                    1. NO PREGUNTES POR VOLÚMENES: Si el usuario ejecuta un protocolo, el sistema descontará los reactivos base automáticamente. Tú no debes preguntar cuánto medio o reactivo usó.
-                    2. CERO INVENTOS EN INVENTARIO: NUNCA pongas ítems en "inventario_ajustes" a menos que el usuario mencione un NÚMERO EXPLÍCITO (ej. "gasté 1 placa"). Si solo dice "hice un pasaje", actívate en "protocolo" y limítate a preguntarle en "pregunta_final" si gastó material fungible.
-                    3. BITÁCORA FIEL: Si vas a guardar en bitácora, "entrada_cuaderno" debe ser EXACTAMENTE la frase o relato del usuario. No lo resumas.
+                    1. NO PREGUNTES POR VOLÚMENES: Si el usuario ejecuta un protocolo, el sistema descontará los reactivos base automáticamente.
+                    2. CERO INVENTOS EN INVENTARIO: NUNCA pongas ítems en "inventario_ajustes" a menos que el usuario mencione un NÚMERO EXPLÍCITO.
+                    3. BITÁCORA FIEL: Si vas a guardar en bitácora, copia las palabras exactas del usuario.
+                    4. EVITA BUCLES: Si el usuario responde "no" o "nada más" a tu pregunta anterior, pon en "mensaje_inicial": "Entendido.", vacía "pregunta_final" y deja TODO LO DEMÁS en false/vacío. NUNCA vuelvas a ejecutar el protocolo ni a preguntar lo mismo.
+                    5. SOLO EJECUTA PROTOCOLOS UNA VEZ: Si el usuario está respondiendo a una pregunta sobre un protocolo que ya se ejecutó en el mensaje anterior, NO vuelvas a poner "protocolo.ejecutar" en true.
                     """
                     
                     res_ai = model.generate_content(prompt_sistema).text
@@ -815,7 +817,7 @@ with col_chat:
                             else:
                                 log_ia_acciones.append(f"❌ **Fallo Reserva:** No encontré el equipo '{eq_nom}'.")
 
-                        # 2. PROTOCOLO AUTOMÁTICO
+                        # 2. PROTOCOLO AUTOMÁTICO (AHORA CON MULTIPLICACIÓN MATEMÁTICA EN UI)
                         prot = data.get('protocolo', {})
                         if prot.get('ejecutar') and prot.get('nombre'):
                             p_nombre = prot.get('nombre')
@@ -823,23 +825,37 @@ with col_chat:
                             prot_match = df_prot[df_prot['nombre'].str.contains(p_nombre, case=False, na=False)]
                             
                             if not prot_match.empty:
-                                log_ia_acciones.append(f"🧪 **Protocolo Vinculado:** {prot_match.iloc[0]['nombre']} (x{p_muestras} muestras).")
+                                nombre_prot_oficial = prot_match.iloc[0]['nombre']
                                 info_p = prot_match.iloc[0]['materiales_base']
+                                
+                                desglose_txt = [f"🧪 **Protocolo Aplicado:** {nombre_prot_oficial} (x{p_muestras} muestras)\n*Desglose exacto descontado:*"]
                                 
                                 for linea in info_p.split('\n'):
                                     if ":" in linea:
                                         partes = linea.split(":")
-                                        item_db = df[df['nombre'].str.contains(partes[0].strip(), case=False, na=False)]
+                                        item_str = partes[0].strip()
+                                        cant_base = float(partes[1].strip())
+                                        cant_total = cant_base * p_muestras # MULTIPLICACIÓN TOTAL
+                                        
+                                        item_db = df[df['nombre'].str.contains(item_str, case=False, na=False)]
                                         if not item_db.empty:
-                                            desc_cant = float(partes[1].strip()) * p_muestras
                                             id_item = str(item_db.iloc[0]['id'])
                                             stock_actual = item_db.iloc[0]['cantidad_actual']
-                                            stock_nuevo = stock_actual - desc_cant
+                                            stock_nuevo = stock_actual - cant_total
+                                            umbral = item_db.iloc[0]['umbral_minimo']
+                                            unidad_item = item_db.iloc[0]['unidad']
+                                            nombre_item = item_db.iloc[0]['nombre']
                                             
                                             supabase.table("items").update({"cantidad_actual": int(stock_nuevo)}).eq("id", id_item).execute()
-                                            supabase.table("movimiento").insert({"item_id": id_item, "nombre_item": item_db.iloc[0]['nombre'], "cantidad_cambio": -desc_cant, "tipo": f"Uso IA: {p_nombre}", "usuario": usuario_actual, "lab_id": lab_id}).execute()
+                                            supabase.table("movimiento").insert({"item_id": id_item, "nombre_item": nombre_item, "cantidad_cambio": -cant_total, "tipo": f"Uso IA: {nombre_prot_oficial}", "usuario": usuario_actual, "lab_id": lab_id}).execute()
                                             
-                                            log_ia_acciones.append(f"📉 *Descontado:* {desc_cant} {item_db.iloc[0]['unidad']} de {item_db.iloc[0]['nombre']}.")
+                                            desglose_txt.append(f"  - 📉 {cant_total} {unidad_item} de **{nombre_item}**")
+                                            
+                                            if umbral > 0 and stock_nuevo <= umbral:
+                                                log_ia_acciones.append(f"🚨 **ALERTA CRÍTICA:** {nombre_item} cayó por debajo del umbral mínimo ({int(stock_nuevo)} restantes).")
+                                
+                                # Insertamos el desglose al principio de las acciones de la IA
+                                log_ia_acciones = desglose_txt + log_ia_acciones
                             else:
                                 log_ia_acciones.append(f"⚠️ *No encontré el protocolo '{p_nombre}'.*")
 
@@ -854,16 +870,17 @@ with col_chat:
                                     stock_actual = item_db.iloc[0]['cantidad_actual']
                                     stock_nuevo = stock_actual - cant_restar
                                     nombre_item = item_db.iloc[0]['nombre']
+                                    unidad_item = item_db.iloc[0]['unidad']
                                     
                                     supabase.table("items").update({"cantidad_actual": int(stock_nuevo)}).eq("id", id_ac).execute()
                                     supabase.table("movimiento").insert({"item_id": id_ac, "nombre_item": nombre_item, "cantidad_cambio": -cant_restar, "tipo": "Ajuste Conversacional IA", "usuario": usuario_actual, "lab_id": lab_id}).execute()
-                                    log_ia_acciones.append(f"📉 *Descontado extra:* {cant_restar} de {nombre_item}.")
+                                    log_ia_acciones.append(f"  - 📉 {cant_restar} {unidad_item} de **{nombre_item}** (Ajuste extra)")
 
                         # 4. GUARDAR BITÁCORA
                         bit = data.get('bitacora', {})
                         if bit.get('guardar') and bit.get('entrada_cuaderno'):
                             texto_principal_usuario = bit.get('entrada_cuaderno')
-                            metadatos_ia = "\n".join(log_ia_acciones) if log_ia_acciones else "Registro en bitácora sin acciones en inventario."
+                            metadatos_ia = "\n".join(log_ia_acciones) if log_ia_acciones else "Ninguna acción automática en inventario o calendario."
                             
                             supabase.table("bitacora").insert({
                                 "lab_id": lab_id, 
@@ -885,7 +902,7 @@ with col_chat:
                             msg_final += f"*{data['pregunta_final']}*"
                             
                         if not msg_final.strip():
-                            msg_final = "Hecho."
+                            msg_final = "Entendido."
                             
                         st.markdown(msg_final)
                         st.session_state.messages.append({"role": "assistant", "content": msg_final})
