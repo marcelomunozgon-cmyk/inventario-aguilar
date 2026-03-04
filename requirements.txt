@@ -7,3 +7,4 @@ qrcode
 pillow
 streamlit-mic-recorder
 fpdf
+streamlit-calendar
