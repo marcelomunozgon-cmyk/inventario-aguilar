@@ -16,6 +16,7 @@ import urllib.parse
 import qrcode
 from io import BytesIO
 from fpdf import FPDF
+import pytz
 
 try:
     from streamlit_calendar import calendar
@@ -92,6 +93,12 @@ except Exception as e:
 @st.cache_resource
 def cargar_modelo_rapido(): return genai.GenerativeModel('gemini-2.5-flash')
 model = cargar_modelo_rapido()
+
+# --- GESTOR DE RUTINAS DIARIAS ---
+if "rutinas_diarias" not in st.session_state:
+    st.session_state.rutinas_diarias = {"fecha": str(date.today()), "mostradas": []}
+if st.session_state.rutinas_diarias["fecha"] != str(date.today()):
+    st.session_state.rutinas_diarias = {"fecha": str(date.today()), "mostradas": []}
 
 # --- 2. SISTEMA DE AUTENTICACIÓN ---
 if "usuario_autenticado" not in st.session_state:
@@ -540,7 +547,7 @@ with col_mon:
                             st.rerun()
                         except Exception as e: st.error(f"Error: {e}")
 
-    # --- PESTAÑA: ELN TIPO NOTION (DISEÑO PERFECTO RECUPERADO CON HORA EXACTA) ---
+    # --- PESTAÑA: ELN TIPO NOTION (DISEÑO PERFECTO RECUPERADO CON HORA EXACTA Y CONVERSIÓN CHILE) ---
     with tab_bitacora:
         st.markdown("### 📔 Cuaderno de Laboratorio")
         
@@ -573,19 +580,23 @@ with col_mon:
             
             html_cuaderno = "<div style='font-family: \"Inter\", sans-serif; max-width: 850px;'>"
             
+            # ZONA HORARIA DE CHILE FORZADA PARA QUE NO FALLE
+            chile_tz = pytz.timezone('America/Santiago')
+            
             for _, row in df_b_show.iterrows():
                 fecha_str = row.get('fecha', '')
                 hora_str = ""
                 
-                # FIX ZONA HORARIA: Parseo robusto a hora local (Chile)
+                # Extracción robusta de hora
                 if 'created_at' in row and pd.notna(row['created_at']) and str(row['created_at']).strip():
                     try:
                         dt_obj = pd.to_datetime(row['created_at'])
-                        if dt_obj.tzinfo is not None:
-                            try: dt_obj = dt_obj.tz_convert('America/Santiago')
-                            except Exception: dt_obj = dt_obj.tz_convert(None) - timedelta(hours=3) # Fallback manual
-                        hora_str = dt_obj.strftime('%H:%M')
-                    except: pass
+                        if dt_obj.tzinfo is None:
+                            dt_obj = dt_obj.tz_localize('UTC') # Supabase devuelve UTC
+                        dt_local = dt_obj.tz_convert(chile_tz)
+                        hora_str = dt_local.strftime('%H:%M')
+                    except Exception as e: 
+                        pass
                 
                 # Limpieza de textos
                 contenido_esc = html_lib.escape(str(row.get('contenido', '')).strip())
@@ -624,7 +635,7 @@ with col_mon:
                 cols_ed_p = ['id', 'nombre', 'materiales_base']
                 edited_p_df = st.data_editor(
                     df_prot[cols_ed_p].copy(), 
-                    column_config={"id": st.column_config.TextColumn("ID", disabled=True), "nombre": "Nombre del Protocolo", "materiales_base": "Receta (Reactivo : Cantidad)"}, 
+                    column_config={"id": st.column_config.TextColumn("ID", disabled=True), "nombre": "Nombre del Protocolo", "materiales_base": "Receta Libre (Ej: Usa 2 ml de DMEM...)"}, 
                     use_container_width=True, hide_index=True)
                 if st.button("💾 Guardar Cambios en Protocolos", type="secondary"):
                     for _, row in edited_p_df.iterrows():
@@ -637,7 +648,7 @@ with col_mon:
         with tab_crear:
             with st.form("form_nuevo_prot"):
                 n_prot = st.text_input("Nombre (Ej: Ensayo DNAzimas)")
-                mat_base = st.text_area("Reactivos (Nombre en inventario : Cantidad por muestra)")
+                mat_base = st.text_area("Receta (Escribe libremente, ej: 'Usa 2 ml de DMEM y 1 placa')")
                 if st.form_submit_button("💾 Guardar"):
                     supabase.table("protocolos").insert({"nombre": n_prot, "materiales_base": mat_base, "lab_id": lab_id}).execute()
                     st.rerun()
@@ -695,23 +706,33 @@ with col_mon:
                     info_p = df_prot[df_prot['nombre'] == p_sel]['materiales_base'].values[0]
                     descuentos = []
                     costo_total_exp = 0
+                    
+                    # Usa el mismo extractor inteligente para la simulación
                     for linea in info_p.split('\n'):
-                        if ":" in linea:
-                            partes = linea.split(":")
-                            item_db = df[df['nombre'].str.contains(partes[0].strip(), case=False, na=False)]
-                            if not item_db.empty: 
-                                desc_cant = float(partes[1].strip()) * n_muestras
-                                precio_ref = item_db.iloc[0]['precio']
-                                if precio_ref > 0 and item_db.iloc[0]['cantidad_actual'] > 0:
-                                    costo_item = (desc_cant / item_db.iloc[0]['cantidad_actual']) * precio_ref
-                                    costo_total_exp += costo_item
-                                descuentos.append({"id": str(item_db.iloc[0]['id']), "Reactivo": item_db.iloc[0]['nombre'], "Stock": item_db.iloc[0]['cantidad_actual'], "Requerido": desc_cant, "Unidad": item_db.iloc[0]['unidad']})
+                        if "," in linea or ":" in linea or "de" in linea:
+                            partes = re.split(r'[,:]', linea)
+                            for p in partes:
+                                match_num = re.search(r'[\d.]+', p)
+                                if match_num:
+                                    cant_base = float(match_num.group())
+                                    cant_total = cant_base * n_muestras
+                                    # Busca item en la db que coincida con parte del texto
+                                    for idx, row_item in df.iterrows():
+                                        if row_item['nombre'].lower() in p.lower():
+                                            if row_item['precio'] > 0 and row_item['cantidad_actual'] > 0:
+                                                costo_item = (cant_total / row_item['cantidad_actual']) * row_item['precio']
+                                                costo_total_exp += costo_item
+                                            descuentos.append({"Reactivo": row_item['nombre'], "Stock": row_item['cantidad_actual'], "Requerido": cant_total, "Unidad": row_item['unidad']})
+                                            break
+                                            
                     if descuentos:
-                        st.dataframe(pd.DataFrame(descuentos).drop(columns=['id']), hide_index=True)
+                        st.dataframe(pd.DataFrame(descuentos), hide_index=True)
                         if costo_total_exp > 0: 
                             st.markdown(f"<div class='badge-costo'>💰 Presupuesto estimado: ${int(costo_total_exp):,} CLP</div>", unsafe_allow_html=True)
                         else:
                             st.info("No hay precios registrados para los reactivos de este protocolo. Agrégalos en Edición Masiva.")
+                    else:
+                        st.info("No pude extraer reactivos de este texto. Revisa la receta.")
 
             st.markdown("---")
             st.markdown("### 📄 Generador de Reportes (ISO/GLP)")
@@ -743,7 +764,7 @@ with col_mon:
                 if miembros.data: st.dataframe(pd.DataFrame(miembros.data), hide_index=True, use_container_width=True)
             except Exception as e: st.error(f"❌ Error al cargar la lista: {e}")
 
-# --- PANEL IA ORQUESTADOR (EL CEREBRO CALIBRADO) ---
+# --- PANEL IA ORQUESTADOR (Lector Natural) ---
 with col_chat:
     st.markdown("### 💬 Secretario IA")
     chat_box = st.container(height=400, border=False)
@@ -796,17 +817,16 @@ with col_chat:
         st.session_state.messages.append({"role": "user", "content": prompt})
         with chat_box: st.chat_message("user").markdown(prompt)
         with st.chat_message("assistant"):
-            with st.spinner("Procesando tu instrucción..."):
+            with st.spinner("Leyendo receta e inventario..."):
                 try:
                     d_ia = df[['id', 'nombre', 'cantidad_actual']].to_json(orient='records') if not df.empty else "[]"
                     d_prot = df_prot[['nombre', 'materiales_base']].to_json(orient='records') if not df_prot.empty else "[]"
-                    d_eq = df_equipos[['id', 'nombre']].to_json(orient='records') if not df_equipos.empty else "[]"
                     hoy_str = date.today().isoformat()
                     
                     historial_str = "\n".join([f"{'Usuario' if m['role']=='user' else 'IA'}: {m['content']}" for m in st.session_state.messages[-8:-1]])
                     
                     prompt_sistema = f"""
-                    Eres el asistente inteligente de un laboratorio. Tienes contexto y memoria. Hoy es {hoy_str}.
+                    Eres la Inteligencia Artificial del LIMS Stck. Tienes contexto y memoria. Hoy es {hoy_str}.
                     Inventario Disponible: {d_ia}
                     Protocolos Disponibles: {d_prot}
                     Historial Reciente de la charla: {historial_str}
@@ -815,17 +835,16 @@ with col_chat:
 
                     Devuelve ÚNICAMENTE un JSON con esta estructura exacta:
                     {{
-                        "respuesta_chat": "Si el usuario relata una técnica nueva, confírmale y pregúntale: 'Anotado. ¿Gastaste algún material extra como placas o tubos?'. Si el usuario ya está respondiendo tu pregunta anterior (ej 'no', 'usé 1'), dile: 'Entendido.'",
-                        "entrada_cuaderno": "Solo si es un relato nuevo, copia EXACTAMENTE las palabras del usuario. Si es una respuesta a tu pregunta (ej 'no', '1 placa'), DEBE QUEDAR VACÍO.",
-                        "protocolo_detectado": {{"nombre": "COPIA EL NOMBRE IDÉNTICO DEL PROTOCOLO DE LA LISTA", "muestras": 1}},
-                        "descuentos_extra": [{{"nombre_item": "Nombre en inventario", "cantidad": 0.0}}],
-                        "reserva": {{"generar": false, "equipo_nombre": "", "fecha_YYYY_MM_DD": "", "hora_inicio_HH_MM": "", "hora_fin_HH_MM": ""}}
+                        "respuesta_chat": "Si el usuario reporta un protocolo, dale una respuesta corta (ej. 'Anotado.') y SIEMPRE pregunta: '¿Usaste alguna placa o material extra (sí/no)?'. Si ya está respondiendo a esa pregunta (ej 'no', 'usé 1 de 6 pocillos'), responde solo 'Entendido y descontado.' sin hacer más preguntas.",
+                        "entrada_cuaderno": "Copia sus palabras EXACTAS si es una historia nueva. Si la respuesta es a una pregunta tuya ('sí', 'no', 'nada', '1 placa'), DEBE QUEDAR VACÍO.",
+                        "protocolo_detectado": {{"nombre": "Nombre EXACTO del protocolo", "muestras": 1}},
+                        "descuentos_protocolo": [{{"nombre_item_inventario": "Nombre exacto en inventario", "cantidad_total_a_restar": 0.0}}],
+                        "descuentos_extra": [{{"nombre_item_inventario": "Nombre exacto en inventario", "cantidad_a_restar": 0.0}}]
                     }}
 
                     REGLAS INFLEXIBLES:
-                    1. ANTI-BUCLES: Si el usuario te responde con 'no', 'nada', 'listo', o te dice una cantidad de placas, ¡NO guardes en bitácora ("entrada_cuaderno": "") y NO vuelvas a ejecutar el protocolo!
-                    2. PROTOCOLOS: No inventes nombres de protocolos. Tienen que ser exactamente los de la lista 'Protocolos Disponibles'.
-                    3. No preguntes jamás por volúmenes de líquidos. Yo haré la matemática del protocolo en secreto.
+                    1. LA IA CALCULA (NUEVO): Si detectas un protocolo, LEE su campo 'materiales_base'. Multiplica las cantidades que diga el texto por el número de muestras que hizo el usuario. Pon los totales en 'descuentos_protocolo'. NO INVENTES NOMBRES, busca el más parecido en 'Inventario Disponible'.
+                    2. ANTI-BUCLES: Si el usuario responde 'no' o 'nada' a tu pregunta, "entrada_cuaderno" DEBE SER VACÍO y no ejecutes ningún protocolo de nuevo.
                     """
                     
                     res_ai = model.generate_content(prompt_sistema).text
@@ -836,90 +855,51 @@ with col_chat:
                         log_ia_acciones = []
                         lista_descuentos = []
                         
-                        # Candado anti-hallucination para respuestas cortas ("no", "1 placa")
+                        # Candado anti-hallucination para respuestas cortas
                         texto_minuscula = prompt.lower().strip()
                         es_respuesta_corta = len(texto_minuscula.split()) <= 5 and any(w in texto_minuscula for w in ['no', 'nada', 'ninguno', 'ninguna', 'listo', 'ya', 'si', 'sí', 'ok'])
                         if es_respuesta_corta:
                             data['entrada_cuaderno'] = ""
-                        
-                        # 1. RESERVA
-                        res_data = data.get('reserva', {})
-                        if res_data.get('generar') and res_data.get('equipo_nombre'):
-                            eq_nom = res_data.get('equipo_nombre')
-                            eq_match = df_equipos[df_equipos['nombre'].str.contains(eq_nom, case=False, na=False)]
-                            if not eq_match.empty:
-                                eq_id = eq_match.iloc[0]['id']
-                                f_res = res_data.get('fecha_YYYY_MM_DD', hoy_str)
-                                h_ini = res_data.get('hora_inicio_HH_MM', '09:00')
-                                h_fin = res_data.get('hora_fin_HH_MM', '10:00')
-                                dt_ini = datetime.fromisoformat(f"{f_res}T{h_ini}:00")
-                                dt_fin = datetime.fromisoformat(f"{f_res}T{h_fin}:00")
-                                
-                                solapamiento = False
-                                if not df_reservas.empty:
-                                    df_r_eq = df_reservas[df_reservas['equipo_id'] == str(eq_id)].copy()
-                                    df_r_eq['fecha_inicio'] = pd.to_datetime(df_r_eq['fecha_inicio']).apply(lambda x: x.tz_localize(None) if x.tzinfo else x)
-                                    df_r_eq['fecha_fin'] = pd.to_datetime(df_r_eq['fecha_fin']).apply(lambda x: x.tz_localize(None) if x.tzinfo else x)
-                                    for _, r in df_r_eq.iterrows():
-                                        if dt_ini < r['fecha_fin'] and dt_fin > r['fecha_inicio']: solapamiento = True; break
-                                
-                                if not solapamiento:
-                                    supabase.table("reservas").insert({"equipo_id": str(eq_id), "usuario": usuario_actual, "fecha_inicio": dt_ini.isoformat(), "fecha_fin": dt_fin.isoformat(), "lab_id": lab_id}).execute()
-                                    log_ia_acciones.append(f"📅 <b>Reserva:</b> {eq_match.iloc[0]['nombre']} ({f_res} de {h_ini} a {h_fin})")
-                                else:
-                                    log_ia_acciones.append(f"❌ Fallo Reserva: El {eq_match.iloc[0]['nombre']} ya está ocupado.")
 
-                        # 2. PROTOCOLOS Y MULTIPLICACIÓN MATEMÁTICA PURA (Fix Regex)
+                        # 1. PROTOCOLOS (Ahora la IA manda los números limpios, cero fallos de formato)
                         p_dict = data.get('protocolo_detectado', {})
+                        d_prot = data.get('descuentos_protocolo', [])
+                        
                         if p_dict and p_dict.get('nombre') and not es_respuesta_corta:
                             p_nombre = p_dict.get('nombre')
                             p_muestras = p_dict.get('muestras', 1)
+                            log_ia_acciones.append(f"🔗 <b>Protocolo:</b> {p_nombre} (x{p_muestras})")
                             
-                            prot_match = df_prot[df_prot['nombre'].str.contains(re.escape(p_nombre), case=False, na=False, regex=True)]
-                            if not prot_match.empty:
-                                nombre_prot_oficial = prot_match.iloc[0]['nombre']
-                                info_p = str(prot_match.iloc[0]['materiales_base'])
+                            for desc in d_prot:
+                                nom_item = desc.get('nombre_item_inventario')
+                                cant_total = desc.get('cantidad_total_a_restar', 0)
                                 
-                                log_ia_acciones.append(f"🔗 <b>Protocolo:</b> {nombre_prot_oficial} (x{p_muestras})")
-                                
-                                if info_p and info_p != "nan" and info_p != "None":
-                                    for linea in info_p.split('\n'):
-                                        if ":" in linea:
-                                            partes = linea.split(":")
-                                            item_str = partes[0].strip()
-                                            
-                                            # EXTRACTOR MATEMÁTICO PERFECTO (Solo atrapa el número)
-                                            match_num = re.search(r'[\d.]+', partes[1])
-                                            if match_num: cant_base = float(match_num.group())
-                                            else: cant_base = 1.0
-                                                
-                                            cant_total = cant_base * p_muestras
-                                            
-                                            item_db = df[df['nombre'].str.contains(re.escape(item_str), case=False, na=False, regex=True)]
-                                            if not item_db.empty:
-                                                id_item = str(item_db.iloc[0]['id'])
-                                                stock_actual = float(item_db.iloc[0]['cantidad_actual'])
-                                                stock_nuevo = stock_actual - cant_total
-                                                
-                                                # Validar integridad en Postgres Float
-                                                val_stock = int(stock_nuevo) if float(stock_nuevo).is_integer() else float(stock_nuevo)
-                                                val_cambio = int(-cant_total) if float(-cant_total).is_integer() else float(-cant_total)
-                                                
-                                                unidad_item = item_db.iloc[0]['unidad']
-                                                nombre_item = item_db.iloc[0]['nombre']
-                                                
-                                                supabase.table("items").update({"cantidad_actual": val_stock}).eq("id", id_item).execute()
-                                                supabase.table("movimiento").insert({"item_id": id_item, "nombre_item": nombre_item, "cantidad_cambio": val_cambio, "tipo": f"Protocolo: {nombre_prot_oficial}", "usuario": usuario_actual, "lab_id": lab_id}).execute()
-                                                
-                                                lista_descuentos.append(f"&nbsp;&nbsp;&nbsp; - 📉 {cant_total} {unidad_item} de {nombre_item} <i>(Protocolo)</i>")
-                                            else:
-                                                lista_descuentos.append(f"&nbsp;&nbsp;&nbsp; - ⚠️ No encontré '{item_str}' en inventario.")
+                                if nom_item and cant_total > 0:
+                                    item_db = df[df['nombre'].str.contains(re.escape(nom_item), case=False, na=False, regex=True)]
+                                    if not item_db.empty:
+                                        id_item = str(item_db.iloc[0]['id'])
+                                        stock_actual = float(item_db.iloc[0]['cantidad_actual'])
+                                        stock_nuevo = stock_actual - float(cant_total)
+                                        
+                                        val_stock = int(stock_nuevo) if float(stock_nuevo).is_integer() else float(stock_nuevo)
+                                        val_cambio = int(-cant_total) if float(-cant_total).is_integer() else float(-cant_total)
+                                        
+                                        unidad_item = item_db.iloc[0]['unidad']
+                                        nombre_real = item_db.iloc[0]['nombre']
+                                        
+                                        supabase.table("items").update({"cantidad_actual": val_stock}).eq("id", id_item).execute()
+                                        supabase.table("movimiento").insert({"item_id": id_item, "nombre_item": nombre_real, "cantidad_cambio": val_cambio, "tipo": f"Uso IA: {p_nombre}", "usuario": usuario_actual, "lab_id": lab_id}).execute()
+                                        
+                                        lista_descuentos.append(f"&nbsp;&nbsp;&nbsp; - 📉 {cant_total} {unidad_item} de {nombre_real} <i>(Protocolo)</i>")
+                                    else:
+                                        lista_descuentos.append(f"&nbsp;&nbsp;&nbsp; - ⚠️ No encontré '{nom_item}' en inventario.")
 
-                        # 3. AJUSTES EXTRA / RESPUESTA A LA PREGUNTA (Fix Postgres Float)
+                        # 2. AJUSTES EXTRA (Placas)
                         ajustes = data.get('descuentos_extra', [])
                         for aj in ajustes:
-                            nom_man = aj.get('nombre_item')
-                            cant_man = aj.get('cantidad', 0)
+                            nom_man = aj.get('nombre_item_inventario')
+                            cant_man = aj.get('cantidad_a_restar', 0)
+                            
                             if nom_man and float(cant_man) > 0:
                                 item_db = df[df['nombre'].str.contains(re.escape(nom_man), case=False, na=False, regex=True)]
                                 if not item_db.empty:
@@ -936,9 +916,8 @@ with col_chat:
                                     supabase.table("items").update({"cantidad_actual": val_stock}).eq("id", id_ac).execute()
                                     supabase.table("movimiento").insert({"item_id": id_ac, "nombre_item": nombre_item, "cantidad_cambio": val_cambio, "tipo": "Ajuste Conversacional IA", "usuario": usuario_actual, "lab_id": lab_id}).execute()
                                     
-                                    # Si es respuesta corta, no generamos bitácora nueva, solo avisamos al chat
                                     if es_respuesta_corta:
-                                        st.session_state.messages.append({"role": "assistant", "content": f"✅ Descontado extra: -{cant_man} {unidad_item} de {nombre_item}"})
+                                        st.session_state.messages.append({"role": "assistant", "content": f"✅ Descontado: -{cant_man} {unidad_item} de {nombre_item}"})
                                         st.rerun()
                                     else:
                                         lista_descuentos.append(f"&nbsp;&nbsp;&nbsp; - 📉 {cant_man} {unidad_item} de {nombre_item} <i>(Extra)</i>")
@@ -950,7 +929,7 @@ with col_chat:
 
                         metadatos_ia = "<br>".join(log_ia_acciones)
 
-                        # 4. GUARDAR EN BITÁCORA (Evita guardar basuras como "no")
+                        # 3. GUARDAR EN BITÁCORA (Si no es basura)
                         texto_cuaderno = data.get('entrada_cuaderno', "").strip()
                         if texto_cuaderno and not es_respuesta_corta:
                             supabase.table("bitacora").insert({
@@ -961,7 +940,7 @@ with col_chat:
                                 "resultado": metadatos_ia 
                             }).execute()
 
-                        # 5. CHAT
+                        # 4. CHAT
                         msg_final = data.get('respuesta_chat', 'Entendido.')
                         st.markdown(msg_final)
                         st.session_state.messages.append({"role": "assistant", "content": msg_final})
