@@ -38,7 +38,12 @@ st.markdown("""
     .stButton>button { border-radius: 8px; font-weight: 500; }
     .badge-costo { background-color: #e8f5e9; color: #2e7d32; padding: 5px 10px; border-radius: 15px; font-weight: bold; font-size: 0.9em; }
     
-    /* DISEÑO NOTION TOGGLE (MINIMALISTA Y COMPACTO) */
+    /* DISEÑO NOTION TOGGLE (MINIMALISTA) */
+    details.notion-toggle { 
+        margin-bottom: 12px; 
+        border-bottom: 1px dashed #eee; 
+        padding-bottom: 12px;
+    }
     details.notion-toggle > summary {
         list-style: none; 
         font-size: 1.05em; 
@@ -434,7 +439,13 @@ with col_mon:
                 for cat in categorias:
                     with st.expander(f"📁 {cat}", expanded=False):
                         subset_cat = df_show[df_show['categoria'].astype(str).str.strip() == cat].sort_values(by='nombre', key=lambda col: col.str.lower())
-                        st.dataframe(subset_cat[['nombre', 'cantidad_actual', 'unidad', 'ubicacion', 'posicion_caja', 'fecha_vencimiento']].style.apply(aplicar_estilos_inv, axis=1), use_container_width=True, hide_index=True)
+                        # FORMATO %g para limpiar los .000000 infinitos en el catálogo
+                        st.dataframe(
+                            subset_cat[['nombre', 'cantidad_actual', 'unidad', 'ubicacion', 'posicion_caja', 'fecha_vencimiento']]
+                            .style.format({'cantidad_actual': lambda x: f"{x:g}" if pd.notnull(x) else ""})
+                            .apply(aplicar_estilos_inv, axis=1), 
+                            use_container_width=True, hide_index=True
+                        )
 
                 st.markdown("---")
                 with st.expander("🖨️ Generar Etiquetas Físicas (QR)"):
@@ -451,19 +462,20 @@ with col_mon:
             if not df.empty:
                 cols_edit = ['id', 'nombre', 'categoria', 'cantidad_actual', 'unidad', 'umbral_minimo', 'ubicacion', 'posicion_caja', 'fecha_vencimiento', 'precio', 'fecha_cotizacion']
                 
+                # FORMATO %g para limpiar los .000000 infinitos en el editor
                 edited_df = st.data_editor(
                     df[cols_edit].copy(), 
                     column_config={
                         "id": None, 
                         "nombre": "Nombre Reactivo",
                         "categoria": "Categoría",
-                        "cantidad_actual": st.column_config.NumberColumn("Stock", format="%f"),
+                        "cantidad_actual": st.column_config.NumberColumn("Stock", format="%g"),
                         "unidad": "Medida (ml, un, etc)",
-                        "umbral_minimo": st.column_config.NumberColumn("Alerta Mínima", format="%f"),
+                        "umbral_minimo": st.column_config.NumberColumn("Alerta Mínima", format="%g"),
                         "ubicacion": "Ubicación",
                         "posicion_caja": "Caja/Estante",
                         "fecha_vencimiento": "Vencimiento",
-                        "precio": st.column_config.NumberColumn("Precio Ref ($)", format="%f"),
+                        "precio": st.column_config.NumberColumn("Precio Ref ($)", format="%g"),
                         "fecha_cotizacion": "Fecha Cotización"
                     }, 
                     use_container_width=True, 
@@ -619,7 +631,7 @@ with col_mon:
                             st.rerun()
                         except Exception as e: st.error(f"Error: {e}")
 
-    # --- PESTAÑA: ELN TIPO NOTION (CON BOTÓN DE BORRADO INTELIGENTE) ---
+    # --- PESTAÑA: ELN TIPO NOTION (CON ROLLBACK PERFECTO 100%) ---
     with tab_bitacora:
         st.markdown("### 📔 Cuaderno de Laboratorio")
         
@@ -671,7 +683,6 @@ with col_mon:
                 res_ia = str(row.get('resultado', '')).strip()
                 link = str(row.get('link_adjunto', '')).strip()
                 
-                # Renderizado por columnas para soportar el botón de borrar al lado
                 col_text, col_del = st.columns([15, 1])
                 
                 with col_text:
@@ -695,40 +706,37 @@ with col_mon:
                 
                 with col_del:
                     st.markdown("<div style='margin-top: 5px;'></div>", unsafe_allow_html=True)
-                    # --- EL MOTOR DE ROLLBACK (CTRL+Z DEL LABORATORIO) ---
+                    # --- EL MOTOR DE ROLLBACK PERFECTO ---
                     if st.button("🗑️", key=f"del_{row['id']}", help="Eliminar nota y restaurar reactivos al inventario"):
                         res_ia_str = str(row.get('resultado', ''))
                         
-                        # Regex para encontrar: 📉 {cantidad} {unidad} de {nombre_item} <i>
-                        pattern = r"📉\s+([0-9.]+)\s*(.*?)\s+de\s+(.*?)\s+<i>"
-                        matches = re.findall(pattern, res_ia_str)
+                        # Buscamos el ID oculto que dejó la IA
+                        pattern_new = r"📉\s*([0-9.]+).*?<span style='display:none'>([^<]+)</span>"
+                        matches_new = re.findall(pattern_new, res_ia_str)
                         
-                        for m in matches:
+                        for m in matches_new:
                             cant_revertir = float(m[0])
-                            nombre_item = m[2].strip()
+                            item_id = m[1].strip()
                             
-                            # Busca el item original en BD para sumarle lo descontado
-                            res_item = supabase.table("items").select("id, cantidad_actual").eq("nombre", nombre_item).eq("lab_id", lab_id).execute()
+                            res_item = supabase.table("items").select("id, cantidad_actual, nombre").eq("id", item_id).execute()
                             if res_item.data:
-                                item_id = res_item.data[0]['id']
                                 stock_actual = float(res_item.data[0]['cantidad_actual'])
                                 stock_nuevo = stock_actual + cant_revertir
+                                nombre_real = res_item.data[0]['nombre']
                                 
                                 val_stock = int(stock_nuevo) if stock_nuevo.is_integer() else stock_nuevo
                                 val_cambio = int(cant_revertir) if cant_revertir.is_integer() else cant_revertir
                                 
-                                # Suma al stock y registra la devolución
                                 supabase.table("items").update({"cantidad_actual": val_stock}).eq("id", item_id).execute()
                                 supabase.table("movimiento").insert({
                                     "item_id": item_id, 
-                                    "nombre_item": nombre_item, 
+                                    "nombre_item": nombre_real, 
                                     "cantidad_cambio": val_cambio, 
                                     "tipo": "Reversión (Borrado de Bitácora)", 
                                     "usuario": usuario_actual, 
                                     "lab_id": lab_id
                                 }).execute()
                                 
-                        # Borra la nota final
                         supabase.table("bitacora").delete().eq("id", row['id']).execute()
                         st.rerun()
                 
@@ -784,7 +792,11 @@ with col_mon:
                         df_pred['dias_restantes'] = np.where(df_pred['tasa_diaria'] > 0, df_pred['cantidad_actual'] / df_pred['tasa_diaria'], 9999)
                         df_pred['dias_restantes_num'] = df_pred['dias_restantes']
                         df_pred['dias_restantes'] = df_pred['dias_restantes'].apply(lambda x: "🚨 Se agota hoy/mañana" if x <= 1.5 else f"Aprox {int(x)} días")
-                        df_pred['tasa_diaria'] = df_pred['tasa_diaria'].round(2)
+                        
+                        # FORMATO %g PARA QUITAR CEROS AQUI TAMBIEN
+                        df_pred['tasa_diaria'] = df_pred['tasa_diaria'].apply(lambda x: f"{x:g}" if pd.notnull(x) else "")
+                        df_pred['cantidad_actual'] = df_pred['cantidad_actual'].apply(lambda x: f"{x:g}" if pd.notnull(x) else "")
+                        df_pred['consumo_30d'] = df_pred['consumo_30d'].apply(lambda x: f"{x:g}" if pd.notnull(x) else "")
                         
                         df_mostrar = df_pred.sort_values(by='dias_restantes_num', ascending=True)[['nombre', 'cantidad_actual', 'unidad', 'consumo_30d', 'tasa_diaria', 'dias_restantes']]
                         st.dataframe(df_mostrar, use_container_width=True, hide_index=True)
@@ -856,7 +868,7 @@ with col_mon:
                 if miembros.data: st.dataframe(pd.DataFrame(miembros.data), hide_index=True, use_container_width=True)
             except Exception as e: st.error(f"❌ Error al cargar la lista: {e}")
 
-# --- PANEL IA ORQUESTADOR ---
+# --- PANEL IA ORQUESTADOR CON LECTOR NATURAL Y MARCADORES SECRETOS ---
 with col_chat:
     st.markdown("### 💬 Secretario IA")
     chat_box = st.container(height=400, border=False)
@@ -952,7 +964,7 @@ with col_chat:
                         if es_respuesta_corta:
                             data['entrada_cuaderno'] = ""
 
-                        # 1. PROTOCOLOS 
+                        # 1. PROTOCOLOS Y MARCADORES OCULTOS PARA ROLLBACK
                         p_dict = data.get('protocolo_detectado', {})
                         d_prot = data.get('descuentos_protocolo', [])
                         
@@ -981,11 +993,13 @@ with col_chat:
                                         supabase.table("items").update({"cantidad_actual": val_stock}).eq("id", id_item).execute()
                                         supabase.table("movimiento").insert({"item_id": id_item, "nombre_item": nombre_real, "cantidad_cambio": val_cambio, "tipo": f"Uso IA: {p_nombre}", "usuario": usuario_actual, "lab_id": lab_id}).execute()
                                         
-                                        lista_descuentos.append(f"&nbsp;&nbsp;&nbsp; - 📉 {cant_total} {unidad_item} de {nombre_real} <i>(Protocolo)</i>")
+                                        # MAGIA: Marcador secreto <span style='display:none'>{id_item}</span> para que el basurero nunca falle
+                                        val_mostrar = int(cant_total) if float(cant_total).is_integer() else float(cant_total)
+                                        lista_descuentos.append(f"&nbsp;&nbsp;&nbsp; - 📉 {val_mostrar} {unidad_item} de {nombre_real} <span style='display:none'>{id_item}</span> <i>(Protocolo)</i>")
                                     else:
                                         lista_descuentos.append(f"&nbsp;&nbsp;&nbsp; - ⚠️ No encontré '{nom_item}' en inventario.")
 
-                        # 2. AJUSTES EXTRA
+                        # 2. AJUSTES EXTRA Y MARCADORES OCULTOS
                         ajustes = data.get('descuentos_extra', [])
                         for aj in ajustes:
                             nom_man = aj.get('nombre_item_inventario')
@@ -1007,13 +1021,15 @@ with col_chat:
                                     supabase.table("items").update({"cantidad_actual": val_stock}).eq("id", id_ac).execute()
                                     supabase.table("movimiento").insert({"item_id": id_ac, "nombre_item": nombre_item, "cantidad_cambio": val_cambio, "tipo": "Ajuste Conversacional IA", "usuario": usuario_actual, "lab_id": lab_id}).execute()
                                     
+                                    val_mostrar = int(cant_man) if float(cant_man).is_integer() else float(cant_man)
+                                    
                                     if es_respuesta_corta:
-                                        st.session_state.messages.append({"role": "assistant", "content": f"✅ Descontado: -{cant_man} {unidad_item} de {nombre_item}"})
+                                        st.session_state.messages.append({"role": "assistant", "content": f"✅ Descontado: -{val_mostrar} {unidad_item} de {nombre_item}"})
                                         st.rerun()
                                     else:
-                                        lista_descuentos.append(f"&nbsp;&nbsp;&nbsp; - 📉 {cant_man} {unidad_item} de {nombre_item} <i>(Extra)</i>")
+                                        lista_descuentos.append(f"&nbsp;&nbsp;&nbsp; - 📉 {val_mostrar} {unidad_item} de {nombre_item} <span style='display:none'>{id_ac}</span> <i>(Extra)</i>")
 
-                        # ENSAMBLAJE FINAL DEL HTML
+                        # ENSAMBLAJE FINAL
                         if lista_descuentos:
                             log_ia_acciones.append("<b>📦 Descontado:</b>")
                             log_ia_acciones.extend(lista_descuentos)
