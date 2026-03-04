@@ -39,11 +39,6 @@ st.markdown("""
     .badge-costo { background-color: #e8f5e9; color: #2e7d32; padding: 5px 10px; border-radius: 15px; font-weight: bold; font-size: 0.9em; }
     
     /* DISEÑO NOTION TOGGLE (MINIMALISTA Y COMPACTO) */
-    details.notion-toggle { 
-        margin-bottom: 12px; 
-        border-bottom: 1px dashed #eee; 
-        padding-bottom: 12px;
-    }
     details.notion-toggle > summary {
         list-style: none; 
         font-size: 1.05em; 
@@ -337,7 +332,7 @@ except:
 try:
     res_bitacora = supabase.table("bitacora").select("*").eq("lab_id", lab_id).order("created_at", desc=True).execute()
     df_bitacora = pd.DataFrame(res_bitacora.data)
-    for col in ['contenido', 'resultado', 'link_adjunto', 'created_at']:
+    for col in ['contenido', 'resultado', 'link_adjunto', 'created_at', 'id']:
         if col not in df_bitacora.columns: df_bitacora[col] = ""
 except Exception as e: 
     try: 
@@ -415,12 +410,17 @@ with col_mon:
             
             df_criticos = df[(df['cantidad_actual'] <= df['umbral_minimo']) & (df['umbral_minimo'] > 0) | (df['cantidad_actual'] <= 0)]
             df_vencidos = df[df['vence_pronto'] == True]
+            
+            # --- NUEVO SISTEMA DE ALERTAS (CLICK PARA VER) ---
             if not df_criticos.empty or not df_vencidos.empty:
-                st.error("🚨 **Alertas de Laboratorio**")
-                if not df_criticos.empty: st.warning(f"⚠️ **{len(df_criticos)} Reactivos Críticos / Fuera de Stock**")
-                if not df_vencidos.empty: st.warning(f"📅 **{len(df_vencidos)} Reactivos Vencen en < 30 días**")
+                st.error("🚨 **Alertas del Laboratorio**")
+                if not df_criticos.empty: 
+                    with st.expander(f"⚠️ **{len(df_criticos)} Reactivos Críticos / Fuera de Stock** (Haz clic para ver la lista)"):
+                        st.dataframe(df_criticos[['nombre', 'cantidad_actual', 'umbral_minimo', 'ubicacion', 'unidad']], hide_index=True, use_container_width=True)
+                if not df_vencidos.empty: 
+                    with st.expander(f"📅 **{len(df_vencidos)} Reactivos Vencen en < 30 días** (Haz clic para ver la lista)"):
+                        st.dataframe(df_vencidos[['nombre', 'fecha_vencimiento', 'cantidad_actual', 'ubicacion']], hide_index=True, use_container_width=True)
         
-        # SISTEMA DE TABS DENTRO DE INVENTARIO
         subtab_cat, subtab_edit = st.tabs(["🗂️ Catálogo Rápido", "✍️ Gestionar Inventario (Edición)"])
         
         with subtab_cat:
@@ -476,7 +476,6 @@ with col_mon:
                         if 'id' in d and str(d['id']).strip() and d['id'] is not None: 
                             d['lab_id'] = lab_id 
                             
-                            # FILTRO ESCUDO PARA POSTGRESQL FLOAT
                             for num_col in ['cantidad_actual', 'umbral_minimo', 'precio']:
                                 if num_col in d:
                                     try: d[num_col] = float(d[num_col]) if d[num_col] not in [None, "", "nan", "None"] else 0.0
@@ -620,7 +619,7 @@ with col_mon:
                             st.rerun()
                         except Exception as e: st.error(f"Error: {e}")
 
-    # --- PESTAÑA: ELN TIPO NOTION (MINIMALISTA CON HORA EXACTA) ---
+    # --- PESTAÑA: ELN TIPO NOTION (CON BOTÓN DE BORRADO INTELIGENTE) ---
     with tab_bitacora:
         st.markdown("### 📔 Cuaderno de Laboratorio")
         
@@ -650,15 +649,14 @@ with col_mon:
             st.info("El cuaderno está vacío. ¡Escribe o háblale a la IA!")
         else:
             df_b_show = df_bitacora if filtro_usuario == "Todos" else df_bitacora[df_bitacora['usuario'] == filtro_usuario]
-            
-            html_cuaderno = "<div style='font-family: \"Inter\", sans-serif; max-width: 850px;'>"
             chile_tz = pytz.timezone('America/Santiago')
+            
+            st.markdown("<div style='font-family: \"Inter\", sans-serif; max-width: 850px;'>", unsafe_allow_html=True)
             
             for _, row in df_b_show.iterrows():
                 fecha_str = row.get('fecha', '')
                 hora_str = ""
                 
-                # ZONA HORARIA Y HORA EXACTA
                 if 'created_at' in row and pd.notna(row['created_at']) and str(row['created_at']).strip():
                     try:
                         dt_obj = pd.to_datetime(row['created_at'])
@@ -673,26 +671,69 @@ with col_mon:
                 res_ia = str(row.get('resultado', '')).strip()
                 link = str(row.get('link_adjunto', '')).strip()
                 
-                # ESTILO NOTION TOGGLE
-                html_cuaderno += f"""
-                <details class='notion-toggle'>
-                    <summary>
-                        <div style="padding-top: 2px;">{contenido_esc}</div>
-                    </summary>
-                    <div class='cuaderno-meta-box'>
-                        <div style='margin-bottom: 8px; color: #555; font-size: 0.95em;'>🕒 {fecha_str} {hora_str} &nbsp;|&nbsp; 👤 <b>{row['usuario']}</b></div>
-                """
+                # Renderizado por columnas para soportar el botón de borrar al lado
+                col_text, col_del = st.columns([15, 1])
                 
-                if res_ia and res_ia != "None":
-                    html_cuaderno += f"<div>{res_ia}</div>"
-                
-                if link.startswith('http'):
-                    html_cuaderno += f"<div style='margin-top:8px;'>📎 <a href='{link}' target='_blank'>Ver Evidencia Adjunta</a></div>"
+                with col_text:
+                    html_cuaderno = f"""
+                    <details class='notion-toggle' style='margin-bottom: 0; border-bottom: none; padding-bottom: 0;'>
+                        <summary>
+                            <div style="padding-top: 2px;">{contenido_esc}</div>
+                        </summary>
+                        <div class='cuaderno-meta-box'>
+                            <div style='margin-bottom: 8px; color: #555; font-size: 0.95em;'>🕒 {fecha_str} {hora_str} &nbsp;|&nbsp; 👤 <b>{row['usuario']}</b></div>
+                    """
                     
-                html_cuaderno += "</div></details>"
+                    if res_ia and res_ia != "None":
+                        html_cuaderno += f"<div>{res_ia}</div>"
+                    
+                    if link.startswith('http'):
+                        html_cuaderno += f"<div style='margin-top:8px;'>📎 <a href='{link}' target='_blank'>Ver Evidencia Adjunta</a></div>"
+                        
+                    html_cuaderno += "</div></details>"
+                    st.markdown(html_cuaderno, unsafe_allow_html=True)
                 
-            html_cuaderno += "</div>"
-            st.markdown(html_cuaderno, unsafe_allow_html=True)
+                with col_del:
+                    st.markdown("<div style='margin-top: 5px;'></div>", unsafe_allow_html=True)
+                    # --- EL MOTOR DE ROLLBACK (CTRL+Z DEL LABORATORIO) ---
+                    if st.button("🗑️", key=f"del_{row['id']}", help="Eliminar nota y restaurar reactivos al inventario"):
+                        res_ia_str = str(row.get('resultado', ''))
+                        
+                        # Regex para encontrar: 📉 {cantidad} {unidad} de {nombre_item} <i>
+                        pattern = r"📉\s+([0-9.]+)\s*(.*?)\s+de\s+(.*?)\s+<i>"
+                        matches = re.findall(pattern, res_ia_str)
+                        
+                        for m in matches:
+                            cant_revertir = float(m[0])
+                            nombre_item = m[2].strip()
+                            
+                            # Busca el item original en BD para sumarle lo descontado
+                            res_item = supabase.table("items").select("id, cantidad_actual").eq("nombre", nombre_item).eq("lab_id", lab_id).execute()
+                            if res_item.data:
+                                item_id = res_item.data[0]['id']
+                                stock_actual = float(res_item.data[0]['cantidad_actual'])
+                                stock_nuevo = stock_actual + cant_revertir
+                                
+                                val_stock = int(stock_nuevo) if stock_nuevo.is_integer() else stock_nuevo
+                                val_cambio = int(cant_revertir) if cant_revertir.is_integer() else cant_revertir
+                                
+                                # Suma al stock y registra la devolución
+                                supabase.table("items").update({"cantidad_actual": val_stock}).eq("id", item_id).execute()
+                                supabase.table("movimiento").insert({
+                                    "item_id": item_id, 
+                                    "nombre_item": nombre_item, 
+                                    "cantidad_cambio": val_cambio, 
+                                    "tipo": "Reversión (Borrado de Bitácora)", 
+                                    "usuario": usuario_actual, 
+                                    "lab_id": lab_id
+                                }).execute()
+                                
+                        # Borra la nota final
+                        supabase.table("bitacora").delete().eq("id", row['id']).execute()
+                        st.rerun()
+                
+                st.markdown("<hr style='margin: 10px 0; border: 0; border-top: 1px dashed #eee;'>", unsafe_allow_html=True)
+            st.markdown("</div>", unsafe_allow_html=True)
 
     with tab_prot:
         tab_lista, tab_crear = st.tabs(["📋 Mis Protocolos (Editar)", "📝 Nuevo Protocolo"])
@@ -815,7 +856,7 @@ with col_mon:
                 if miembros.data: st.dataframe(pd.DataFrame(miembros.data), hide_index=True, use_container_width=True)
             except Exception as e: st.error(f"❌ Error al cargar la lista: {e}")
 
-# --- PANEL IA ORQUESTADOR (Lector Natural y Copiloto Limpio) ---
+# --- PANEL IA ORQUESTADOR ---
 with col_chat:
     st.markdown("### 💬 Secretario IA")
     chat_box = st.container(height=400, border=False)
@@ -867,136 +908,135 @@ with col_chat:
     if prompt:
         st.session_state.messages.append({"role": "user", "content": prompt})
         with chat_box: st.chat_message("user").markdown(prompt)
-        with chat_box:
-            with st.chat_message("assistant"):
-                with st.spinner("Leyendo receta e inventario..."):
-                    try:
-                        d_ia = df[['id', 'nombre', 'cantidad_actual']].to_json(orient='records') if not df.empty else "[]"
-                        d_prot = df_prot[['nombre', 'materiales_base']].to_json(orient='records') if not df_prot.empty else "[]"
-                        hoy_str = date.today().isoformat()
-                        
-                        historial_str = "\n".join([f"{'Usuario' if m['role']=='user' else 'IA'}: {m['content']}" for m in st.session_state.messages[-8:-1]])
-                        
-                        prompt_sistema = f"""
-                        Eres la Inteligencia Artificial del LIMS Stck. Hoy es {hoy_str}.
-                        Inventario: {d_ia}
-                        Protocolos: {d_prot}
-                        Historial: {historial_str}
+        with st.chat_message("assistant"):
+            with st.spinner("Leyendo receta e inventario..."):
+                try:
+                    d_ia = df[['id', 'nombre', 'cantidad_actual']].to_json(orient='records') if not df.empty else "[]"
+                    d_prot = df_prot[['nombre', 'materiales_base']].to_json(orient='records') if not df_prot.empty else "[]"
+                    hoy_str = date.today().isoformat()
+                    
+                    historial_str = "\n".join([f"{'Usuario' if m['role']=='user' else 'IA'}: {m['content']}" for m in st.session_state.messages[-8:-1]])
+                    
+                    prompt_sistema = f"""
+                    Eres la Inteligencia Artificial del LIMS Stck. Hoy es {hoy_str}.
+                    Inventario: {d_ia}
+                    Protocolos: {d_prot}
+                    Historial: {historial_str}
 
-                        El usuario dice: "{prompt}"
+                    El usuario dice: "{prompt}"
 
-                        Devuelve ÚNICAMENTE un JSON con esta estructura exacta:
-                        {{
-                            "respuesta_chat": "Si es un pasaje celular, confirma y pregunta SOLO: '¿Usaste alguna placa o material extra (sí/no)?'. Si ya responde a esa pregunta (ej 'no', 'usé 1'), responde 'Entendido y descontado.'",
-                            "entrada_cuaderno": "Copia EXACTAMENTE sus palabras (ej: 'Hoy hice pasaje...'). Si es una respuesta a tu pregunta (ej 'sí', 'no', '1 placa'), DEBE QUEDAR VACÍO.",
-                            "protocolo_detectado": {{"nombre": "Nombre EXACTO del protocolo", "muestras": 1}},
-                            "descuentos_protocolo": [{{"nombre_item_inventario": "Nombre exacto en inventario", "cantidad_total_a_restar": 0.0}}],
-                            "descuentos_extra": [{{"nombre_item_inventario": "Nombre exacto en inventario", "cantidad_a_restar": 0.0}}]
-                        }}
+                    Devuelve ÚNICAMENTE un JSON con esta estructura exacta:
+                    {{
+                        "respuesta_chat": "Si es un pasaje celular, confirma y pregunta SOLO: '¿Usaste alguna placa o frasco nuevo (sí/no)?'. Si ya responde a esa pregunta (ej 'no', 'usé 1'), responde 'Entendido y descontado.'",
+                        "entrada_cuaderno": "Copia EXACTAMENTE sus palabras (ej: 'Hoy hice pasaje...'). Si es una respuesta a tu pregunta (ej 'sí', 'no', '1 placa'), DEBE QUEDAR VACÍO.",
+                        "protocolo_detectado": {{"nombre": "Nombre EXACTO del protocolo", "muestras": 1}},
+                        "descuentos_protocolo": [{{"nombre_item_inventario": "Nombre exacto en inventario", "cantidad_total_a_restar": 0.0}}],
+                        "descuentos_extra": [{{"nombre_item_inventario": "Nombre exacto en inventario", "cantidad_a_restar": 0.0}}]
+                    }}
 
-                        REGLAS INFLEXIBLES:
-                        1. LA LECTURA MATEMÁTICA: Si detectas un protocolo, LEE su campo 'materiales_base' (texto natural). Busca EL PRIMER NÚMERO de cada línea. Multiplícalo por las muestras. Pon los totales en 'descuentos_protocolo'. Ej: Si la receta dice 'Usa 2 ml de DMEM' y el usuario hizo 3 pasajes, tú pones cantidad=6.0 y el nombre de inventario del DMEM.
-                        2. ANTI-BUCLES: Si el usuario responde 'no' o 'nada', "entrada_cuaderno" DEBE SER VACÍO, no ejecutes protocolos.
-                        """
+                    REGLAS INFLEXIBLES:
+                    1. EL CEREBRO MATEMÁTICO: Si detectas un protocolo, LEE su campo 'materiales_base' (texto natural). Busca el reactivo en la lista de Inventario. Multiplica la cantidad por las muestras y ponlo en 'descuentos_protocolo'.
+                    2. ANTI-BUCLES: Si el usuario responde 'no' o 'nada', "entrada_cuaderno" DEBE SER VACÍO, no ejecutes protocolos.
+                    """
+                    
+                    res_ai = model.generate_content(prompt_sistema).text
+                    match = re.search(r'\{.*\}', res_ai, re.DOTALL)
+                    
+                    if match:
+                        data = json.loads(match.group())
+                        log_ia_acciones = []
+                        lista_descuentos = []
                         
-                        res_ai = model.generate_content(prompt_sistema).text
-                        match = re.search(r'\{.*\}', res_ai, re.DOTALL)
+                        texto_minuscula = prompt.lower().strip()
+                        es_respuesta_corta = len(texto_minuscula.split()) <= 5 and any(w in texto_minuscula for w in ['no', 'nada', 'ninguno', 'ninguna', 'listo', 'ya', 'si', 'sí', 'ok'])
+                        if es_respuesta_corta:
+                            data['entrada_cuaderno'] = ""
+
+                        # 1. PROTOCOLOS 
+                        p_dict = data.get('protocolo_detectado', {})
+                        d_prot = data.get('descuentos_protocolo', [])
                         
-                        if match:
-                            data = json.loads(match.group())
-                            log_ia_acciones = []
-                            lista_descuentos = []
+                        if p_dict and p_dict.get('nombre') and not es_respuesta_corta:
+                            p_nombre = p_dict.get('nombre')
+                            p_muestras = p_dict.get('muestras', 1)
+                            log_ia_acciones.append(f"🔗 <b>Protocolo:</b> {p_nombre} (x{p_muestras})")
                             
-                            texto_minuscula = prompt.lower().strip()
-                            es_respuesta_corta = len(texto_minuscula.split()) <= 5 and any(w in texto_minuscula for w in ['no', 'nada', 'ninguno', 'ninguna', 'listo', 'ya', 'si', 'sí', 'ok'])
-                            if es_respuesta_corta:
-                                data['entrada_cuaderno'] = ""
-
-                            # 1. PROTOCOLOS (Calculadora IA)
-                            p_dict = data.get('protocolo_detectado', {})
-                            d_prot = data.get('descuentos_protocolo', [])
-                            
-                            if p_dict and p_dict.get('nombre') and not es_respuesta_corta:
-                                p_nombre = p_dict.get('nombre')
-                                p_muestras = p_dict.get('muestras', 1)
-                                log_ia_acciones.append(f"🔗 <b>Protocolo:</b> {p_nombre} (x{p_muestras})")
+                            for desc in d_prot:
+                                nom_item = desc.get('nombre_item_inventario')
+                                cant_total = desc.get('cantidad_total_a_restar', 0)
                                 
-                                for desc in d_prot:
-                                    nom_item = desc.get('nombre_item_inventario')
-                                    cant_total = desc.get('cantidad_total_a_restar', 0)
-                                    
-                                    if nom_item and cant_total > 0:
-                                        item_db = df[df['nombre'].str.contains(re.escape(nom_item), case=False, na=False, regex=True)]
-                                        if not item_db.empty:
-                                            id_item = str(item_db.iloc[0]['id'])
-                                            stock_actual = float(item_db.iloc[0]['cantidad_actual'])
-                                            stock_nuevo = stock_actual - float(cant_total)
-                                            
-                                            val_stock = int(stock_nuevo) if float(stock_nuevo).is_integer() else float(stock_nuevo)
-                                            val_cambio = int(-cant_total) if float(-cant_total).is_integer() else float(-cant_total)
-                                            
-                                            unidad_item = item_db.iloc[0]['unidad']
-                                            nombre_real = item_db.iloc[0]['nombre']
-                                            
-                                            supabase.table("items").update({"cantidad_actual": val_stock}).eq("id", id_item).execute()
-                                            supabase.table("movimiento").insert({"item_id": id_item, "nombre_item": nombre_real, "cantidad_cambio": val_cambio, "tipo": f"Uso IA: {p_nombre}", "usuario": usuario_actual, "lab_id": lab_id}).execute()
-                                            
-                                            lista_descuentos.append(f"&nbsp;&nbsp;&nbsp; - 📉 {cant_total} {unidad_item} de {nombre_real} <i>(Protocolo)</i>")
-                                        else:
-                                            lista_descuentos.append(f"&nbsp;&nbsp;&nbsp; - ⚠️ No encontré '{nom_item}' en inventario.")
-
-                            # 2. AJUSTES EXTRA (La respuesta de las placas)
-                            ajustes = data.get('descuentos_extra', [])
-                            for aj in ajustes:
-                                nom_man = aj.get('nombre_item_inventario')
-                                cant_man = aj.get('cantidad_a_restar', 0)
-                                
-                                if nom_man and float(cant_man) > 0:
-                                    item_db = df[df['nombre'].str.contains(re.escape(nom_man), case=False, na=False, regex=True)]
+                                if nom_item and cant_total > 0:
+                                    item_db = df[df['nombre'].str.contains(re.escape(nom_item), case=False, na=False, regex=True)]
                                     if not item_db.empty:
-                                        id_ac = str(item_db.iloc[0]['id'])
+                                        id_item = str(item_db.iloc[0]['id'])
                                         stock_actual = float(item_db.iloc[0]['cantidad_actual'])
-                                        stock_nuevo = stock_actual - float(cant_man)
+                                        stock_nuevo = stock_actual - float(cant_total)
                                         
                                         val_stock = int(stock_nuevo) if float(stock_nuevo).is_integer() else float(stock_nuevo)
-                                        val_cambio = int(-cant_man) if float(-cant_man).is_integer() else float(-cant_man)
+                                        val_cambio = int(-cant_total) if float(-cant_total).is_integer() else float(-cant_total)
                                         
-                                        nombre_item = item_db.iloc[0]['nombre']
                                         unidad_item = item_db.iloc[0]['unidad']
+                                        nombre_real = item_db.iloc[0]['nombre']
                                         
-                                        supabase.table("items").update({"cantidad_actual": val_stock}).eq("id", id_ac).execute()
-                                        supabase.table("movimiento").insert({"item_id": id_ac, "nombre_item": nombre_item, "cantidad_cambio": val_cambio, "tipo": "Ajuste Conversacional IA", "usuario": usuario_actual, "lab_id": lab_id}).execute()
+                                        supabase.table("items").update({"cantidad_actual": val_stock}).eq("id", id_item).execute()
+                                        supabase.table("movimiento").insert({"item_id": id_item, "nombre_item": nombre_real, "cantidad_cambio": val_cambio, "tipo": f"Uso IA: {p_nombre}", "usuario": usuario_actual, "lab_id": lab_id}).execute()
                                         
-                                        if es_respuesta_corta:
-                                            # Modificar silenciosamente la caja de chat actual
-                                            data['respuesta_chat'] = f"✅ Descontado: -{cant_man} {unidad_item} de {nombre_item}"
-                                        else:
-                                            lista_descuentos.append(f"&nbsp;&nbsp;&nbsp; - 📉 {cant_man} {unidad_item} de {nombre_item} <i>(Extra)</i>")
+                                        lista_descuentos.append(f"&nbsp;&nbsp;&nbsp; - 📉 {cant_total} {unidad_item} de {nombre_real} <i>(Protocolo)</i>")
+                                    else:
+                                        lista_descuentos.append(f"&nbsp;&nbsp;&nbsp; - ⚠️ No encontré '{nom_item}' en inventario.")
 
-                            # ENSAMBLAJE FINAL DEL HTML
-                            if lista_descuentos:
-                                log_ia_acciones.append("<b>📦 Descontado:</b>")
-                                log_ia_acciones.extend(lista_descuentos)
+                        # 2. AJUSTES EXTRA
+                        ajustes = data.get('descuentos_extra', [])
+                        for aj in ajustes:
+                            nom_man = aj.get('nombre_item_inventario')
+                            cant_man = aj.get('cantidad_a_restar', 0)
+                            
+                            if nom_man and float(cant_man) > 0:
+                                item_db = df[df['nombre'].str.contains(re.escape(nom_man), case=False, na=False, regex=True)]
+                                if not item_db.empty:
+                                    id_ac = str(item_db.iloc[0]['id'])
+                                    stock_actual = float(item_db.iloc[0]['cantidad_actual'])
+                                    stock_nuevo = stock_actual - float(cant_man)
+                                    
+                                    val_stock = int(stock_nuevo) if float(stock_nuevo).is_integer() else float(stock_nuevo)
+                                    val_cambio = int(-cant_man) if float(-cant_man).is_integer() else float(-cant_man)
+                                    
+                                    nombre_item = item_db.iloc[0]['nombre']
+                                    unidad_item = item_db.iloc[0]['unidad']
+                                    
+                                    supabase.table("items").update({"cantidad_actual": val_stock}).eq("id", id_ac).execute()
+                                    supabase.table("movimiento").insert({"item_id": id_ac, "nombre_item": nombre_item, "cantidad_cambio": val_cambio, "tipo": "Ajuste Conversacional IA", "usuario": usuario_actual, "lab_id": lab_id}).execute()
+                                    
+                                    if es_respuesta_corta:
+                                        st.session_state.messages.append({"role": "assistant", "content": f"✅ Descontado: -{cant_man} {unidad_item} de {nombre_item}"})
+                                        st.rerun()
+                                    else:
+                                        lista_descuentos.append(f"&nbsp;&nbsp;&nbsp; - 📉 {cant_man} {unidad_item} de {nombre_item} <i>(Extra)</i>")
 
-                            metadatos_ia = "<br>".join(log_ia_acciones)
+                        # ENSAMBLAJE FINAL DEL HTML
+                        if lista_descuentos:
+                            log_ia_acciones.append("<b>📦 Descontado:</b>")
+                            log_ia_acciones.extend(lista_descuentos)
 
-                            # 3. GUARDAR EN BITÁCORA (Bloqueo de Basura)
-                            texto_cuaderno = data.get('entrada_cuaderno', "").strip()
-                            if texto_cuaderno and not es_respuesta_corta:
-                                supabase.table("bitacora").insert({
-                                    "lab_id": lab_id, 
-                                    "usuario": usuario_actual, 
-                                    "fecha": date.today().isoformat(),
-                                    "contenido": texto_cuaderno,
-                                    "resultado": metadatos_ia 
-                                }).execute()
+                        metadatos_ia = "<br>".join(log_ia_acciones)
 
-                            # 4. CHAT
-                            msg_final = data.get('respuesta_chat', 'Entendido.')
-                            st.markdown(msg_final)
-                            st.session_state.messages.append({"role": "assistant", "content": msg_final})
-                            st.rerun()
+                        # 3. GUARDAR EN BITÁCORA
+                        texto_cuaderno = data.get('entrada_cuaderno', "").strip()
+                        if texto_cuaderno and not es_respuesta_corta:
+                            supabase.table("bitacora").insert({
+                                "lab_id": lab_id, 
+                                "usuario": usuario_actual, 
+                                "fecha": date.today().isoformat(),
+                                "contenido": texto_cuaderno,
+                                "resultado": metadatos_ia 
+                            }).execute()
 
-                        else:
-                            st.markdown("Comando procesado.")
-                    except Exception as e: st.error(f"Error IA: {e}")
+                        # 4. CHAT
+                        msg_final = data.get('respuesta_chat', 'Entendido.')
+                        st.markdown(msg_final)
+                        st.session_state.messages.append({"role": "assistant", "content": msg_final})
+                        st.rerun()
+
+                    else:
+                        st.markdown("Comando procesado.")
+                except Exception as e: st.error(f"Error IA: {e}")
