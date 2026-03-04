@@ -35,7 +35,6 @@ st.markdown("""
     .stTabs [aria-selected="true"] { color: #ffffff !important; background-color: #1a1a1a !important; border-bottom: 2px solid #1a1a1a !important; }
     .stButton>button { border-radius: 8px; font-weight: 500; }
     .badge-costo { background-color: #e8f5e9; color: #2e7d32; padding: 5px 10px; border-radius: 15px; font-weight: bold; font-size: 0.9em; }
-    /* Estilo para la nueva bitácora tipo Notion */
     .cuaderno-texto { font-size: 1.05em; line-height: 1.6; color: #222; font-family: 'Inter', sans-serif; margin-bottom: 10px;}
     .cuaderno-meta { font-size: 0.85em; color: #777; margin-bottom: 8px; font-family: 'Courier New', Courier, monospace;}
 </style>
@@ -294,7 +293,7 @@ try:
     for col in ['contenido', 'resultado', 'link_adjunto', 'created_at']:
         if col not in df_bitacora.columns: df_bitacora[col] = ""
 except Exception as e: 
-    try: # Fallback por si usan 'fecha' en vez de 'created_at' para ordenar
+    try: 
         res_bitacora = supabase.table("bitacora").select("*").eq("lab_id", lab_id).order("fecha", desc=True).execute()
         df_bitacora = pd.DataFrame(res_bitacora.data)
     except:
@@ -405,8 +404,10 @@ with col_mon:
 
         with sub_tab_calendario:
             st.write("Vista interactiva de ocupación del laboratorio.")
+            
             if not df_reservas.empty and not df_equipos.empty:
                 df_cal = pd.merge(df_reservas, df_equipos[['id', 'nombre']], left_on='equipo_id', right_on='id', how='inner', suffixes=('', '_eq'))
+                
                 calendar_events = []
                 equipos_unicos = df_cal['nombre' if 'nombre' in df_cal.columns else 'nombre_eq'].unique()
                 colores = ["#4285F4", "#0F9D58", "#F4B400", "#DB4437", "#673AB7", "#00ACC1", "#FF7043"]
@@ -414,14 +415,40 @@ with col_mon:
                 
                 for _, row in df_cal.iterrows():
                     nom_eq = row.get('nombre', row.get('nombre_eq', 'Equipo'))
-                    inicio_iso = pd.to_datetime(row['fecha_inicio']).dt.tz_localize(None).isoformat()
-                    fin_iso = pd.to_datetime(row['fecha_fin']).dt.tz_localize(None).isoformat()
-                    calendar_events.append({"title": f"{nom_eq} ({row['usuario']})", "start": inicio_iso, "end": fin_iso, "color": color_map.get(nom_eq, "#4285F4")})
+                    
+                    # FIX DE TIEMPOS INMORTAL
+                    t_ini = pd.to_datetime(row['fecha_inicio'])
+                    if t_ini.tzinfo: t_ini = t_ini.tz_localize(None)
+                    
+                    t_fin = pd.to_datetime(row['fecha_fin'])
+                    if t_fin.tzinfo: t_fin = t_fin.tz_localize(None)
+                    
+                    calendar_events.append({
+                        "title": f"{nom_eq} ({row['usuario']})",
+                        "start": t_ini.isoformat(),
+                        "end": t_fin.isoformat(),
+                        "color": color_map.get(nom_eq, "#4285F4")
+                    })
                 
-                calendar_options = {"headerToolbar": {"left": "prev,next today", "center": "title", "right": "timeGridDay,timeGridWeek"}, "initialView": "timeGridWeek", "slotMinTime": "07:00:00", "slotMaxTime": "22:00:00", "height": 600}
-                try: calendar(events=calendar_events, options=calendar_options)
-                except NameError: st.warning("Instala 'streamlit-calendar'.")
-            else: st.info("La agenda está completamente libre.")
+                calendar_options = {
+                    "headerToolbar": {
+                        "left": "prev,next today",
+                        "center": "title",
+                        "right": "timeGridDay,timeGridWeek,dayGridMonth",
+                    },
+                    "initialView": "timeGridWeek",
+                    "slotMinTime": "07:00:00",
+                    "slotMaxTime": "22:00:00",
+                    "allDaySlot": False,
+                    "height": 600,
+                }
+                
+                try:
+                    calendar(events=calendar_events, options=calendar_options)
+                except NameError:
+                    st.warning("Por favor, asegúrate de haber instalado 'streamlit-calendar' en tus requerimientos.")
+            else:
+                st.info("La agenda del laboratorio está completamente libre.")
 
         with sub_tab_reserva:
             c_eq_res, c_eq_agenda = st.columns([1, 1.2])
@@ -431,6 +458,7 @@ with col_mon:
                     eq_seleccionado = st.selectbox("Seleccionar Equipo:", df_equipos['nombre'].tolist())
                     datos_eq = df_equipos[df_equipos['nombre'] == eq_seleccionado].iloc[0]
                     st.caption(f"👀 Visibilidad: **{datos_eq.get('visibilidad', 'Privado')}**")
+                    if str(datos_eq.get('requisitos', '')).strip(): st.warning(f"⚠️ **Requisitos:** {datos_eq['requisitos']}")
                     
                     fecha_res = st.date_input("Fecha de reserva:")
                     col_h1, col_h2 = st.columns(2)
@@ -442,23 +470,39 @@ with col_mon:
                         dt_fin = datetime.combine(fecha_res, t_fin)
                         if dt_ini >= dt_fin: st.error("La hora de inicio debe ser anterior.")
                         else:
-                            try:
-                                supabase.table("reservas").insert({"equipo_id": str(datos_eq['id']), "usuario": usuario_actual, "fecha_inicio": dt_ini.isoformat(), "fecha_fin": dt_fin.isoformat(), "lab_id": lab_id}).execute()
-                                st.success("✅ Reserva guardada.")
-                                st.rerun()
-                            except Exception as e: st.error(f"Error: {e}")
+                            solapamiento = False
+                            if not df_reservas.empty:
+                                df_r_eq = df_reservas[df_reservas['equipo_id'] == str(datos_eq['id'])].copy()
+                                if not df_r_eq.empty:
+                                    # FIX DE TIEMPOS PARA VALIDAR TRASLAPES
+                                    df_r_eq['fecha_inicio'] = pd.to_datetime(df_r_eq['fecha_inicio']).apply(lambda x: x.tz_localize(None) if x.tzinfo else x)
+                                    df_r_eq['fecha_fin'] = pd.to_datetime(df_r_eq['fecha_fin']).apply(lambda x: x.tz_localize(None) if x.tzinfo else x)
+                                    for _, r in df_r_eq.iterrows():
+                                        if dt_ini < r['fecha_fin'] and dt_fin > r['fecha_inicio']: solapamiento = True; break
+                            if solapamiento: st.error("❌ El horario choca con otra reserva.")
+                            else:
+                                try:
+                                    supabase.table("reservas").insert({"equipo_id": str(datos_eq['id']), "usuario": usuario_actual, "fecha_inicio": dt_ini.isoformat(), "fecha_fin": dt_fin.isoformat(), "lab_id": lab_id}).execute()
+                                    admin_email = obtener_admin_email(lab_id)
+                                    enviar_correo_reserva(datos_eq['nombre'], fecha_res.strftime('%d/%m/%Y'), t_ini.strftime('%H:%M'), t_fin.strftime('%H:%M'), usuario_actual, admin_email, st.session_state.usuario_autenticado)
+                                    st.success("✅ Reserva guardada.")
+                                    st.rerun()
+                                except Exception as e: st.error(f"Error al reservar: {e}")
             with c_eq_agenda:
                 st.write("**Tus Próximas Reservas:**")
                 if not df_reservas.empty and not df_equipos.empty:
                     df_r = pd.merge(df_reservas, df_equipos[['id', 'nombre']], left_on='equipo_id', right_on='id', how='inner', suffixes=('', '_eq'))
-                    df_r['fecha_inicio'] = pd.to_datetime(df_r['fecha_inicio']).dt.tz_localize(None)
-                    df_r['fecha_fin'] = pd.to_datetime(df_r['fecha_fin']).dt.tz_localize(None)
+                    
+                    # FIX DE TIEMPOS PARA LISTA FUTURA
+                    df_r['fecha_inicio'] = pd.to_datetime(df_r['fecha_inicio']).apply(lambda x: x.tz_localize(None) if x.tzinfo else x)
+                    df_r['fecha_fin'] = pd.to_datetime(df_r['fecha_fin']).apply(lambda x: x.tz_localize(None) if x.tzinfo else x)
+                    
                     df_futuras = df_r[(df_r['fecha_fin'] >= pd.to_datetime('today').tz_localize(None)) & (df_r['usuario'] == usuario_actual)].sort_values(by='fecha_inicio')
                     if df_futuras.empty: st.info("No tienes reservas activas.")
                     else:
                         for _, row in df_futuras.iterrows():
                             with st.container(border=True):
-                                nom_eq = row.get('nombre', row.get('nombre_eq', 'Equipo'))
+                                nom_eq = row.get('nombre', row.get('nombre_eq', 'Equipo Reservado'))
                                 st.markdown(f"**{nom_eq}**")
                                 st.write(f"🕒 {row['fecha_inicio'].strftime('%d/%b %H:%M')} - {row['fecha_fin'].strftime('%H:%M')}")
                                 gcal_link = generar_link_gcal(titulo=f"Uso Lab: {nom_eq}", inicio=row['fecha_inicio'], fin=row['fecha_fin'], descripcion=f"Reserva en Stck.")
@@ -467,6 +511,7 @@ with col_mon:
 
         if rol_actual == "admin" and sub_tab_mis_equipos:
             with sub_tab_mis_equipos:
+                st.write("Gestiona la información de tus equipos.")
                 if not df_equipos.empty:
                     cols_ed_eq = ['nombre', 'descripcion', 'visibilidad', 'requisitos', 'id']
                     edited_eq_df = st.data_editor(df_equipos[cols_ed_eq].copy(), column_config={"id": st.column_config.TextColumn("ID", disabled=True), "visibilidad": st.column_config.SelectboxColumn("Visibilidad", options=["Solo mi Laboratorio", "Mi Instituto", "Toda la Sede", "Público General"])}, use_container_width=True, hide_index=True)
@@ -491,7 +536,6 @@ with col_mon:
                                 st.rerun()
                             except Exception as e: st.error(f"Error: {e}")
 
-    # --- PESTAÑA: BITÁCORA TIPO NOTION (ELN REAL) ---
     with tab_bitacora:
         st.markdown("### 📔 Cuaderno de Laboratorio (ELN)")
         
@@ -511,36 +555,29 @@ with col_mon:
                     
         st.markdown("---")
         
-        # RENDERIZADO VISUAL TIPO CUADERNO
         if df_bitacora.empty: st.info("El cuaderno está vacío.")
         else:
             df_b_show = df_bitacora if filtro_usuario == "Todos" else df_bitacora[df_bitacora['usuario'] == filtro_usuario]
             for _, row in df_b_show.iterrows():
-                
-                # Intentamos extraer la hora exacta si existe en 'created_at'
                 fecha_str = row.get('fecha', '')
                 hora_str = ""
                 if 'created_at' in row and pd.notna(row['created_at']) and str(row['created_at']).strip():
                     try:
                         dt_obj = pd.to_datetime(row['created_at'])
+                        if dt_obj.tzinfo: dt_obj = dt_obj.tz_convert(None) # Estabiliza la hora
                         hora_str = dt_obj.strftime('%H:%M')
                     except: pass
                 
                 meta_texto = f"📅 {fecha_str} " + (f"a las 🕒 {hora_str} " if hora_str else "") + f"| 👤 <b>{row['usuario']}</b>"
                 
                 with st.container(border=True):
-                    # Cabecera de la hoja
                     st.markdown(f"<div class='cuaderno-meta'>{meta_texto}</div>", unsafe_allow_html=True)
-                    
-                    # Texto principal del usuario (Lo que importa leer)
                     st.markdown(f"<div class='cuaderno-texto'>{row.get('contenido', '')}</div>", unsafe_allow_html=True)
                     
-                    # Archivos adjuntos
                     link = str(row.get('link_adjunto', '')).strip()
                     if link.startswith('http'):
                         st.markdown(f"📎 [**Ver Evidencia Adjunta**]({link})")
                     
-                    # Acciones invisibles de la IA (Metadatos escondidos tipo Toggle de Notion)
                     res_ia = str(row.get('resultado', '')).strip()
                     if res_ia:
                         with st.expander("🤖 Detalles Técnicos & Descuentos de Inventario (IA)"):
@@ -783,8 +820,11 @@ with col_chat:
                                 solapamiento = False
                                 if not df_reservas.empty:
                                     df_r_eq = df_reservas[df_reservas['equipo_id'] == str(eq_id)].copy()
-                                    df_r_eq['fecha_inicio'] = pd.to_datetime(df_r_eq['fecha_inicio']).dt.tz_localize(None)
-                                    df_r_eq['fecha_fin'] = pd.to_datetime(df_r_eq['fecha_fin']).dt.tz_localize(None)
+                                    
+                                    # FIX DE SOLAPAMIENTO EN IA
+                                    df_r_eq['fecha_inicio'] = pd.to_datetime(df_r_eq['fecha_inicio']).apply(lambda x: x.tz_localize(None) if x.tzinfo else x)
+                                    df_r_eq['fecha_fin'] = pd.to_datetime(df_r_eq['fecha_fin']).apply(lambda x: x.tz_localize(None) if x.tzinfo else x)
+                                    
                                     for _, r in df_r_eq.iterrows():
                                         if dt_ini < r['fecha_fin'] and dt_fin > r['fecha_inicio']: solapamiento = True; break
                                 
