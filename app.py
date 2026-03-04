@@ -51,6 +51,13 @@ except Exception as e:
 def cargar_modelo_rapido(): return genai.GenerativeModel('gemini-2.5-flash')
 model = cargar_modelo_rapido()
 
+# --- GESTOR DE RUTINAS DIARIAS ---
+if "rutinas_diarias" not in st.session_state:
+    st.session_state.rutinas_diarias = {"fecha": str(date.today()), "mostradas": []}
+# Si cambió de día, limpiamos la memoria de rutinas
+if st.session_state.rutinas_diarias["fecha"] != str(date.today()):
+    st.session_state.rutinas_diarias = {"fecha": str(date.today()), "mostradas": []}
+
 # --- 2. SISTEMA DE AUTENTICACIÓN ---
 if "usuario_autenticado" not in st.session_state:
     st.session_state.usuario_autenticado = None
@@ -234,6 +241,25 @@ def enviar_correo_reserva(equipo_nombre, fecha_str, hora_ini, hora_fin, usuario_
         return True
     except: return False
 
+def enviar_correo_compras(item_nombre, precio, operador):
+    try:
+        sender = st.secrets["EMAIL_SENDER"]
+        password = st.secrets["EMAIL_PASSWORD"]
+        receiver = st.secrets.get("EMAIL_RECEIVER", sender)
+        msg = MIMEMultipart()
+        msg['From'] = sender
+        msg['To'] = receiver
+        msg['Subject'] = f"🛒 SOLICITUD DE COMPRA: {item_nombre} - Stck"
+        body = f"<html><body><h2>Solicitud de Cotización / Compra</h2><p>Se ha solicitado reabastecer el siguiente ítem:</p><ul><li><b>Reactivo:</b> {item_nombre}</li><li><b>Último precio referencial:</b> ${precio}</li><li><b>Solicitado por:</b> {operador}</li></ul></body></html>"
+        msg.attach(MIMEText(body, 'html'))
+        server = smtplib.SMTP('smtp.gmail.com', 587)
+        server.starttls()
+        server.login(sender, password)
+        server.send_message(msg)
+        server.quit()
+        return True
+    except: return False
+
 def generar_link_gcal(titulo, inicio, fin, descripcion=""):
     fmt = "%Y%m%dT%H%M%SZ"
     inicio_utc = inicio + timedelta(hours=3) 
@@ -376,7 +402,6 @@ with col_mon:
 
     with tab_equipos:
         st.markdown("### 🗓️ Gestión y Booking de Equipos")
-        
         opciones_eq = ["📅 Agendar", "📊 Calendario"]
         if rol_actual == "admin": opciones_eq.append("⚙️ Mis Equipos")
         modo_eq = st.radio("Selecciona vista:", opciones_eq, horizontal=True, label_visibility="collapsed")
@@ -385,7 +410,6 @@ with col_mon:
         if modo_eq == "📊 Calendario":
             if not df_reservas.empty and not df_equipos.empty:
                 df_cal = pd.merge(df_reservas, df_equipos[['id', 'nombre']], left_on='equipo_id', right_on='id', how='inner', suffixes=('', '_eq'))
-                
                 calendar_events = []
                 equipos_unicos = df_cal['nombre' if 'nombre' in df_cal.columns else 'nombre_eq'].unique()
                 colores = ["#4285F4", "#0F9D58", "#F4B400", "#DB4437", "#673AB7", "#00ACC1", "#FF7043"]
@@ -397,33 +421,12 @@ with col_mon:
                     if t_ini.tzinfo: t_ini = t_ini.tz_localize(None)
                     t_fin = pd.to_datetime(row['fecha_fin'])
                     if t_fin.tzinfo: t_fin = t_fin.tz_localize(None)
-                    
-                    calendar_events.append({
-                        "title": f"{nom_eq} ({row['usuario']})",
-                        "start": t_ini.isoformat(),
-                        "end": t_fin.isoformat(),
-                        "color": color_map.get(nom_eq, "#4285F4")
-                    })
+                    calendar_events.append({"title": f"{nom_eq} ({row['usuario']})", "start": t_ini.isoformat(), "end": t_fin.isoformat(), "color": color_map.get(nom_eq, "#4285F4")})
                 
-                calendar_options = {
-                    "headerToolbar": {
-                        "left": "prev,next today",
-                        "center": "title",
-                        "right": "timeGridDay,timeGridWeek,dayGridMonth",
-                    },
-                    "initialView": "timeGridWeek",
-                    "slotMinTime": "07:00:00",
-                    "slotMaxTime": "22:00:00",
-                    "allDaySlot": False,
-                    "height": 600,
-                }
-                
-                try:
-                    calendar(events=calendar_events, options=calendar_options, key="lab_calendar_view")
-                except NameError:
-                    st.warning("Por favor, asegúrate de haber instalado 'streamlit-calendar' en tus requerimientos.")
-            else:
-                st.info("La agenda del laboratorio está completamente libre.")
+                calendar_options = {"headerToolbar": {"left": "prev,next today", "center": "title", "right": "timeGridDay,timeGridWeek,dayGridMonth"}, "initialView": "timeGridWeek", "slotMinTime": "07:00:00", "slotMaxTime": "22:00:00", "allDaySlot": False, "height": 600}
+                try: calendar(events=calendar_events, options=calendar_options, key="lab_calendar_view")
+                except NameError: st.warning("Por favor, asegúrate de haber instalado 'streamlit-calendar' en tus requerimientos.")
+            else: st.info("La agenda del laboratorio está completamente libre.")
 
         elif modo_eq == "📅 Agendar":
             c_eq_res, c_eq_agenda = st.columns([1, 1.2])
@@ -456,8 +459,6 @@ with col_mon:
                             else:
                                 try:
                                     supabase.table("reservas").insert({"equipo_id": str(datos_eq['id']), "usuario": usuario_actual, "fecha_inicio": dt_ini.isoformat(), "fecha_fin": dt_fin.isoformat(), "lab_id": lab_id}).execute()
-                                    admin_email = obtener_admin_email(lab_id)
-                                    enviar_correo_reserva(datos_eq['nombre'], fecha_res.strftime('%d/%m/%Y'), t_ini.strftime('%H:%M'), t_fin.strftime('%H:%M'), usuario_actual, admin_email, st.session_state.usuario_autenticado)
                                     st.success("✅ Reserva guardada.")
                                     st.rerun()
                                 except Exception as e: st.error(f"Error al reservar: {e}")
@@ -503,7 +504,7 @@ with col_mon:
                             st.rerun()
                         except Exception as e: st.error(f"Error: {e}")
 
-    # --- PESTAÑA: ELN TIPO NOTION (EL VERDADERO CUADERNO) ---
+    # --- PESTAÑA: ELN TIPO NOTION ---
     with tab_bitacora:
         st.markdown("### 📔 Cuaderno de Laboratorio (ELN)")
         
@@ -541,14 +542,12 @@ with col_mon:
                         hora_str = dt_obj.strftime('%H:%M')
                     except: pass
                 
-                # --- DISEÑO TIPO NOTION: HOJA BLANCA CONTINUA ---
+                # --- DISEÑO TIPO NOTION ---
                 st.markdown(f"<span style='color:#666; font-size:0.9em; font-family: monospace;'>📅 {fecha_str} {hora_str} | 👤 <b>{row['usuario']}</b></span>", unsafe_allow_html=True)
-                
                 st.markdown(f"<div style='font-size:1.05em; line-height:1.6; margin-top: 8px; margin-bottom: 8px; color:#222; white-space: pre-wrap;'>{row.get('contenido', '')}</div>", unsafe_allow_html=True)
                 
                 link = str(row.get('link_adjunto', '')).strip()
-                if link.startswith('http'):
-                    st.markdown(f"📎 [**Evidencia Adjunta**]({link})")
+                if link.startswith('http'): st.markdown(f"📎 [**Evidencia Adjunta**]({link})")
                 
                 res_ia = str(row.get('resultado', '')).strip()
                 if res_ia and res_ia != "None":
@@ -557,7 +556,6 @@ with col_mon:
                 
                 st.markdown("<hr style='border: 0; border-top: 1px dashed #ddd; margin: 25px 0;'>", unsafe_allow_html=True)
 
-    # --- NUEVA PESTAÑA: PROTOCOLOS (SOLO LISTA Y EDICIÓN) ---
     with tab_prot:
         tab_lista, tab_crear = st.tabs(["📋 Mis Protocolos (Editar)", "📝 Nuevo Protocolo"])
         with tab_lista:
@@ -597,26 +595,6 @@ with col_mon:
                         d['lab_id'] = lab_id 
                         supabase.table("items").upsert(d).execute()
                 st.rerun()
-                
-        if rol_actual == "admin" and not df.empty:
-            st.markdown("---")
-            st.markdown("### 🛒 Panel de Compras")
-            st.caption(f"📧 **Destinatario:** `{correo_destinatario_compras}`")
-            c_comp1, c_comp2 = st.columns([2, 1])
-            with c_comp1:
-                item_compra = st.selectbox("Seleccionar Reactivo a Comprar:", df['nombre'].tolist())
-                datos_item = df[df['nombre'] == item_compra].iloc[0]
-                fecha_cot = datos_item['fecha_cotizacion'] if datos_item['fecha_cotizacion'] else "Nunca"
-                precio_ref = datos_item['precio'] if datos_item['precio'] > 0 else "No registrado"
-                st.write(f"**Última cotización:** {fecha_cot} | **Precio Referencial:** ${precio_ref}")
-            with c_comp2:
-                st.write("")
-                if st.button("🛒 Solicitar", use_container_width=True): st.session_state.confirmar_compra = item_compra
-                if st.session_state.get('confirmar_compra') == item_compra:
-                    if st.button("✅ Confirmar Enviar", type="primary"):
-                        enviar_correo_compras(item_compra, precio_ref, usuario_actual)
-                        st.session_state.confirmar_compra = None
-                        st.rerun()
 
     if rol_actual == "admin":
         with tab_analisis:
@@ -645,7 +623,6 @@ with col_mon:
                     else: st.info("Aún no hay suficientes retiros para proyectar matemáticas.")
                 else: st.info("Registra movimientos para que la IA aprenda el consumo.")
 
-            # SECCIÓN FINANZAS MOVIDA A ANALÍTICA
             st.markdown("---")
             st.markdown("### 💰 Costeo y Simulación de Protocolos")
             if df_prot.empty: st.info("Sin protocolos para evaluar.")
@@ -705,17 +682,19 @@ with col_mon:
                 if miembros.data: st.dataframe(pd.DataFrame(miembros.data), hide_index=True, use_container_width=True)
             except Exception as e: st.error(f"❌ Error al cargar la lista: {e}")
 
-# --- PANEL IA (EL ORQUESTADOR TOTAL) ---
+# --- PANEL IA ORQUESTADOR CON MEMORIA ---
 with col_chat:
     st.markdown("### 💬 Secretario IA")
     chat_box = st.container(height=400, border=False)
     
-    if "messages" not in st.session_state: st.session_state.messages = [{"role": "assistant", "content": f"¡Hola! Dime qué hiciste o qué necesitas reservar, yo me encargo de actualizar todo."}]
+    if "messages" not in st.session_state: 
+        st.session_state.messages = [{"role": "assistant", "content": f"¡Hola! Dime qué hiciste o qué necesitas reservar."}]
+    
     for m in st.session_state.messages:
         with chat_box: st.chat_message(m["role"]).markdown(m["content"])
 
     v_in = speech_to_text(language='es-CL', start_prompt="🎙️ Hablar", stop_prompt="⏹️ Enviar", just_once=True, key='voice_input')
-    prompt = v_in if v_in else st.chat_input("Ej: Reserva el equipo HPLC para mañana de 10 a 11 y anota que corrí un PCR...")
+    prompt = v_in if v_in else st.chat_input("Ej: Hoy hice un pasaje celular...")
 
     with st.expander("📸 Procesar con Ojo IA"):
         accion_foto = st.radio("¿Qué deseas hacer con la foto?", ["➕ Agregar Reactivo Nuevo", "🔄 Actualizar Reactivo"], horizontal=True)
@@ -750,37 +729,48 @@ with col_chat:
                             msg = f"📸 **Actualizado:** {item_a_actualizar} ahora tiene {nueva_cant} en stock."
 
                         st.markdown(msg); st.session_state.messages.append({"role": "assistant", "content": msg}); st.rerun()
-                    except Exception as e: st.error("Error al procesar la imagen. Intenta con más luz o acercando la cámara.")
+                    except Exception as e: st.error("Error al procesar la imagen.")
 
     if prompt:
         st.session_state.messages.append({"role": "user", "content": prompt})
         with chat_box: st.chat_message("user").markdown(prompt)
         with st.chat_message("assistant"):
-            with st.spinner("Procesando instrucción multitarea..."):
+            with st.spinner("Pensando y analizando contexto..."):
                 try:
-                    d_ia = df[['id', 'nombre', 'cantidad_actual', 'umbral_minimo']].to_json(orient='records') if not df.empty else "[]"
+                    d_ia = df[['id', 'nombre', 'cantidad_actual']].to_json(orient='records') if not df.empty else "[]"
                     d_prot = df_prot[['nombre']].to_json(orient='records') if not df_prot.empty else "[]"
                     d_eq = df_equipos[['id', 'nombre']].to_json(orient='records') if not df_equipos.empty else "[]"
                     hoy_str = date.today().isoformat()
                     
+                    # Cargar historial de chat y lista negra de rutinas diarias
+                    historial_str = "\n".join([f"{'Usuario' if m['role']=='user' else 'IA'}: {m['content']}" for m in st.session_state.messages[-10:-1]])
+                    rutinas_str = ", ".join(st.session_state.rutinas_diarias["mostradas"])
+                    
                     prompt_sistema = f"""
-                    Eres el Orquestador IA del LIMS Stck. Hoy es {hoy_str}.
+                    Eres el Orquestador IA del LIMS Stck. Tienes MEMORIA y eres PROACTIVO. Hoy es {hoy_str}.
                     Inventario: {d_ia}
                     Protocolos: {d_prot}
                     Equipos: {d_eq}
+                    
+                    Historial reciente:
+                    {historial_str}
 
-                    Analiza el mensaje del usuario y devuelve ÚNICAMENTE un JSON con esta estructura exacta:
+                    Rutinas ya recordadas hoy (NO LAS VUELVAS A MENCIONAR): [{rutinas_str}]
+
+                    Analiza el último mensaje del Usuario ({prompt}) y devuelve ÚNICAMENTE un JSON con esta estructura exacta:
                     {{
+                        "respuesta_chat": "Lo que le dirás al usuario en el chat. Haz recordatorios (ej. revisar agua/CO2 de incubadora si hacen cultivos) SOLO SI la palabra clave (ej. 'incubadora') NO está en las rutinas ya recordadas. Haz preguntas aclaratorias si falta descontar materiales extra (ej. '¿Usaste placa nueva?').",
+                        "bitacora": {{"guardar": false, "entrada_cuaderno": ""}},
                         "protocolo": {{"ejecutar": false, "nombre": "", "muestras": 1}},
-                        "inventario_manual": [],
-                        "reserva": {{"generar": false, "equipo_nombre": "", "fecha_YYYY_MM_DD": "", "hora_inicio_HH_MM": "", "hora_fin_HH_MM": ""}}
+                        "inventario_ajustes": [{{"id": "id_del_item", "cantidad_a_restar": 0}}],
+                        "reserva": {{"generar": false, "equipo_nombre": "", "fecha_YYYY_MM_DD": "", "hora_inicio_HH_MM": "", "hora_fin_HH_MM": ""}},
+                        "nuevas_rutinas_recordadas": ["incubadora", "etc"]
                     }}
 
-                    Reglas:
-                    1. NO devuelvas ni modifiques el texto del usuario en el JSON. Solo completa las variables lógicas si corresponden.
-                    2. Si ejecutó un protocolo, activa "protocolo" y calcula muestras.
-                    3. Si pide reservar un equipo, activa "reserva.generar" deduciendo fecha/hora según hoy ({hoy_str}).
-                    Usuario: {prompt}
+                    Reglas Clave:
+                    1. Si es una actividad de laboratorio (no una simple respuesta corta), pon "bitacora.guardar" en true y copia EXACTAMENTE LAS PALABRAS del usuario en "entrada_cuaderno". ¡No resumas!
+                    2. Si le recuerdas algo de rutina ahora, agrega su palabra clave a "nuevas_rutinas_recordadas" para no molestar al usuario con lo mismo más tarde.
+                    3. Si el usuario responde a una pregunta anterior (ej. "Sí, usé 2 placas"), búscalas en el Inventario y usa "inventario_ajustes" para restar esa cantidad.
                     """
                     
                     res_ai = model.generate_content(prompt_sistema).text
@@ -789,6 +779,12 @@ with col_chat:
                     if match:
                         data = json.loads(match.group())
                         log_ia_acciones = []
+                        
+                        # Actualizar lista de rutinas mostradas hoy
+                        nuevas_rutinas = data.get('nuevas_rutinas_recordadas', [])
+                        if nuevas_rutinas: st.session_state.rutinas_diarias["mostradas"].extend(nuevas_rutinas)
+                        
+                        respuesta_chat = data.get('respuesta_chat', 'Hecho.')
                         
                         # 1. RESERVA DE EQUIPO
                         res_data = data.get('reserva', {})
@@ -820,7 +816,7 @@ with col_chat:
                             else:
                                 log_ia_acciones.append(f"❌ **Fallo Reserva:** No encontré el equipo '{eq_nom}'.")
 
-                        # 2. PROTOCOLO E INVENTARIO
+                        # 2. PROTOCOLO AUTOMÁTICO
                         prot = data.get('protocolo', {})
                         if prot.get('ejecutar') and prot.get('nombre'):
                             p_nombre = prot.get('nombre')
@@ -828,7 +824,7 @@ with col_chat:
                             prot_match = df_prot[df_prot['nombre'].str.contains(p_nombre, case=False, na=False)]
                             
                             if not prot_match.empty:
-                                log_ia_acciones.append(f"🧪 **Protocolo Reconocido:** {prot_match.iloc[0]['nombre']} (x{p_muestras} muestras).")
+                                log_ia_acciones.append(f"🧪 **Protocolo Vinculado:** {prot_match.iloc[0]['nombre']} (x{p_muestras} muestras).")
                                 info_p = prot_match.iloc[0]['materiales_base']
                                 
                                 for linea in info_p.split('\n'):
@@ -840,29 +836,48 @@ with col_chat:
                                             id_item = str(item_db.iloc[0]['id'])
                                             stock_actual = item_db.iloc[0]['cantidad_actual']
                                             stock_nuevo = stock_actual - desc_cant
-                                            umbral = item_db.iloc[0]['umbral_minimo']
                                             
                                             supabase.table("items").update({"cantidad_actual": int(stock_nuevo)}).eq("id", id_item).execute()
                                             supabase.table("movimiento").insert({"item_id": id_item, "nombre_item": item_db.iloc[0]['nombre'], "cantidad_cambio": -desc_cant, "tipo": f"Uso IA: {p_nombre}", "usuario": usuario_actual, "lab_id": lab_id}).execute()
                                             
                                             log_ia_acciones.append(f"📉 *Descontado:* {desc_cant} {item_db.iloc[0]['unidad']} de {item_db.iloc[0]['nombre']}.")
-                                            if umbral > 0 and stock_nuevo <= umbral:
-                                                log_ia_acciones.append(f"🚨 **ALERTA CRÍTICA:** {item_db.iloc[0]['nombre']} cayó por debajo del umbral mínimo ({int(stock_nuevo)} restantes).")
                             else:
-                                log_ia_acciones.append(f"⚠️ *No encontré el protocolo '{p_nombre}' para descontar.*")
+                                log_ia_acciones.append(f"⚠️ *No encontré el protocolo '{p_nombre}'.*")
 
-                        # 3. GUARDAR BITÁCORA UNIFICADA
-                        metadatos_ia = "\n".join(log_ia_acciones) if log_ia_acciones else "Registro manual en el cuaderno (Sin automatizaciones de IA)."
-                        
-                        supabase.table("bitacora").insert({
-                            "lab_id": lab_id, 
-                            "usuario": usuario_actual, 
-                            "fecha": date.today().isoformat(),
-                            "contenido": prompt, # GUARDA EL TEXTO ORIGINAL DEL USUARIO INTACTO
-                            "resultado": metadatos_ia 
-                        }).execute()
-                        
-                        msg_final = f"📔 **Bitácora Guardada Exitosamente.**\n\n" + metadatos_ia
+                        # 3. AJUSTES DE INVENTARIO MANUALES / CONVERSACIONALES
+                        ajustes = data.get('inventario_ajustes', [])
+                        for aj in ajustes:
+                            id_ac = aj.get('id')
+                            cant_restar = aj.get('cantidad_a_restar', 0)
+                            if id_ac and cant_restar != 0:
+                                item_db = df[df['id'].astype(str) == str(id_ac)]
+                                if not item_db.empty:
+                                    stock_actual = item_db.iloc[0]['cantidad_actual']
+                                    stock_nuevo = stock_actual - cant_restar
+                                    nombre_item = item_db.iloc[0]['nombre']
+                                    
+                                    supabase.table("items").update({"cantidad_actual": int(stock_nuevo)}).eq("id", id_ac).execute()
+                                    supabase.table("movimiento").insert({"item_id": id_ac, "nombre_item": nombre_item, "cantidad_cambio": -cant_restar, "tipo": "Ajuste Conversacional IA", "usuario": usuario_actual, "lab_id": lab_id}).execute()
+                                    log_ia_acciones.append(f"📉 *Descontado extra:* {cant_restar} de {nombre_item}.")
+
+                        # 4. GUARDAR BITÁCORA
+                        bit = data.get('bitacora', {})
+                        if bit.get('guardar') and bit.get('entrada_cuaderno'):
+                            texto_principal_usuario = bit.get('entrada_cuaderno')
+                            metadatos_ia = "\n".join(log_ia_acciones) if log_ia_acciones else "Ninguna acción automática en inventario o calendario."
+                            
+                            supabase.table("bitacora").insert({
+                                "lab_id": lab_id, 
+                                "usuario": usuario_actual, 
+                                "fecha": date.today().isoformat(),
+                                "contenido": texto_principal_usuario,
+                                "resultado": metadatos_ia 
+                            }).execute()
+
+                        # 5. RESPONDER AL USUARIO EN EL CHAT
+                        msg_final = f"{respuesta_chat}\n\n"
+                        if log_ia_acciones: msg_final += "\n".join(log_ia_acciones)
+                            
                         st.markdown(msg_final)
                         st.session_state.messages.append({"role": "assistant", "content": msg_final})
                         st.rerun()
