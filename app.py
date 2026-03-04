@@ -397,7 +397,6 @@ if rol_actual == "proveedor":
 col_chat, col_mon = st.columns([1, 1.6], gap="large")
 
 with col_mon:
-    # ELIMINAMOS LA PESTAÑA EDICIÓN MASIVA DEL MENÚ SUPERIOR
     if rol_actual == "admin": 
         tab_inv, tab_prot, tab_equipos, tab_bitacora, tab_analisis, tab_usuarios = st.tabs(["📦 Inventario", "🧪 Protocolos", "📅 Equipos", "📔 Bitácora", "📊 Analítica", "👥 Usuarios"])
     else: 
@@ -421,7 +420,7 @@ with col_mon:
                 if not df_criticos.empty: st.warning(f"⚠️ **{len(df_criticos)} Reactivos Críticos / Fuera de Stock**")
                 if not df_vencidos.empty: st.warning(f"📅 **{len(df_vencidos)} Reactivos Vencen en < 30 días**")
         
-        # NUEVO SISTEMA DE TABS DENTRO DE INVENTARIO
+        # SISTEMA DE TABS DENTRO DE INVENTARIO
         subtab_cat, subtab_edit = st.tabs(["🗂️ Catálogo Rápido", "✍️ Gestionar Inventario (Edición)"])
         
         with subtab_cat:
@@ -450,7 +449,6 @@ with col_mon:
             st.markdown("### ✍️ Base de Datos Maestra")
             st.info("Modifica cantidades, umbrales, unidades y parámetros libremente. Los cambios se guardan al instante.")
             if not df.empty:
-                # Se oculta el ID para una vista limpia, pero se mantiene en la lógica
                 cols_edit = ['id', 'nombre', 'categoria', 'cantidad_actual', 'unidad', 'umbral_minimo', 'ubicacion', 'posicion_caja', 'fecha_vencimiento', 'precio', 'fecha_cotizacion']
                 
                 edited_df = st.data_editor(
@@ -478,7 +476,7 @@ with col_mon:
                         if 'id' in d and str(d['id']).strip() and d['id'] is not None: 
                             d['lab_id'] = lab_id 
                             
-                            # FILTRO ESCUDO PARA POSTGRESQL (Evita el APIError 22P02)
+                            # FILTRO ESCUDO PARA POSTGRESQL FLOAT
                             for num_col in ['cantidad_actual', 'umbral_minimo', 'precio']:
                                 if num_col in d:
                                     try: d[num_col] = float(d[num_col]) if d[num_col] not in [None, "", "nan", "None"] else 0.0
@@ -622,7 +620,7 @@ with col_mon:
                             st.rerun()
                         except Exception as e: st.error(f"Error: {e}")
 
-    # --- PESTAÑA: ELN TIPO NOTION ---
+    # --- PESTAÑA: ELN TIPO NOTION (MINIMALISTA CON HORA EXACTA) ---
     with tab_bitacora:
         st.markdown("### 📔 Cuaderno de Laboratorio")
         
@@ -654,13 +652,13 @@ with col_mon:
             df_b_show = df_bitacora if filtro_usuario == "Todos" else df_bitacora[df_bitacora['usuario'] == filtro_usuario]
             
             html_cuaderno = "<div style='font-family: \"Inter\", sans-serif; max-width: 850px;'>"
-            
             chile_tz = pytz.timezone('America/Santiago')
             
             for _, row in df_b_show.iterrows():
                 fecha_str = row.get('fecha', '')
                 hora_str = ""
                 
+                # ZONA HORARIA Y HORA EXACTA
                 if 'created_at' in row and pd.notna(row['created_at']) and str(row['created_at']).strip():
                     try:
                         dt_obj = pd.to_datetime(row['created_at'])
@@ -675,6 +673,7 @@ with col_mon:
                 res_ia = str(row.get('resultado', '')).strip()
                 link = str(row.get('link_adjunto', '')).strip()
                 
+                # ESTILO NOTION TOGGLE
                 html_cuaderno += f"""
                 <details class='notion-toggle'>
                     <summary>
@@ -816,7 +815,7 @@ with col_mon:
                 if miembros.data: st.dataframe(pd.DataFrame(miembros.data), hide_index=True, use_container_width=True)
             except Exception as e: st.error(f"❌ Error al cargar la lista: {e}")
 
-# --- PANEL IA ORQUESTADOR CON LECTOR NATURAL ---
+# --- PANEL IA ORQUESTADOR (Lector Natural y Copiloto Limpio) ---
 with col_chat:
     st.markdown("### 💬 Secretario IA")
     chat_box = st.container(height=400, border=False)
@@ -868,135 +867,136 @@ with col_chat:
     if prompt:
         st.session_state.messages.append({"role": "user", "content": prompt})
         with chat_box: st.chat_message("user").markdown(prompt)
-        with chat_message("assistant"):
-            with st.spinner("Leyendo receta e inventario..."):
-                try:
-                    d_ia = df[['id', 'nombre', 'cantidad_actual']].to_json(orient='records') if not df.empty else "[]"
-                    d_prot = df_prot[['nombre', 'materiales_base']].to_json(orient='records') if not df_prot.empty else "[]"
-                    hoy_str = date.today().isoformat()
-                    
-                    historial_str = "\n".join([f"{'Usuario' if m['role']=='user' else 'IA'}: {m['content']}" for m in st.session_state.messages[-8:-1]])
-                    
-                    prompt_sistema = f"""
-                    Eres la Inteligencia Artificial del LIMS Stck. Hoy es {hoy_str}.
-                    Inventario: {d_ia}
-                    Protocolos: {d_prot}
-                    Historial: {historial_str}
-
-                    El usuario dice: "{prompt}"
-
-                    Devuelve ÚNICAMENTE un JSON con esta estructura exacta:
-                    {{
-                        "respuesta_chat": "Si es un pasaje celular, confirma y pregunta SOLO: '¿Usaste alguna placa o frasco nuevo (sí/no)?'. Si ya responde a esa pregunta (ej 'no', 'usé 1'), responde 'Entendido y descontado.'",
-                        "entrada_cuaderno": "Copia EXACTAMENTE sus palabras (ej: 'Hoy hice pasaje...'). Si es una respuesta a tu pregunta (ej 'sí', 'no', '1 placa'), DEBE QUEDAR VACÍO.",
-                        "protocolo_detectado": {{"nombre": "Nombre EXACTO del protocolo", "muestras": 1}},
-                        "descuentos_protocolo": [{{"nombre_item_inventario": "Nombre exacto en inventario", "cantidad_total_a_restar": 0.0}}],
-                        "descuentos_extra": [{{"nombre_item_inventario": "Nombre exacto en inventario", "cantidad_a_restar": 0.0}}]
-                    }}
-
-                    REGLAS INFLEXIBLES:
-                    1. EL CEREBRO MATEMÁTICO: Si detectas un protocolo, LEE su campo 'materiales_base' (texto natural). Busca el reactivo en la lista de Inventario. Multiplica la cantidad por las muestras y ponlo en 'descuentos_protocolo'. Ej: Si la receta dice 'Usa 2 ml de DMEM' y el usuario hizo 3 pasajes, tú pones cantidad=6.0 y el nombre de inventario del DMEM.
-                    2. ANTI-BUCLES: Si el usuario responde 'no' o 'nada', "entrada_cuaderno" DEBE SER VACÍO, no ejecutes protocolos.
-                    """
-                    
-                    res_ai = model.generate_content(prompt_sistema).text
-                    match = re.search(r'\{.*\}', res_ai, re.DOTALL)
-                    
-                    if match:
-                        data = json.loads(match.group())
-                        log_ia_acciones = []
-                        lista_descuentos = []
+        with chat_box:
+            with st.chat_message("assistant"):
+                with st.spinner("Leyendo receta e inventario..."):
+                    try:
+                        d_ia = df[['id', 'nombre', 'cantidad_actual']].to_json(orient='records') if not df.empty else "[]"
+                        d_prot = df_prot[['nombre', 'materiales_base']].to_json(orient='records') if not df_prot.empty else "[]"
+                        hoy_str = date.today().isoformat()
                         
-                        texto_minuscula = prompt.lower().strip()
-                        es_respuesta_corta = len(texto_minuscula.split()) <= 5 and any(w in texto_minuscula for w in ['no', 'nada', 'ninguno', 'ninguna', 'listo', 'ya', 'si', 'sí', 'ok'])
-                        if es_respuesta_corta:
-                            data['entrada_cuaderno'] = ""
-
-                        # 1. PROTOCOLOS (MATEMÁTICA PURA RESUELTA POR LA IA)
-                        p_dict = data.get('protocolo_detectado', {})
-                        d_prot = data.get('descuentos_protocolo', [])
+                        historial_str = "\n".join([f"{'Usuario' if m['role']=='user' else 'IA'}: {m['content']}" for m in st.session_state.messages[-8:-1]])
                         
-                        if p_dict and p_dict.get('nombre') and not es_respuesta_corta:
-                            p_nombre = p_dict.get('nombre')
-                            p_muestras = p_dict.get('muestras', 1)
-                            log_ia_acciones.append(f"🔗 <b>Protocolo:</b> {p_nombre} (x{p_muestras})")
+                        prompt_sistema = f"""
+                        Eres la Inteligencia Artificial del LIMS Stck. Hoy es {hoy_str}.
+                        Inventario: {d_ia}
+                        Protocolos: {d_prot}
+                        Historial: {historial_str}
+
+                        El usuario dice: "{prompt}"
+
+                        Devuelve ÚNICAMENTE un JSON con esta estructura exacta:
+                        {{
+                            "respuesta_chat": "Si es un pasaje celular, confirma y pregunta SOLO: '¿Usaste alguna placa o material extra (sí/no)?'. Si ya responde a esa pregunta (ej 'no', 'usé 1'), responde 'Entendido y descontado.'",
+                            "entrada_cuaderno": "Copia EXACTAMENTE sus palabras (ej: 'Hoy hice pasaje...'). Si es una respuesta a tu pregunta (ej 'sí', 'no', '1 placa'), DEBE QUEDAR VACÍO.",
+                            "protocolo_detectado": {{"nombre": "Nombre EXACTO del protocolo", "muestras": 1}},
+                            "descuentos_protocolo": [{{"nombre_item_inventario": "Nombre exacto en inventario", "cantidad_total_a_restar": 0.0}}],
+                            "descuentos_extra": [{{"nombre_item_inventario": "Nombre exacto en inventario", "cantidad_a_restar": 0.0}}]
+                        }}
+
+                        REGLAS INFLEXIBLES:
+                        1. LA LECTURA MATEMÁTICA: Si detectas un protocolo, LEE su campo 'materiales_base' (texto natural). Busca EL PRIMER NÚMERO de cada línea. Multiplícalo por las muestras. Pon los totales en 'descuentos_protocolo'. Ej: Si la receta dice 'Usa 2 ml de DMEM' y el usuario hizo 3 pasajes, tú pones cantidad=6.0 y el nombre de inventario del DMEM.
+                        2. ANTI-BUCLES: Si el usuario responde 'no' o 'nada', "entrada_cuaderno" DEBE SER VACÍO, no ejecutes protocolos.
+                        """
+                        
+                        res_ai = model.generate_content(prompt_sistema).text
+                        match = re.search(r'\{.*\}', res_ai, re.DOTALL)
+                        
+                        if match:
+                            data = json.loads(match.group())
+                            log_ia_acciones = []
+                            lista_descuentos = []
                             
-                            for desc in d_prot:
-                                nom_item = desc.get('nombre_item_inventario')
-                                cant_total = desc.get('cantidad_total_a_restar', 0)
+                            texto_minuscula = prompt.lower().strip()
+                            es_respuesta_corta = len(texto_minuscula.split()) <= 5 and any(w in texto_minuscula for w in ['no', 'nada', 'ninguno', 'ninguna', 'listo', 'ya', 'si', 'sí', 'ok'])
+                            if es_respuesta_corta:
+                                data['entrada_cuaderno'] = ""
+
+                            # 1. PROTOCOLOS (Calculadora IA)
+                            p_dict = data.get('protocolo_detectado', {})
+                            d_prot = data.get('descuentos_protocolo', [])
+                            
+                            if p_dict and p_dict.get('nombre') and not es_respuesta_corta:
+                                p_nombre = p_dict.get('nombre')
+                                p_muestras = p_dict.get('muestras', 1)
+                                log_ia_acciones.append(f"🔗 <b>Protocolo:</b> {p_nombre} (x{p_muestras})")
                                 
-                                if nom_item and cant_total > 0:
-                                    item_db = df[df['nombre'].str.contains(re.escape(nom_item), case=False, na=False, regex=True)]
+                                for desc in d_prot:
+                                    nom_item = desc.get('nombre_item_inventario')
+                                    cant_total = desc.get('cantidad_total_a_restar', 0)
+                                    
+                                    if nom_item and cant_total > 0:
+                                        item_db = df[df['nombre'].str.contains(re.escape(nom_item), case=False, na=False, regex=True)]
+                                        if not item_db.empty:
+                                            id_item = str(item_db.iloc[0]['id'])
+                                            stock_actual = float(item_db.iloc[0]['cantidad_actual'])
+                                            stock_nuevo = stock_actual - float(cant_total)
+                                            
+                                            val_stock = int(stock_nuevo) if float(stock_nuevo).is_integer() else float(stock_nuevo)
+                                            val_cambio = int(-cant_total) if float(-cant_total).is_integer() else float(-cant_total)
+                                            
+                                            unidad_item = item_db.iloc[0]['unidad']
+                                            nombre_real = item_db.iloc[0]['nombre']
+                                            
+                                            supabase.table("items").update({"cantidad_actual": val_stock}).eq("id", id_item).execute()
+                                            supabase.table("movimiento").insert({"item_id": id_item, "nombre_item": nombre_real, "cantidad_cambio": val_cambio, "tipo": f"Uso IA: {p_nombre}", "usuario": usuario_actual, "lab_id": lab_id}).execute()
+                                            
+                                            lista_descuentos.append(f"&nbsp;&nbsp;&nbsp; - 📉 {cant_total} {unidad_item} de {nombre_real} <i>(Protocolo)</i>")
+                                        else:
+                                            lista_descuentos.append(f"&nbsp;&nbsp;&nbsp; - ⚠️ No encontré '{nom_item}' en inventario.")
+
+                            # 2. AJUSTES EXTRA (La respuesta de las placas)
+                            ajustes = data.get('descuentos_extra', [])
+                            for aj in ajustes:
+                                nom_man = aj.get('nombre_item_inventario')
+                                cant_man = aj.get('cantidad_a_restar', 0)
+                                
+                                if nom_man and float(cant_man) > 0:
+                                    item_db = df[df['nombre'].str.contains(re.escape(nom_man), case=False, na=False, regex=True)]
                                     if not item_db.empty:
-                                        id_item = str(item_db.iloc[0]['id'])
+                                        id_ac = str(item_db.iloc[0]['id'])
                                         stock_actual = float(item_db.iloc[0]['cantidad_actual'])
-                                        stock_nuevo = stock_actual - float(cant_total)
+                                        stock_nuevo = stock_actual - float(cant_man)
                                         
                                         val_stock = int(stock_nuevo) if float(stock_nuevo).is_integer() else float(stock_nuevo)
-                                        val_cambio = int(-cant_total) if float(-cant_total).is_integer() else float(-cant_total)
+                                        val_cambio = int(-cant_man) if float(-cant_man).is_integer() else float(-cant_man)
                                         
+                                        nombre_item = item_db.iloc[0]['nombre']
                                         unidad_item = item_db.iloc[0]['unidad']
-                                        nombre_real = item_db.iloc[0]['nombre']
                                         
-                                        supabase.table("items").update({"cantidad_actual": val_stock}).eq("id", id_item).execute()
-                                        supabase.table("movimiento").insert({"item_id": id_item, "nombre_item": nombre_real, "cantidad_cambio": val_cambio, "tipo": f"Uso IA: {p_nombre}", "usuario": usuario_actual, "lab_id": lab_id}).execute()
+                                        supabase.table("items").update({"cantidad_actual": val_stock}).eq("id", id_ac).execute()
+                                        supabase.table("movimiento").insert({"item_id": id_ac, "nombre_item": nombre_item, "cantidad_cambio": val_cambio, "tipo": "Ajuste Conversacional IA", "usuario": usuario_actual, "lab_id": lab_id}).execute()
                                         
-                                        lista_descuentos.append(f"&nbsp;&nbsp;&nbsp; - 📉 {cant_total} {unidad_item} de {nombre_real} <i>(Protocolo)</i>")
-                                    else:
-                                        lista_descuentos.append(f"&nbsp;&nbsp;&nbsp; - ⚠️ No encontré '{nom_item}' en inventario.")
+                                        if es_respuesta_corta:
+                                            # Modificar silenciosamente la caja de chat actual
+                                            data['respuesta_chat'] = f"✅ Descontado: -{cant_man} {unidad_item} de {nombre_item}"
+                                        else:
+                                            lista_descuentos.append(f"&nbsp;&nbsp;&nbsp; - 📉 {cant_man} {unidad_item} de {nombre_item} <i>(Extra)</i>")
 
-                        # 2. AJUSTES EXTRA (Placas)
-                        ajustes = data.get('descuentos_extra', [])
-                        for aj in ajustes:
-                            nom_man = aj.get('nombre_item_inventario')
-                            cant_man = aj.get('cantidad_a_restar', 0)
-                            
-                            if nom_man and float(cant_man) > 0:
-                                item_db = df[df['nombre'].str.contains(re.escape(nom_man), case=False, na=False, regex=True)]
-                                if not item_db.empty:
-                                    id_ac = str(item_db.iloc[0]['id'])
-                                    stock_actual = float(item_db.iloc[0]['cantidad_actual'])
-                                    stock_nuevo = stock_actual - float(cant_man)
-                                    
-                                    val_stock = int(stock_nuevo) if float(stock_nuevo).is_integer() else float(stock_nuevo)
-                                    val_cambio = int(-cant_man) if float(-cant_man).is_integer() else float(-cant_man)
-                                    
-                                    nombre_item = item_db.iloc[0]['nombre']
-                                    unidad_item = item_db.iloc[0]['unidad']
-                                    
-                                    supabase.table("items").update({"cantidad_actual": val_stock}).eq("id", id_ac).execute()
-                                    supabase.table("movimiento").insert({"item_id": id_ac, "nombre_item": nombre_item, "cantidad_cambio": val_cambio, "tipo": "Ajuste Conversacional IA", "usuario": usuario_actual, "lab_id": lab_id}).execute()
-                                    
-                                    if es_respuesta_corta:
-                                        st.session_state.messages.append({"role": "assistant", "content": f"✅ Descontado: -{cant_man} {unidad_item} de {nombre_item}"})
-                                        st.rerun()
-                                    else:
-                                        lista_descuentos.append(f"&nbsp;&nbsp;&nbsp; - 📉 {cant_man} {unidad_item} de {nombre_item} <i>(Extra)</i>")
+                            # ENSAMBLAJE FINAL DEL HTML
+                            if lista_descuentos:
+                                log_ia_acciones.append("<b>📦 Descontado:</b>")
+                                log_ia_acciones.extend(lista_descuentos)
 
-                        # ENSAMBLAJE FINAL DEL HTML
-                        if lista_descuentos:
-                            log_ia_acciones.append("<b>📦 Descontado:</b>")
-                            log_ia_acciones.extend(lista_descuentos)
+                            metadatos_ia = "<br>".join(log_ia_acciones)
 
-                        metadatos_ia = "<br>".join(log_ia_acciones)
+                            # 3. GUARDAR EN BITÁCORA (Bloqueo de Basura)
+                            texto_cuaderno = data.get('entrada_cuaderno', "").strip()
+                            if texto_cuaderno and not es_respuesta_corta:
+                                supabase.table("bitacora").insert({
+                                    "lab_id": lab_id, 
+                                    "usuario": usuario_actual, 
+                                    "fecha": date.today().isoformat(),
+                                    "contenido": texto_cuaderno,
+                                    "resultado": metadatos_ia 
+                                }).execute()
 
-                        # 3. GUARDAR EN BITÁCORA (Evita guardar basura de los Sí/No)
-                        texto_cuaderno = data.get('entrada_cuaderno', "").strip()
-                        if texto_cuaderno and not es_respuesta_corta:
-                            supabase.table("bitacora").insert({
-                                "lab_id": lab_id, 
-                                "usuario": usuario_actual, 
-                                "fecha": date.today().isoformat(),
-                                "contenido": texto_cuaderno,
-                                "resultado": metadatos_ia 
-                            }).execute()
+                            # 4. CHAT
+                            msg_final = data.get('respuesta_chat', 'Entendido.')
+                            st.markdown(msg_final)
+                            st.session_state.messages.append({"role": "assistant", "content": msg_final})
+                            st.rerun()
 
-                        # 4. CHAT
-                        msg_final = data.get('respuesta_chat', 'Entendido.')
-                        st.markdown(msg_final)
-                        st.session_state.messages.append({"role": "assistant", "content": msg_final})
-                        st.rerun()
-
-                    else:
-                        st.markdown("Comando procesado.")
-                except Exception as e: st.error(f"Error IA: {e}")
+                        else:
+                            st.markdown("Comando procesado.")
+                    except Exception as e: st.error(f"Error IA: {e}")
