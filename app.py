@@ -397,7 +397,7 @@ if rol_actual == "proveedor":
 col_chat, col_mon = st.columns([1, 1.6], gap="large")
 
 with col_mon:
-    # SE ELIMINÓ LA PESTAÑA DE EDICIÓN PARA SIMPLIFICAR
+    # ELIMINAMOS LA PESTAÑA EDICIÓN MASIVA DEL MENÚ SUPERIOR
     if rol_actual == "admin": 
         tab_inv, tab_prot, tab_equipos, tab_bitacora, tab_analisis, tab_usuarios = st.tabs(["📦 Inventario", "🧪 Protocolos", "📅 Equipos", "📔 Bitácora", "📊 Analítica", "👥 Usuarios"])
     else: 
@@ -421,7 +421,7 @@ with col_mon:
                 if not df_criticos.empty: st.warning(f"⚠️ **{len(df_criticos)} Reactivos Críticos / Fuera de Stock**")
                 if not df_vencidos.empty: st.warning(f"📅 **{len(df_vencidos)} Reactivos Vencen en < 30 días**")
         
-        # NUEVO SISTEMA DE INVENTARIO (Catálogo + Edición en un solo lugar)
+        # NUEVO SISTEMA DE TABS DENTRO DE INVENTARIO
         subtab_cat, subtab_edit = st.tabs(["🗂️ Catálogo Rápido", "✍️ Gestionar Inventario (Edición)"])
         
         with subtab_cat:
@@ -450,22 +450,22 @@ with col_mon:
             st.markdown("### ✍️ Base de Datos Maestra")
             st.info("Modifica cantidades, umbrales, unidades y parámetros libremente. Los cambios se guardan al instante.")
             if not df.empty:
-                # Ocultamos la ID pero permitimos editar TODO lo demás
+                # Se oculta el ID para una vista limpia, pero se mantiene en la lógica
                 cols_edit = ['id', 'nombre', 'categoria', 'cantidad_actual', 'unidad', 'umbral_minimo', 'ubicacion', 'posicion_caja', 'fecha_vencimiento', 'precio', 'fecha_cotizacion']
                 
                 edited_df = st.data_editor(
                     df[cols_edit].copy(), 
                     column_config={
-                        "id": None, # Magia: Oculta la columna de la vista pero la mantiene en memoria
+                        "id": None, 
                         "nombre": "Nombre Reactivo",
                         "categoria": "Categoría",
-                        "cantidad_actual": "Stock",
+                        "cantidad_actual": st.column_config.NumberColumn("Stock", format="%f"),
                         "unidad": "Medida (ml, un, etc)",
-                        "umbral_minimo": "Alerta Mínima",
+                        "umbral_minimo": st.column_config.NumberColumn("Alerta Mínima", format="%f"),
                         "ubicacion": "Ubicación",
                         "posicion_caja": "Caja/Estante",
                         "fecha_vencimiento": "Vencimiento",
-                        "precio": "Precio Ref ($)",
+                        "precio": st.column_config.NumberColumn("Precio Ref ($)", format="%f"),
                         "fecha_cotizacion": "Fecha Cotización"
                     }, 
                     use_container_width=True, 
@@ -474,10 +474,26 @@ with col_mon:
                 
                 if st.button("💾 Guardar Cambios en BD", type="primary"):
                     for _, row in edited_df.iterrows():
-                        d = row.replace({np.nan: None}).to_dict()
+                        d = row.replace({np.nan: None, pd.NaT: None}).to_dict()
                         if 'id' in d and str(d['id']).strip() and d['id'] is not None: 
                             d['lab_id'] = lab_id 
+                            
+                            # FILTRO ESCUDO PARA POSTGRESQL (Evita el APIError 22P02)
+                            for num_col in ['cantidad_actual', 'umbral_minimo', 'precio']:
+                                if num_col in d:
+                                    try: d[num_col] = float(d[num_col]) if d[num_col] not in [None, "", "nan", "None"] else 0.0
+                                    except: d[num_col] = 0.0
+                                        
+                            for date_col in ['fecha_vencimiento', 'fecha_cotizacion']:
+                                if date_col in d and str(d[date_col]).strip() in ["", "nan", "NaT", "None"]:
+                                    d[date_col] = None 
+                                    
+                            for str_col in ['categoria', 'ubicacion', 'posicion_caja', 'unidad']:
+                                if str_col in d and str(d[str_col]).strip() in ["nan", "None"]:
+                                    d[str_col] = ""
+
                             supabase.table("items").upsert(d).execute()
+                    st.success("Inventario actualizado correctamente.")
                     st.rerun()
 
             if rol_actual == "admin" and not df.empty:
@@ -606,7 +622,7 @@ with col_mon:
                             st.rerun()
                         except Exception as e: st.error(f"Error: {e}")
 
-    # --- PESTAÑA: ELN TIPO NOTION (DISEÑO PERFECTO RECUPERADO CON HORA EXACTA Y CONVERSIÓN CHILE) ---
+    # --- PESTAÑA: ELN TIPO NOTION ---
     with tab_bitacora:
         st.markdown("### 📔 Cuaderno de Laboratorio")
         
@@ -769,8 +785,6 @@ with col_mon:
                             st.markdown(f"<div class='badge-costo'>💰 Presupuesto estimado: ${int(costo_total_exp):,} CLP</div>", unsafe_allow_html=True)
                         else:
                             st.info("No hay precios registrados para los reactivos de este protocolo. Agrégalos en Edición Masiva.")
-                    else:
-                        st.info("No pude extraer reactivos de este texto. Revisa la receta.")
 
             st.markdown("---")
             st.markdown("### 📄 Generador de Reportes (ISO/GLP)")
@@ -854,7 +868,7 @@ with col_chat:
     if prompt:
         st.session_state.messages.append({"role": "user", "content": prompt})
         with chat_box: st.chat_message("user").markdown(prompt)
-        with st.chat_message("assistant"):
+        with chat_message("assistant"):
             with st.spinner("Leyendo receta e inventario..."):
                 try:
                     d_ia = df[['id', 'nombre', 'cantidad_actual']].to_json(orient='records') if not df.empty else "[]"
