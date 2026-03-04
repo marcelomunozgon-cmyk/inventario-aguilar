@@ -35,8 +35,6 @@ st.markdown("""
     .stTabs [aria-selected="true"] { color: #ffffff !important; background-color: #1a1a1a !important; border-bottom: 2px solid #1a1a1a !important; }
     .stButton>button { border-radius: 8px; font-weight: 500; }
     .badge-costo { background-color: #e8f5e9; color: #2e7d32; padding: 5px 10px; border-radius: 15px; font-weight: bold; font-size: 0.9em; }
-    .cuaderno-texto { font-size: 1.05em; line-height: 1.6; color: #222; font-family: 'Inter', sans-serif; margin-bottom: 10px; white-space: pre-wrap;}
-    .cuaderno-meta { font-size: 0.85em; color: #777; margin-bottom: 8px; font-family: 'Courier New', Courier, monospace;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -201,6 +199,7 @@ def generar_pdf_inventario(df_inventario, nombre_lab):
         pdf.cell(40, 10, ub, border=1)
         pdf.cell(40, 10, venc, border=1)
         pdf.ln()
+    
     return pdf.output(dest='S').encode('latin-1')
 
 def obtener_admin_email(lab_id):
@@ -396,17 +395,14 @@ with col_mon:
     with tab_equipos:
         st.markdown("### 🗓️ Gestión y Booking de Equipos")
         
-        # LA SOLUCIÓN AL BUG DEL CALENDARIO: USAR RADIO BUTTONS EN VEZ DE TABS
         opciones_eq = ["📅 Agendar", "📊 Calendario"]
         if rol_actual == "admin": opciones_eq.append("⚙️ Mis Equipos")
-        
         modo_eq = st.radio("Selecciona vista:", opciones_eq, horizontal=True, label_visibility="collapsed")
         st.markdown("---")
 
         if modo_eq == "📊 Calendario":
             if not df_reservas.empty and not df_equipos.empty:
                 df_cal = pd.merge(df_reservas, df_equipos[['id', 'nombre']], left_on='equipo_id', right_on='id', how='inner', suffixes=('', '_eq'))
-                
                 calendar_events = []
                 equipos_unicos = df_cal['nombre' if 'nombre' in df_cal.columns else 'nombre_eq'].unique()
                 colores = ["#4285F4", "#0F9D58", "#F4B400", "#DB4437", "#673AB7", "#00ACC1", "#FF7043"]
@@ -414,35 +410,29 @@ with col_mon:
                 
                 for _, row in df_cal.iterrows():
                     nom_eq = row.get('nombre', row.get('nombre_eq', 'Equipo'))
-                    t_ini = pd.to_datetime(row['fecha_inicio']).tz_localize(None).isoformat()
-                    t_fin = pd.to_datetime(row['fecha_fin']).tz_localize(None).isoformat()
+                    t_ini = pd.to_datetime(row['fecha_inicio'])
+                    if t_ini.tzinfo: t_ini = t_ini.tz_localize(None)
+                    t_fin = pd.to_datetime(row['fecha_fin'])
+                    if t_fin.tzinfo: t_fin = t_fin.tz_localize(None)
                     
                     calendar_events.append({
                         "title": f"{nom_eq} ({row['usuario']})",
-                        "start": t_ini,
-                        "end": t_fin,
+                        "start": t_ini.isoformat(),
+                        "end": t_fin.isoformat(),
                         "color": color_map.get(nom_eq, "#4285F4")
                     })
                 
                 calendar_options = {
-                    "headerToolbar": {
-                        "left": "prev,next today",
-                        "center": "title",
-                        "right": "timeGridDay,timeGridWeek,dayGridMonth",
-                    },
+                    "headerToolbar": {"left": "prev,next today", "center": "title", "right": "timeGridDay,timeGridWeek,dayGridMonth"},
                     "initialView": "timeGridWeek",
                     "slotMinTime": "07:00:00",
                     "slotMaxTime": "22:00:00",
                     "allDaySlot": False,
                     "height": 600,
                 }
-                
-                try:
-                    calendar(events=calendar_events, options=calendar_options, key="lab_calendar_view")
-                except NameError:
-                    st.warning("Por favor, asegúrate de haber instalado 'streamlit-calendar' en tus requerimientos.")
-            else:
-                st.info("La agenda del laboratorio está completamente libre.")
+                try: calendar(events=calendar_events, options=calendar_options, key="lab_calendar_view")
+                except NameError: st.warning("Por favor, asegúrate de haber instalado 'streamlit-calendar' en tus requerimientos.")
+            else: st.info("La agenda del laboratorio está completamente libre.")
 
         elif modo_eq == "📅 Agendar":
             c_eq_res, c_eq_agenda = st.columns([1, 1.2])
@@ -463,18 +453,27 @@ with col_mon:
                         dt_fin = datetime.combine(fecha_res, t_fin)
                         if dt_ini >= dt_fin: st.error("La hora de inicio debe ser anterior.")
                         else:
-                            try:
-                                supabase.table("reservas").insert({"equipo_id": str(datos_eq['id']), "usuario": usuario_actual, "fecha_inicio": dt_ini.isoformat(), "fecha_fin": dt_fin.isoformat(), "lab_id": lab_id}).execute()
-                                st.success("✅ Reserva guardada.")
-                                st.rerun()
-                            except Exception as e: st.error(f"Error al reservar: {e}")
+                            solapamiento = False
+                            if not df_reservas.empty:
+                                df_r_eq = df_reservas[df_reservas['equipo_id'] == str(datos_eq['id'])].copy()
+                                if not df_r_eq.empty:
+                                    df_r_eq['fecha_inicio'] = pd.to_datetime(df_r_eq['fecha_inicio']).apply(lambda x: x.tz_localize(None) if x.tzinfo else x)
+                                    df_r_eq['fecha_fin'] = pd.to_datetime(df_r_eq['fecha_fin']).apply(lambda x: x.tz_localize(None) if x.tzinfo else x)
+                                    for _, r in df_r_eq.iterrows():
+                                        if dt_ini < r['fecha_fin'] and dt_fin > r['fecha_inicio']: solapamiento = True; break
+                            if solapamiento: st.error("❌ El horario choca con otra reserva.")
+                            else:
+                                try:
+                                    supabase.table("reservas").insert({"equipo_id": str(datos_eq['id']), "usuario": usuario_actual, "fecha_inicio": dt_ini.isoformat(), "fecha_fin": dt_fin.isoformat(), "lab_id": lab_id}).execute()
+                                    st.success("✅ Reserva guardada.")
+                                    st.rerun()
+                                except Exception as e: st.error(f"Error al reservar: {e}")
             with c_eq_agenda:
                 st.write("**Tus Próximas Reservas:**")
                 if not df_reservas.empty and not df_equipos.empty:
                     df_r = pd.merge(df_reservas, df_equipos[['id', 'nombre']], left_on='equipo_id', right_on='id', how='inner', suffixes=('', '_eq'))
                     df_r['fecha_inicio'] = pd.to_datetime(df_r['fecha_inicio']).apply(lambda x: x.tz_localize(None) if x.tzinfo else x)
                     df_r['fecha_fin'] = pd.to_datetime(df_r['fecha_fin']).apply(lambda x: x.tz_localize(None) if x.tzinfo else x)
-                    
                     df_futuras = df_r[(df_r['fecha_fin'] >= pd.to_datetime('today').tz_localize(None)) & (df_r['usuario'] == usuario_actual)].sort_values(by='fecha_inicio')
                     if df_futuras.empty: st.info("No tienes reservas activas.")
                     else:
@@ -485,7 +484,6 @@ with col_mon:
                                 st.write(f"🕒 {row['fecha_inicio'].strftime('%d/%b %H:%M')} - {row['fecha_fin'].strftime('%H:%M')}")
                                 gcal_link = generar_link_gcal(titulo=f"Uso Lab: {nom_eq}", inicio=row['fecha_inicio'], fin=row['fecha_fin'], descripcion=f"Reserva en Stck.")
                                 st.markdown(f"[📅 Google Calendar]({gcal_link})", unsafe_allow_html=True)
-                else: st.info("No hay reservas.")
 
         elif modo_eq == "⚙️ Mis Equipos":
             if not df_equipos.empty:
@@ -512,7 +510,7 @@ with col_mon:
                             st.rerun()
                         except Exception as e: st.error(f"Error: {e}")
 
-    # --- PESTAÑA: BITÁCORA TIPO NOTION (ELN REAL Y ORDENADO) ---
+    # --- PESTAÑA: ELN TIPO NOTION (EL VERDADERO CUADERNO) ---
     with tab_bitacora:
         st.markdown("### 📔 Cuaderno de Laboratorio (ELN)")
         
@@ -544,25 +542,23 @@ with col_mon:
                         hora_str = dt_obj.strftime('%H:%M')
                     except: pass
                 
-                meta_texto = f"📅 {fecha_str} " + (f"a las 🕒 {hora_str} " if hora_str else "") + f"| 👤 <b>{row['usuario']}</b>"
+                # --- DISEÑO TIPO NOTION: HOJA BLANCA CONTINUA ---
+                st.markdown(f"<span style='color:#666; font-size:0.9em; font-family: monospace;'>📅 {fecha_str} {hora_str} | 👤 <b>{row['usuario']}</b></span>", unsafe_allow_html=True)
                 
-                with st.container(border=True):
-                    # 1. LA FECHA Y EL AUTOR
-                    st.markdown(f"<div class='cuaderno-meta'>{meta_texto}</div>", unsafe_allow_html=True)
-                    
-                    # 2. EL TEXTO PRINCIPAL DEL USUARIO (Su redacción real)
-                    st.markdown(f"<div class='cuaderno-texto'>{row.get('contenido', '')}</div>", unsafe_allow_html=True)
-                    
-                    # 3. LOS ENLACES DE EVIDENCIA
-                    link = str(row.get('link_adjunto', '')).strip()
-                    if link.startswith('http'):
-                        st.markdown(f"📎 [**Ver Evidencia Adjunta**]({link})")
-                    
-                    # 4. LOS METADATOS TÉCNICOS DE LA IA (Ocultos en el desplegable)
-                    res_ia = str(row.get('resultado', '')).strip()
-                    if res_ia and res_ia != "None":
-                        with st.expander("⚙️ Detalles Técnicos y Descuentos (IA)"):
-                            st.markdown(res_ia)
+                # TEXTO NARRATIVO FLUIDO (Sin cajas)
+                st.markdown(f"<div style='font-size:1.05em; line-height:1.6; margin-top: 8px; margin-bottom: 8px; color:#222;'>{row.get('contenido', '')}</div>", unsafe_allow_html=True)
+                
+                link = str(row.get('link_adjunto', '')).strip()
+                if link.startswith('http'):
+                    st.markdown(f"📎 [**Evidencia Adjunta**]({link})")
+                
+                # EL TOGGLE DESPLEGABLE CON LOS DATOS DE LA IA (Escondido)
+                res_ia = str(row.get('resultado', '')).strip()
+                if res_ia and res_ia != "None":
+                    with st.expander("▶ Ver registros de la IA (Inventario y Protocolos)"):
+                        st.markdown(res_ia)
+                
+                st.markdown("<hr style='border: 0; border-top: 1px dashed #ddd; margin: 25px 0;'>", unsafe_allow_html=True)
 
     with tab_prot:
         tab_ejecutar, tab_crear = st.tabs(["🚀 Ejecutar & Finanzas", "📝 Nuevo Protocolo"])
@@ -760,7 +756,7 @@ with col_chat:
 
                     Analiza el mensaje del usuario y devuelve ÚNICAMENTE un JSON con esta estructura exacta:
                     {{
-                        "entrada_cuaderno": "Redacta de forma narrativa y en primera persona todo lo que el usuario relató. Este será el cuerpo principal de su Bitácora.",
+                        "entrada_cuaderno": "Transcribe aquí de forma fluida todo el relato del usuario. Esto será el texto principal de su Bitácora.",
                         "protocolo": {{"ejecutar": false, "nombre": "", "muestras": 1}},
                         "bitacora": {{"guardar": true}},
                         "inventario_manual": [],
@@ -768,9 +764,9 @@ with col_chat:
                     }}
 
                     Reglas:
-                    1. "entrada_cuaderno" es obligatorio. Debe contener TODO el texto humano, no un resumen corto.
-                    2. Si el usuario menciona que ejecutó un protocolo, activa "protocolo".
-                    3. Si pide reservar un equipo, activa "reserva.generar" deduciendo la fecha según hoy ({hoy_str}).
+                    1. "entrada_cuaderno" debe ser el texto narrativo completo para que el humano lo lea.
+                    2. Si ejecutó un protocolo, activa "protocolo" y calcula muestras.
+                    3. Si pide reservar un equipo, activa "reserva.generar" deduciendo fecha/hora según hoy ({hoy_str}).
                     Usuario: {prompt}
                     """
                     
@@ -848,14 +844,14 @@ with col_chat:
                         bit = data.get('bitacora', {})
                         if bit.get('guardar') or prot.get('ejecutar') or res_data.get('generar') or texto_principal_usuario:
                             
-                            metadatos_ia = "\n".join(log_ia_acciones) if log_ia_acciones else "Ninguna acción automática ejecutada en el inventario o calendario."
+                            metadatos_ia = "\n".join(log_ia_acciones) if log_ia_acciones else ""
                             
                             supabase.table("bitacora").insert({
                                 "lab_id": lab_id, 
                                 "usuario": usuario_actual, 
                                 "fecha": date.today().isoformat(),
-                                "contenido": texto_principal_usuario, # Ahora es el texto humano completo
-                                "resultado": metadatos_ia # Ahora solo aloja acciones de la IA
+                                "contenido": texto_principal_usuario,
+                                "resultado": metadatos_ia
                             }).execute()
                             
                             msg_final = f"📔 **Bitácora Guardada.**\n\n" + metadatos_ia
