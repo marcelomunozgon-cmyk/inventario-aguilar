@@ -397,10 +397,11 @@ if rol_actual == "proveedor":
 col_chat, col_mon = st.columns([1, 1.6], gap="large")
 
 with col_mon:
+    # SE ELIMINÓ LA PESTAÑA DE EDICIÓN PARA SIMPLIFICAR
     if rol_actual == "admin": 
-        tab_inv, tab_prot, tab_equipos, tab_bitacora, tab_edit, tab_analisis, tab_usuarios = st.tabs(["📦 Inventario", "🧪 Protocolos", "📅 Equipos", "📔 Bitácora", "⚙️ Edición", "📊 Analítica", "👥 Usuarios"])
+        tab_inv, tab_prot, tab_equipos, tab_bitacora, tab_analisis, tab_usuarios = st.tabs(["📦 Inventario", "🧪 Protocolos", "📅 Equipos", "📔 Bitácora", "📊 Analítica", "👥 Usuarios"])
     else: 
-        tab_inv, tab_prot, tab_equipos, tab_bitacora, tab_edit = st.tabs(["📦 Inventario", "🧪 Protocolos", "📅 Equipos", "📔 Bitácora", "⚙️ Edición"])
+        tab_inv, tab_prot, tab_equipos, tab_bitacora = st.tabs(["📦 Inventario", "🧪 Protocolos", "📅 Equipos", "📔 Bitácora"])
     
     with tab_inv:
         if not df.empty:
@@ -420,26 +421,84 @@ with col_mon:
                 if not df_criticos.empty: st.warning(f"⚠️ **{len(df_criticos)} Reactivos Críticos / Fuera de Stock**")
                 if not df_vencidos.empty: st.warning(f"📅 **{len(df_vencidos)} Reactivos Vencen en < 30 días**")
         
-        st.markdown("### 🗂️ Catálogo de Reactivos")
-        busqueda = st.text_input("🔍 Buscar reactivo...", value=st.session_state.auto_search)
-        df_show = df[df['nombre'].str.contains(busqueda, case=False)] if busqueda else df
-        categorias = sorted(list(set([str(c).strip() for c in df_show['categoria'].unique() if str(c).strip() not in ["", "nan", "None"]])))
+        # NUEVO SISTEMA DE INVENTARIO (Catálogo + Edición en un solo lugar)
+        subtab_cat, subtab_edit = st.tabs(["🗂️ Catálogo Rápido", "✍️ Gestionar Inventario (Edición)"])
         
-        if df.empty: st.info("Inventario vacío.")
-        else:
-            for cat in categorias:
-                with st.expander(f"📁 {cat}", expanded=False):
-                    subset_cat = df_show[df_show['categoria'].astype(str).str.strip() == cat].sort_values(by='nombre', key=lambda col: col.str.lower())
-                    st.dataframe(subset_cat[['nombre', 'cantidad_actual', 'unidad', 'ubicacion', 'posicion_caja', 'fecha_vencimiento']].style.apply(aplicar_estilos_inv, axis=1), use_container_width=True, hide_index=True)
+        with subtab_cat:
+            st.markdown("### Buscador de Reactivos")
+            busqueda = st.text_input("🔍 Buscar reactivo...", value=st.session_state.auto_search)
+            df_show = df[df['nombre'].str.contains(busqueda, case=False)] if busqueda else df
+            categorias = sorted(list(set([str(c).strip() for c in df_show['categoria'].unique() if str(c).strip() not in ["", "nan", "None"]])))
+            
+            if df.empty: st.info("Inventario vacío.")
+            else:
+                for cat in categorias:
+                    with st.expander(f"📁 {cat}", expanded=False):
+                        subset_cat = df_show[df_show['categoria'].astype(str).str.strip() == cat].sort_values(by='nombre', key=lambda col: col.str.lower())
+                        st.dataframe(subset_cat[['nombre', 'cantidad_actual', 'unidad', 'ubicacion', 'posicion_caja', 'fecha_vencimiento']].style.apply(aplicar_estilos_inv, axis=1), use_container_width=True, hide_index=True)
 
-            st.markdown("---")
-            with st.expander("🖨️ Generar Etiquetas Físicas (QR)"):
-                st.write("Selecciona un reactivo para generar su Código QR.")
-                item_qr = st.selectbox("Reactivo para Etiqueta:", df['nombre'].tolist())
-                if st.button("Generar Código QR"):
-                    qr_img_bytes = generar_qr(item_qr)
-                    st.image(qr_img_bytes, caption=f"Código QR para: {item_qr}", width=200)
-                    st.download_button(label="Descargar Imagen QR", data=qr_img_bytes, file_name=f"QR_{item_qr}.png", mime="image/png")
+                st.markdown("---")
+                with st.expander("🖨️ Generar Etiquetas Físicas (QR)"):
+                    st.write("Selecciona un reactivo para generar su Código QR.")
+                    item_qr = st.selectbox("Reactivo para Etiqueta:", df['nombre'].tolist())
+                    if st.button("Generar Código QR"):
+                        qr_img_bytes = generar_qr(item_qr)
+                        st.image(qr_img_bytes, caption=f"Código QR para: {item_qr}", width=200)
+                        st.download_button(label="Descargar Imagen QR", data=qr_img_bytes, file_name=f"QR_{item_qr}.png", mime="image/png")
+
+        with subtab_edit:
+            st.markdown("### ✍️ Base de Datos Maestra")
+            st.info("Modifica cantidades, umbrales, unidades y parámetros libremente. Los cambios se guardan al instante.")
+            if not df.empty:
+                # Ocultamos la ID pero permitimos editar TODO lo demás
+                cols_edit = ['id', 'nombre', 'categoria', 'cantidad_actual', 'unidad', 'umbral_minimo', 'ubicacion', 'posicion_caja', 'fecha_vencimiento', 'precio', 'fecha_cotizacion']
+                
+                edited_df = st.data_editor(
+                    df[cols_edit].copy(), 
+                    column_config={
+                        "id": None, # Magia: Oculta la columna de la vista pero la mantiene en memoria
+                        "nombre": "Nombre Reactivo",
+                        "categoria": "Categoría",
+                        "cantidad_actual": "Stock",
+                        "unidad": "Medida (ml, un, etc)",
+                        "umbral_minimo": "Alerta Mínima",
+                        "ubicacion": "Ubicación",
+                        "posicion_caja": "Caja/Estante",
+                        "fecha_vencimiento": "Vencimiento",
+                        "precio": "Precio Ref ($)",
+                        "fecha_cotizacion": "Fecha Cotización"
+                    }, 
+                    use_container_width=True, 
+                    hide_index=True
+                )
+                
+                if st.button("💾 Guardar Cambios en BD", type="primary"):
+                    for _, row in edited_df.iterrows():
+                        d = row.replace({np.nan: None}).to_dict()
+                        if 'id' in d and str(d['id']).strip() and d['id'] is not None: 
+                            d['lab_id'] = lab_id 
+                            supabase.table("items").upsert(d).execute()
+                    st.rerun()
+
+            if rol_actual == "admin" and not df.empty:
+                st.markdown("---")
+                st.markdown("### 🛒 Panel de Compras")
+                st.caption(f"📧 **Destinatario de cotización:** `{correo_destinatario_compras}`")
+                c_comp1, c_comp2 = st.columns([2, 1])
+                with c_comp1:
+                    item_compra = st.selectbox("Seleccionar Reactivo a Comprar:", df['nombre'].tolist())
+                    datos_item = df[df['nombre'] == item_compra].iloc[0]
+                    fecha_cot = datos_item['fecha_cotizacion'] if datos_item['fecha_cotizacion'] else "Nunca"
+                    precio_ref = datos_item['precio'] if datos_item['precio'] > 0 else "No registrado"
+                    st.write(f"**Última cotización:** {fecha_cot} | **Precio Referencial:** ${precio_ref}")
+                with c_comp2:
+                    st.write("")
+                    if st.button("🛒 Solicitar", use_container_width=True): st.session_state.confirmar_compra = item_compra
+                    if st.session_state.get('confirmar_compra') == item_compra:
+                        if st.button("✅ Confirmar Enviar", type="primary"):
+                            enviar_correo_compras(item_compra, precio_ref, usuario_actual)
+                            st.session_state.confirmar_compra = None
+                            st.rerun()
 
     with tab_equipos:
         st.markdown("### 🗓️ Gestión y Booking de Equipos")
@@ -580,30 +639,26 @@ with col_mon:
             
             html_cuaderno = "<div style='font-family: \"Inter\", sans-serif; max-width: 850px;'>"
             
-            # ZONA HORARIA DE CHILE FORZADA PARA QUE NO FALLE
             chile_tz = pytz.timezone('America/Santiago')
             
             for _, row in df_b_show.iterrows():
                 fecha_str = row.get('fecha', '')
                 hora_str = ""
                 
-                # Extracción robusta de hora
                 if 'created_at' in row and pd.notna(row['created_at']) and str(row['created_at']).strip():
                     try:
                         dt_obj = pd.to_datetime(row['created_at'])
                         if dt_obj.tzinfo is None:
-                            dt_obj = dt_obj.tz_localize('UTC') # Supabase devuelve UTC
+                            dt_obj = dt_obj.tz_localize('UTC') 
                         dt_local = dt_obj.tz_convert(chile_tz)
                         hora_str = dt_local.strftime('%H:%M')
                     except Exception as e: 
                         pass
                 
-                # Limpieza de textos
                 contenido_esc = html_lib.escape(str(row.get('contenido', '')).strip())
                 res_ia = str(row.get('resultado', '')).strip()
                 link = str(row.get('link_adjunto', '')).strip()
                 
-                # Estructura Notion
                 html_cuaderno += f"""
                 <details class='notion-toggle'>
                     <summary>
@@ -613,11 +668,9 @@ with col_mon:
                         <div style='margin-bottom: 8px; color: #555; font-size: 0.95em;'>🕒 {fecha_str} {hora_str} &nbsp;|&nbsp; 👤 <b>{row['usuario']}</b></div>
                 """
                 
-                # Inyección de la IA
                 if res_ia and res_ia != "None":
                     html_cuaderno += f"<div>{res_ia}</div>"
                 
-                # Enlaces
                 if link.startswith('http'):
                     html_cuaderno += f"<div style='margin-top:8px;'>📎 <a href='{link}' target='_blank'>Ver Evidencia Adjunta</a></div>"
                     
@@ -652,19 +705,6 @@ with col_mon:
                 if st.form_submit_button("💾 Guardar"):
                     supabase.table("protocolos").insert({"nombre": n_prot, "materiales_base": mat_base, "lab_id": lab_id}).execute()
                     st.rerun()
-
-    with tab_edit:
-        st.markdown("### ✍️ Edición Masiva")
-        if not df.empty:
-            cols_edit = ['nombre', 'cantidad_actual', 'umbral_minimo', 'precio', 'fecha_vencimiento', 'fecha_cotizacion', 'id']
-            edited_df = st.data_editor(df[cols_edit].copy(), column_config={"id": st.column_config.TextColumn("ID", disabled=True)}, use_container_width=True, hide_index=True)
-            if st.button("💾 Guardar Cambios"):
-                for _, row in edited_df.iterrows():
-                    d = row.replace({np.nan: None}).to_dict()
-                    if 'id' in d and str(d['id']).strip(): 
-                        d['lab_id'] = lab_id 
-                        supabase.table("items").upsert(d).execute()
-                st.rerun()
 
     if rol_actual == "admin":
         with tab_analisis:
@@ -707,7 +747,6 @@ with col_mon:
                     descuentos = []
                     costo_total_exp = 0
                     
-                    # Usa el mismo extractor inteligente para la simulación
                     for linea in info_p.split('\n'):
                         if "," in linea or ":" in linea or "de" in linea:
                             partes = re.split(r'[,:]', linea)
@@ -716,7 +755,6 @@ with col_mon:
                                 if match_num:
                                     cant_base = float(match_num.group())
                                     cant_total = cant_base * n_muestras
-                                    # Busca item en la db que coincida con parte del texto
                                     for idx, row_item in df.iterrows():
                                         if row_item['nombre'].lower() in p.lower():
                                             if row_item['precio'] > 0 and row_item['cantidad_actual'] > 0:
@@ -764,7 +802,7 @@ with col_mon:
                 if miembros.data: st.dataframe(pd.DataFrame(miembros.data), hide_index=True, use_container_width=True)
             except Exception as e: st.error(f"❌ Error al cargar la lista: {e}")
 
-# --- PANEL IA ORQUESTADOR (Lector Natural) ---
+# --- PANEL IA ORQUESTADOR CON LECTOR NATURAL ---
 with col_chat:
     st.markdown("### 💬 Secretario IA")
     chat_box = st.container(height=400, border=False)
@@ -826,25 +864,25 @@ with col_chat:
                     historial_str = "\n".join([f"{'Usuario' if m['role']=='user' else 'IA'}: {m['content']}" for m in st.session_state.messages[-8:-1]])
                     
                     prompt_sistema = f"""
-                    Eres la Inteligencia Artificial del LIMS Stck. Tienes contexto y memoria. Hoy es {hoy_str}.
-                    Inventario Disponible: {d_ia}
-                    Protocolos Disponibles: {d_prot}
-                    Historial Reciente de la charla: {historial_str}
+                    Eres la Inteligencia Artificial del LIMS Stck. Hoy es {hoy_str}.
+                    Inventario: {d_ia}
+                    Protocolos: {d_prot}
+                    Historial: {historial_str}
 
-                    El usuario acaba de decir: "{prompt}"
+                    El usuario dice: "{prompt}"
 
                     Devuelve ÚNICAMENTE un JSON con esta estructura exacta:
                     {{
-                        "respuesta_chat": "Si el usuario reporta un protocolo, dale una respuesta corta (ej. 'Anotado.') y SIEMPRE pregunta: '¿Usaste alguna placa o material extra (sí/no)?'. Si ya está respondiendo a esa pregunta (ej 'no', 'usé 1 de 6 pocillos'), responde solo 'Entendido y descontado.' sin hacer más preguntas.",
-                        "entrada_cuaderno": "Copia sus palabras EXACTAS si es una historia nueva. Si la respuesta es a una pregunta tuya ('sí', 'no', 'nada', '1 placa'), DEBE QUEDAR VACÍO.",
+                        "respuesta_chat": "Si es un pasaje celular, confirma y pregunta SOLO: '¿Usaste alguna placa o frasco nuevo (sí/no)?'. Si ya responde a esa pregunta (ej 'no', 'usé 1'), responde 'Entendido y descontado.'",
+                        "entrada_cuaderno": "Copia EXACTAMENTE sus palabras (ej: 'Hoy hice pasaje...'). Si es una respuesta a tu pregunta (ej 'sí', 'no', '1 placa'), DEBE QUEDAR VACÍO.",
                         "protocolo_detectado": {{"nombre": "Nombre EXACTO del protocolo", "muestras": 1}},
                         "descuentos_protocolo": [{{"nombre_item_inventario": "Nombre exacto en inventario", "cantidad_total_a_restar": 0.0}}],
                         "descuentos_extra": [{{"nombre_item_inventario": "Nombre exacto en inventario", "cantidad_a_restar": 0.0}}]
                     }}
 
                     REGLAS INFLEXIBLES:
-                    1. LA IA CALCULA (NUEVO): Si detectas un protocolo, LEE su campo 'materiales_base'. Multiplica las cantidades que diga el texto por el número de muestras que hizo el usuario. Pon los totales en 'descuentos_protocolo'. NO INVENTES NOMBRES, busca el más parecido en 'Inventario Disponible'.
-                    2. ANTI-BUCLES: Si el usuario responde 'no' o 'nada' a tu pregunta, "entrada_cuaderno" DEBE SER VACÍO y no ejecutes ningún protocolo de nuevo.
+                    1. EL CEREBRO MATEMÁTICO: Si detectas un protocolo, LEE su campo 'materiales_base' (texto natural). Busca el reactivo en la lista de Inventario. Multiplica la cantidad por las muestras y ponlo en 'descuentos_protocolo'. Ej: Si la receta dice 'Usa 2 ml de DMEM' y el usuario hizo 3 pasajes, tú pones cantidad=6.0 y el nombre de inventario del DMEM.
+                    2. ANTI-BUCLES: Si el usuario responde 'no' o 'nada', "entrada_cuaderno" DEBE SER VACÍO, no ejecutes protocolos.
                     """
                     
                     res_ai = model.generate_content(prompt_sistema).text
@@ -855,13 +893,12 @@ with col_chat:
                         log_ia_acciones = []
                         lista_descuentos = []
                         
-                        # Candado anti-hallucination para respuestas cortas
                         texto_minuscula = prompt.lower().strip()
                         es_respuesta_corta = len(texto_minuscula.split()) <= 5 and any(w in texto_minuscula for w in ['no', 'nada', 'ninguno', 'ninguna', 'listo', 'ya', 'si', 'sí', 'ok'])
                         if es_respuesta_corta:
                             data['entrada_cuaderno'] = ""
 
-                        # 1. PROTOCOLOS (Ahora la IA manda los números limpios, cero fallos de formato)
+                        # 1. PROTOCOLOS (MATEMÁTICA PURA RESUELTA POR LA IA)
                         p_dict = data.get('protocolo_detectado', {})
                         d_prot = data.get('descuentos_protocolo', [])
                         
@@ -922,14 +959,14 @@ with col_chat:
                                     else:
                                         lista_descuentos.append(f"&nbsp;&nbsp;&nbsp; - 📉 {cant_man} {unidad_item} de {nombre_item} <i>(Extra)</i>")
 
-                        # ENSAMBLAJE FINAL DEL HTML DE IA
+                        # ENSAMBLAJE FINAL DEL HTML
                         if lista_descuentos:
                             log_ia_acciones.append("<b>📦 Descontado:</b>")
                             log_ia_acciones.extend(lista_descuentos)
 
                         metadatos_ia = "<br>".join(log_ia_acciones)
 
-                        # 3. GUARDAR EN BITÁCORA (Si no es basura)
+                        # 3. GUARDAR EN BITÁCORA (Evita guardar basura de los Sí/No)
                         texto_cuaderno = data.get('entrada_cuaderno', "").strip()
                         if texto_cuaderno and not es_respuesta_corta:
                             supabase.table("bitacora").insert({
