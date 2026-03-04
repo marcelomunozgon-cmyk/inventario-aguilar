@@ -15,7 +15,12 @@ import urllib.parse
 import qrcode
 from io import BytesIO
 from fpdf import FPDF
-import altair as alt
+
+# --- IMPORTACIÓN DEL NUEVO CALENDARIO ---
+try:
+    from streamlit_calendar import calendar
+except ImportError:
+    st.error("⚠️ Falta instalar 'streamlit-calendar'. Por favor, agrégalo a tu archivo requirements.txt")
 
 # --- 1. CONFIGURACIÓN Y ESTÉTICA ---
 st.set_page_config(page_title="Stck", layout="wide", page_icon="🔬")
@@ -32,7 +37,6 @@ st.markdown("""
     .stButton>button { border-radius: 8px; font-weight: 500; }
     .bitacora-entry { background-color: #fcfcfc; padding: 20px; border-radius: 8px; border-left: 5px solid #ffaa00; margin-bottom: 15px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); font-family: 'Georgia', serif;}
     .badge-costo { background-color: #e8f5e9; color: #2e7d32; padding: 5px 10px; border-radius: 15px; font-weight: bold; font-size: 0.9em; }
-    .streamlit-expanderHeader { font-size: 1.1em !important; font-weight: 500; color: #111; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -389,10 +393,56 @@ with col_mon:
     with tab_equipos:
         st.markdown("### 🗓️ Gestión y Booking de Equipos")
         if rol_actual == "admin": 
-            sub_tab_reserva, sub_tab_calendario, sub_tab_mis_equipos = st.tabs(["📅 Agendar", "📊 Calendario Visual", "⚙️ Mis Equipos"])
+            sub_tab_calendario, sub_tab_reserva, sub_tab_mis_equipos = st.tabs(["📊 Calendario", "📅 Agendar", "⚙️ Mis Equipos"])
         else: 
-            tabs_member = st.tabs(["📅 Agendar", "📊 Calendario Visual"])
-            sub_tab_reserva = tabs_member[0]; sub_tab_calendario = tabs_member[1]; sub_tab_mis_equipos = None
+            tabs_member = st.tabs(["📊 Calendario", "📅 Agendar"])
+            sub_tab_calendario = tabs_member[0]; sub_tab_reserva = tabs_member[1]; sub_tab_mis_equipos = None
+
+        with sub_tab_calendario:
+            st.write("Vista interactiva de ocupación del laboratorio.")
+            
+            if not df_reservas.empty and not df_equipos.empty:
+                df_cal = pd.merge(df_reservas, df_equipos[['id', 'nombre']], left_on='equipo_id', right_on='id', how='inner', suffixes=('', '_eq'))
+                
+                # Preparamos los eventos para el nuevo calendario
+                calendar_events = []
+                equipos_unicos = df_cal['nombre' if 'nombre' in df_cal.columns else 'nombre_eq'].unique()
+                
+                # Paleta de colores vibrante estilo Google Calendar
+                colores = ["#4285F4", "#0F9D58", "#F4B400", "#DB4437", "#673AB7", "#00ACC1", "#FF7043"]
+                color_map = {eq: colores[i % len(colores)] for i, eq in enumerate(equipos_unicos)}
+                
+                for _, row in df_cal.iterrows():
+                    nom_eq = row.get('nombre', row.get('nombre_eq', 'Equipo'))
+                    inicio_iso = pd.to_datetime(row['fecha_inicio']).dt.tz_localize(None).isoformat()
+                    fin_iso = pd.to_datetime(row['fecha_fin']).dt.tz_localize(None).isoformat()
+                    
+                    calendar_events.append({
+                        "title": f"{nom_eq} ({row['usuario']})",
+                        "start": inicio_iso,
+                        "end": fin_iso,
+                        "color": color_map.get(nom_eq, "#4285F4")
+                    })
+                
+                calendar_options = {
+                    "headerToolbar": {
+                        "left": "prev,next today",
+                        "center": "title",
+                        "right": "timeGridDay,timeGridWeek,dayGridMonth",
+                    },
+                    "initialView": "timeGridWeek",
+                    "slotMinTime": "07:00:00",
+                    "slotMaxTime": "22:00:00",
+                    "allDaySlot": False,
+                    "height": 600,
+                }
+                
+                try:
+                    calendar(events=calendar_events, options=calendar_options)
+                except NameError:
+                    st.warning("Por favor, asegúrate de haber instalado 'streamlit-calendar' en tus requerimientos.")
+            else:
+                st.info("La agenda del laboratorio está completamente libre.")
 
         with sub_tab_reserva:
             c_eq_res, c_eq_agenda = st.columns([1, 1.2])
@@ -405,19 +455,6 @@ with col_mon:
                     if str(datos_eq.get('requisitos', '')).strip(): st.warning(f"⚠️ **Requisitos:** {datos_eq['requisitos']}")
                     
                     fecha_res = st.date_input("Fecha de reserva:")
-                    st.markdown(f"**Disponibilidad para el {fecha_res.strftime('%d/%m/%Y')}:**")
-                    df_r_dia = pd.DataFrame()
-                    if not df_reservas.empty:
-                        df_r_eq = df_reservas[df_reservas['equipo_id'] == str(datos_eq['id'])].copy()
-                        if not df_r_eq.empty:
-                            df_r_eq['fecha_inicio'] = pd.to_datetime(df_r_eq['fecha_inicio'])
-                            df_r_eq['fecha_fin'] = pd.to_datetime(df_r_eq['fecha_fin'])
-                            df_r_dia = df_r_eq[df_r_eq['fecha_inicio'].dt.date == fecha_res].sort_values(by='fecha_inicio')
-                    
-                    if not df_r_dia.empty:
-                        for _, row in df_r_dia.iterrows(): st.markdown(f"🚫 `{row['fecha_inicio'].strftime('%H:%M')} - {row['fecha_fin'].strftime('%H:%M')}` (Reservado por {row['usuario']})")
-                    else: st.success("✅ Todo el día está libre.")
-                    
                     col_h1, col_h2 = st.columns(2)
                     with col_h1: t_ini = st.time_input("Hora Inicio:", value=time(9, 0))
                     with col_h2: t_fin = st.time_input("Hora Fin:", value=time(10, 0))
@@ -428,9 +465,13 @@ with col_mon:
                         if dt_ini >= dt_fin: st.error("La hora de inicio debe ser anterior.")
                         else:
                             solapamiento = False
-                            if not df_r_dia.empty:
-                                for _, r in df_r_dia.iterrows():
-                                    if dt_ini < r['fecha_fin'] and dt_fin > r['fecha_inicio']: solapamiento = True; break
+                            if not df_reservas.empty:
+                                df_r_eq = df_reservas[df_reservas['equipo_id'] == str(datos_eq['id'])].copy()
+                                if not df_r_eq.empty:
+                                    df_r_eq['fecha_inicio'] = pd.to_datetime(df_r_eq['fecha_inicio']).dt.tz_localize(None)
+                                    df_r_eq['fecha_fin'] = pd.to_datetime(df_r_eq['fecha_fin']).dt.tz_localize(None)
+                                    for _, r in df_r_eq.iterrows():
+                                        if dt_ini < r['fecha_fin'] and dt_fin > r['fecha_inicio']: solapamiento = True; break
                             if solapamiento: st.error("❌ El horario choca con otra reserva.")
                             else:
                                 try:
@@ -459,35 +500,6 @@ with col_mon:
                                 st.markdown(f"[📅 Google Calendar]({gcal_link})", unsafe_allow_html=True)
                 else: st.info("No hay reservas.")
 
-        with sub_tab_calendario:
-            st.write("Visión general de ocupación del laboratorio.")
-            vista_dias = st.radio("Ver próximos:", [2, 7, 30], format_func=lambda x: f"{x} Días", horizontal=True)
-            
-            if not df_reservas.empty and not df_equipos.empty:
-                df_cal = pd.merge(df_reservas, df_equipos[['id', 'nombre']], left_on='equipo_id', right_on='id', how='inner', suffixes=('', '_eq'))
-                df_cal['Inicio'] = pd.to_datetime(df_cal['fecha_inicio']).dt.tz_localize(None)
-                df_cal['Fin'] = pd.to_datetime(df_cal['fecha_fin']).dt.tz_localize(None)
-                
-                # FIX DE COLUMNAS APLICADO AQUI:
-                df_cal['Equipo'] = df_cal['nombre'] if 'nombre' in df_cal.columns else df_cal['nombre_eq']
-                
-                limite_fecha = pd.to_datetime('today').tz_localize(None) + timedelta(days=vista_dias)
-                df_filtro = df_cal[(df_cal['Inicio'] >= pd.to_datetime('today').tz_localize(None) - timedelta(days=1)) & (df_cal['Inicio'] <= limite_fecha)]
-                
-                if not df_filtro.empty:
-                    chart = alt.Chart(df_filtro).mark_bar(cornerRadius=5, height=20).encode(
-                        x=alt.X('Inicio:T', title='Timeline (Horas/Días)'),
-                        x2='Fin:T',
-                        y=alt.Y('Equipo:N', title='', sort=alt.EncodingSortField(field="Equipo", order="ascending")),
-                        color=alt.Color('usuario:N', legend=alt.Legend(title="Reservado por")),
-                        tooltip=[alt.Tooltip('Equipo'), alt.Tooltip('usuario', title="Usuario"), alt.Tooltip('Inicio', format="%d %b %H:%M"), alt.Tooltip('Fin', format="%H:%M")]
-                    ).properties(height=350).interactive()
-                    st.altair_chart(chart, use_container_width=True)
-                else:
-                    st.info(f"Agenda completamente libre para los próximos {vista_dias} días.")
-            else:
-                st.info("Aún no hay datos para graficar.")
-                    
         if rol_actual == "admin" and sub_tab_mis_equipos:
             with sub_tab_mis_equipos:
                 st.write("Gestiona la información de tus equipos.")
