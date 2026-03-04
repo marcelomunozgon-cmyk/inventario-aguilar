@@ -54,7 +54,6 @@ model = cargar_modelo_rapido()
 # --- GESTOR DE RUTINAS DIARIAS ---
 if "rutinas_diarias" not in st.session_state:
     st.session_state.rutinas_diarias = {"fecha": str(date.today()), "mostradas": []}
-# Si cambió de día, limpiamos la memoria de rutinas
 if st.session_state.rutinas_diarias["fecha"] != str(date.today()):
     st.session_state.rutinas_diarias = {"fecha": str(date.today()), "mostradas": []}
 
@@ -459,6 +458,8 @@ with col_mon:
                             else:
                                 try:
                                     supabase.table("reservas").insert({"equipo_id": str(datos_eq['id']), "usuario": usuario_actual, "fecha_inicio": dt_ini.isoformat(), "fecha_fin": dt_fin.isoformat(), "lab_id": lab_id}).execute()
+                                    admin_email = obtener_admin_email(lab_id)
+                                    enviar_correo_reserva(datos_eq['nombre'], fecha_res.strftime('%d/%m/%Y'), t_ini.strftime('%H:%M'), t_fin.strftime('%H:%M'), usuario_actual, admin_email, st.session_state.usuario_autenticado)
                                     st.success("✅ Reserva guardada.")
                                     st.rerun()
                                 except Exception as e: st.error(f"Error al reservar: {e}")
@@ -542,7 +543,6 @@ with col_mon:
                         hora_str = dt_obj.strftime('%H:%M')
                     except: pass
                 
-                # --- DISEÑO TIPO NOTION ---
                 st.markdown(f"<span style='color:#666; font-size:0.9em; font-family: monospace;'>📅 {fecha_str} {hora_str} | 👤 <b>{row['usuario']}</b></span>", unsafe_allow_html=True)
                 st.markdown(f"<div style='font-size:1.05em; line-height:1.6; margin-top: 8px; margin-bottom: 8px; color:#222; white-space: pre-wrap;'>{row.get('contenido', '')}</div>", unsafe_allow_html=True)
                 
@@ -619,7 +619,10 @@ with col_mon:
                         df_pred['dias_restantes_num'] = df_pred['dias_restantes']
                         df_pred['dias_restantes'] = df_pred['dias_restantes'].apply(lambda x: "🚨 Se agota hoy/mañana" if x <= 1.5 else f"Aprox {int(x)} días")
                         df_pred['tasa_diaria'] = df_pred['tasa_diaria'].round(2)
-                        st.dataframe(df_pred[['nombre', 'cantidad_actual', 'unidad', 'consumo_30d', 'tasa_diaria', 'dias_restantes']].sort_values(by='dias_restantes_num', ascending=True).drop(columns=['dias_restantes_num']), use_container_width=True, hide_index=True)
+                        
+                        # EL FIX ESTÁ AQUÍ (Orden de operaciones en dataframe)
+                        df_mostrar = df_pred.sort_values(by='dias_restantes_num', ascending=True)[['nombre', 'cantidad_actual', 'unidad', 'consumo_30d', 'tasa_diaria', 'dias_restantes']]
+                        st.dataframe(df_mostrar, use_container_width=True, hide_index=True)
                     else: st.info("Aún no hay suficientes retiros para proyectar matemáticas.")
                 else: st.info("Registra movimientos para que la IA aprenda el consumo.")
 
@@ -688,7 +691,7 @@ with col_chat:
     chat_box = st.container(height=400, border=False)
     
     if "messages" not in st.session_state: 
-        st.session_state.messages = [{"role": "assistant", "content": f"¡Hola! Dime qué hiciste o qué necesitas reservar."}]
+        st.session_state.messages = [{"role": "assistant", "content": f"¡Hola! Dime qué hiciste o qué necesitas reservar. Si haces cultivos, te recordaré algunas rutinas."}]
     
     for m in st.session_state.messages:
         with chat_box: st.chat_message(m["role"]).markdown(m["content"])
@@ -742,7 +745,6 @@ with col_chat:
                     d_eq = df_equipos[['id', 'nombre']].to_json(orient='records') if not df_equipos.empty else "[]"
                     hoy_str = date.today().isoformat()
                     
-                    # Cargar historial de chat y lista negra de rutinas diarias
                     historial_str = "\n".join([f"{'Usuario' if m['role']=='user' else 'IA'}: {m['content']}" for m in st.session_state.messages[-10:-1]])
                     rutinas_str = ", ".join(st.session_state.rutinas_diarias["mostradas"])
                     
@@ -759,7 +761,7 @@ with col_chat:
 
                     Analiza el último mensaje del Usuario ({prompt}) y devuelve ÚNICAMENTE un JSON con esta estructura exacta:
                     {{
-                        "respuesta_chat": "Lo que le dirás al usuario en el chat. Haz recordatorios (ej. revisar agua/CO2 de incubadora si hacen cultivos) SOLO SI la palabra clave (ej. 'incubadora') NO está en las rutinas ya recordadas. Haz preguntas aclaratorias si falta descontar materiales extra (ej. '¿Usaste placa nueva?').",
+                        "respuesta_chat": "Lo que le dirás al usuario en el chat. Haz recordatorios (ej. revisar agua/CO2 de incubadora si hacen cultivos) SOLO SI la palabra clave NO está en las rutinas ya recordadas. Haz preguntas aclaratorias si falta descontar materiales.",
                         "bitacora": {{"guardar": false, "entrada_cuaderno": ""}},
                         "protocolo": {{"ejecutar": false, "nombre": "", "muestras": 1}},
                         "inventario_ajustes": [{{"id": "id_del_item", "cantidad_a_restar": 0}}],
@@ -768,9 +770,9 @@ with col_chat:
                     }}
 
                     Reglas Clave:
-                    1. Si es una actividad de laboratorio (no una simple respuesta corta), pon "bitacora.guardar" en true y copia EXACTAMENTE LAS PALABRAS del usuario en "entrada_cuaderno". ¡No resumas!
-                    2. Si le recuerdas algo de rutina ahora, agrega su palabra clave a "nuevas_rutinas_recordadas" para no molestar al usuario con lo mismo más tarde.
-                    3. Si el usuario responde a una pregunta anterior (ej. "Sí, usé 2 placas"), búscalas en el Inventario y usa "inventario_ajustes" para restar esa cantidad.
+                    1. Si es una actividad de laboratorio (no una respuesta corta a una pregunta tuya), pon "bitacora.guardar" en true y COPIA EXACTAMENTE LAS PALABRAS del usuario en "entrada_cuaderno". ¡No resumas!
+                    2. Si le recuerdas algo de rutina ahora, agrega su palabra clave a "nuevas_rutinas_recordadas" para no molestarlo luego.
+                    3. Si el usuario responde a una pregunta anterior tuya (ej. "Sí, usé 2 placas"), búscalas en el Inventario y usa "inventario_ajustes" para RESTAR.
                     """
                     
                     res_ai = model.generate_content(prompt_sistema).text
@@ -780,7 +782,6 @@ with col_chat:
                         data = json.loads(match.group())
                         log_ia_acciones = []
                         
-                        # Actualizar lista de rutinas mostradas hoy
                         nuevas_rutinas = data.get('nuevas_rutinas_recordadas', [])
                         if nuevas_rutinas: st.session_state.rutinas_diarias["mostradas"].extend(nuevas_rutinas)
                         
