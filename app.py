@@ -12,6 +12,9 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import urllib.parse
+import qrcode
+from io import BytesIO
+from fpdf import FPDF
 
 # --- 1. CONFIGURACIÓN Y ESTÉTICA ---
 st.set_page_config(page_title="Stck", layout="wide", page_icon="🔬")
@@ -154,6 +157,48 @@ correo_destinatario_compras = st.secrets.get("EMAIL_RECEIVER", "No configurado")
 if 'auto_search' not in st.session_state: st.session_state.auto_search = ""
 if "backup_inventario" not in st.session_state: st.session_state.backup_inventario = None
 def crear_punto_restauracion(df_actual): st.session_state.backup_inventario = df_actual.copy()
+
+def generar_qr(texto):
+    qr = qrcode.QRCode(version=1, error_correction=qrcode.constants.ERROR_CORRECT_L, box_size=10, border=4)
+    qr.add_data(texto)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="black", back_color="white")
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+def generar_pdf_inventario(df_inventario, nombre_lab):
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Arial", 'B', 16)
+    pdf.cell(200, 10, txt=f"Reporte Oficial de Inventario", ln=True, align='C')
+    pdf.set_font("Arial", size=10)
+    pdf.cell(200, 10, txt=f"Generado por: Stck LIMS | Fecha: {date.today()}", ln=True, align='C')
+    pdf.ln(10)
+    
+    # Encabezados de tabla
+    pdf.set_font("Arial", 'B', 10)
+    pdf.cell(85, 10, 'Reactivo', border=1)
+    pdf.cell(25, 10, 'Stock', border=1)
+    pdf.cell(40, 10, 'Ubicacion', border=1)
+    pdf.cell(40, 10, 'Vencimiento', border=1)
+    pdf.ln()
+
+    # Contenido de tabla (sanitizado para evitar errores de codificación FPDF)
+    pdf.set_font("Arial", size=9)
+    for _, row in df_inventario.iterrows():
+        nombre = str(row['nombre']).encode('latin-1', 'replace').decode('latin-1')[:45]
+        stock = f"{row['cantidad_actual']} {row['unidad']}".encode('latin-1', 'replace').decode('latin-1')
+        ub = str(row['ubicacion']).encode('latin-1', 'replace').decode('latin-1')[:20]
+        venc = str(row['fecha_vencimiento']).encode('latin-1', 'replace').decode('latin-1')
+        
+        pdf.cell(85, 10, nombre, border=1)
+        pdf.cell(25, 10, stock, border=1)
+        pdf.cell(40, 10, ub, border=1)
+        pdf.cell(40, 10, venc, border=1)
+        pdf.ln()
+    
+    return pdf.output(dest='S').encode('latin-1')
 
 def obtener_admin_email(lab_id):
     try:
@@ -332,6 +377,16 @@ with col_mon:
                     subset_cat = df_show[df_show['categoria'].astype(str).str.strip() == cat].sort_values(by='nombre', key=lambda col: col.str.lower())
                     st.dataframe(subset_cat[['nombre', 'cantidad_actual', 'unidad', 'ubicacion', 'posicion_caja', 'fecha_vencimiento']].style.apply(aplicar_estilos_inv, axis=1), use_container_width=True, hide_index=True)
 
+            # EL NUEVO CREADOR DE CÓDIGOS QR
+            st.markdown("---")
+            with st.expander("🖨️ Generar Etiquetas Físicas (QR)"):
+                st.write("Selecciona un reactivo para generar su Código QR. Puedes imprimirlo y pegarlo en el frasco.")
+                item_qr = st.selectbox("Reactivo para Etiqueta:", df['nombre'].tolist())
+                if st.button("Generar Código QR"):
+                    qr_img_bytes = generar_qr(item_qr)
+                    st.image(qr_img_bytes, caption=f"Código QR para: {item_qr}", width=200)
+                    st.download_button(label="Descargar Imagen QR", data=qr_img_bytes, file_name=f"QR_{item_qr}.png", mime="image/png")
+
     with tab_equipos:
         st.markdown("### 🗓️ Gestión y Booking de Equipos")
         if rol_actual == "admin": 
@@ -429,7 +484,6 @@ with col_mon:
                                 st.rerun()
                             except Exception as e: st.error(f"Error: {e}")
 
-    # --- PESTAÑA MEJORADA: BITÁCORA CON DESCUENTO POR DEFECTO ---
     with tab_bitacora:
         st.markdown("### 📔 Electronic Lab Notebook (ELN)")
         if rol_actual == "admin": filtro_usuario = st.selectbox("Ver bitácora de:", ["Todos"] + list(set(nombres_equipo)))
@@ -441,8 +495,6 @@ with col_mon:
             with st.container(border=True):
                 st.write("📝 **Nueva Entrada de Bitácora**")
                 fecha_b = st.date_input("Fecha:", value=date.today())
-                
-                # Menú desplegable obligatorio para vincular protocolo (con opción libre)
                 opciones_prot = ["Ninguno (Entrada Libre)"] + df_prot['nombre'].tolist() if not df_prot.empty else ["Ninguno (Entrada Libre)"]
                 prot_seleccionado = st.selectbox("🔗 Protocolo Ejecutado (Descuenta inventario automáticamente):", opciones_prot)
                 
@@ -467,7 +519,6 @@ with col_mon:
                                 contenido_final = f"{texto_metodo}\n\n*Digitalizado por IA:*\n{transcripcion}"
                             except: pass
                     
-                    # Si eligió un protocolo real, descontamos stock automáticamente
                     if prot_seleccionado != "Ninguno (Entrada Libre)":
                         contenido_final = f"🧪 **Protocolo Vinculado:** {prot_seleccionado} (x{n_muestras_b} muestras)\n\n{contenido_final}"
                         info_p = df_prot[df_prot['nombre'] == prot_seleccionado]['materiales_base'].values[0]
@@ -485,10 +536,7 @@ with col_mon:
 
                     if contenido_final.strip() or texto_resultado.strip():
                         try:
-                            supabase.table("bitacora").insert({
-                                "lab_id": lab_id, "usuario": usuario_actual, "fecha": fecha_b.isoformat(), 
-                                "contenido": contenido_final, "resultado": texto_resultado, "link_adjunto": link_evidencia
-                            }).execute()
+                            supabase.table("bitacora").insert({"lab_id": lab_id, "usuario": usuario_actual, "fecha": fecha_b.isoformat(), "contenido": contenido_final, "resultado": texto_resultado, "link_adjunto": link_evidencia}).execute()
                             st.success("¡Entrada guardada con éxito!")
                             st.rerun()
                         except Exception as e: st.error(f"❌ Error BD: {e}")
@@ -504,14 +552,12 @@ with col_mon:
                     for _, row in df_b_show.iterrows():
                         res_html = f"<b>📊 Resultados:</b><br><span style='white-space: pre-wrap;'>{row.get('resultado', '')}</span><br><br>" if row.get('resultado') else ""
                         link_html = f"📎 <a href='{row.get('link_adjunto')}' target='_blank'>Ver Evidencia Adjunta</a>" if str(row.get('link_adjunto')).startswith('http') else ""
-                        
                         st.markdown(f"""
                         <div class="bitacora-entry">
                             <small style="color: gray;">📅 {row['fecha']} | 👤 <b>{row['usuario']}</b></small><br><br>
                             <b>🧪 Metodología:</b><br>
                             <span style="white-space: pre-wrap; line-height: 1.5;">{row.get('contenido', '')}</span><br><br>
-                            {res_html}
-                            {link_html}
+                            {res_html}{link_html}
                         </div>
                         """, unsafe_allow_html=True)
 
@@ -527,7 +573,6 @@ with col_mon:
                     info_p = df_prot[df_prot['nombre'] == p_sel]['materiales_base'].values[0]
                     descuentos = []
                     costo_total_exp = 0
-                    
                     for linea in info_p.split('\n'):
                         if ":" in linea:
                             partes = linea.split(":")
@@ -538,13 +583,10 @@ with col_mon:
                                 if precio_ref > 0 and item_db.iloc[0]['cantidad_actual'] > 0:
                                     costo_item = (desc_cant / item_db.iloc[0]['cantidad_actual']) * precio_ref
                                     costo_total_exp += costo_item
-                                    
                                 descuentos.append({"id": str(item_db.iloc[0]['id']), "Reactivo": item_db.iloc[0]['nombre'], "Stock": item_db.iloc[0]['cantidad_actual'], "Descontar": desc_cant, "Unidad": item_db.iloc[0]['unidad']})
                     if descuentos:
                         st.dataframe(pd.DataFrame(descuentos).drop(columns=['id']), hide_index=True)
-                        if costo_total_exp > 0:
-                            st.markdown(f"<div class='badge-costo'>💰 Costo Aproximado del Experimento: ${int(costo_total_exp):,} CLP</div><br>", unsafe_allow_html=True)
-                            
+                        if costo_total_exp > 0: st.markdown(f"<div class='badge-costo'>💰 Costo Aproximado del Experimento: ${int(costo_total_exp):,} CLP</div><br>", unsafe_allow_html=True)
                         if st.button("✅ Descontar del Inventario Solo Aquí", type="primary"):
                             crear_punto_restauracion(df)
                             for d in descuentos:
@@ -619,6 +661,17 @@ with col_mon:
                     else: st.info("Aún no hay suficientes retiros para proyectar matemáticas.")
                 else: st.info("Registra movimientos para que la IA aprenda el consumo.")
 
+            # EL NUEVO GENERADOR DE PDF DE AUDITORÍA
+            st.markdown("---")
+            st.markdown("### 📄 Generador de Reportes (ISO/GLP)")
+            st.write("Descarga un PDF inmutable con la foto actual de tu inventario.")
+            if st.button("Generar Reporte PDF", type="secondary"):
+                if not df.empty:
+                    pdf_bytes = generar_pdf_inventario(df, st.session_state.nombre_usuario)
+                    st.success("PDF generado exitosamente.")
+                    st.download_button(label="📥 Descargar Reporte Físico", data=pdf_bytes, file_name=f"Reporte_Inventario_{date.today()}.pdf", mime="application/pdf")
+                else: st.warning("El inventario está vacío.")
+
         with tab_usuarios:
             st.markdown("### 🤝 Gestión de Accesos")
             with st.container(border=True):
@@ -649,13 +702,13 @@ with col_chat:
         with chat_box: st.chat_message(m["role"]).markdown(m["content"])
 
     v_in = speech_to_text(language='es-CL', start_prompt="🎙️ Hablar", stop_prompt="⏹️ Enviar", just_once=True, key='voice_input')
-    prompt = v_in if v_in else st.chat_input("Ej: Ejecuté el protocolo PCR Mix en 5 muestras...")
+    prompt = v_in if v_in else st.chat_input("Ej: Saqué 2 buffer / Agrega a mi bitácora...")
 
     with st.expander("📸 Procesar con Ojo IA"):
         accion_foto = st.radio("¿Qué deseas hacer con la foto?", ["➕ Agregar Reactivo Nuevo", "🔄 Actualizar Reactivo"], horizontal=True)
         item_a_actualizar = None
         if accion_foto == "🔄 Actualizar Reactivo" and not df.empty: item_a_actualizar = st.selectbox("Selecciona reactivo:", df['nombre'].tolist())
-        foto_chat = st.camera_input("Capturar Imagen", label_visibility="collapsed")
+        foto_chat = st.camera_input("Capturar Imagen / Escanear QR", label_visibility="collapsed")
         
         if foto_chat and st.button("🧠 Procesar Foto", type="primary", use_container_width=True):
             img = Image.open(foto_chat).convert('RGB')
@@ -674,22 +727,23 @@ with col_chat:
                             msg = f"📸 **Creado:** {itm['nombre']} | Stock: {itm['cantidad_actual']}"
                         
                         elif accion_foto == "🔄 Actualizar Reactivo":
-                            prompt_vision = f"Esta es una foto del reactivo '{item_a_actualizar}'. Extrae la cantidad. Responde SOLO JSON: {{\"{item_a_actualizar}\": true, \"cantidad_actual\": 0}}"
+                            # Nueva indicación para que también lea Códigos QR
+                            prompt_vision = f"Lee la etiqueta o el Código QR de esta imagen. Es del reactivo '{item_a_actualizar}'. Extrae la cantidad física que ves. Responde SOLO JSON: {{\"{item_a_actualizar}\": true, \"cantidad_actual\": 0}}"
                             res_ai = model.generate_content([prompt_vision, img]).text
                             data = json.loads(re.search(r'\{.*\}', res_ai, re.DOTALL).group())
                             nueva_cant = data.get('cantidad_actual', 0)
                             id_ac = str(df[df['nombre'] == item_a_actualizar].iloc[0]['id'])
                             supabase.table("items").update({"cantidad_actual": nueva_cant}).eq("id", id_ac).execute()
-                            supabase.table("movimiento").insert({"item_id": id_ac, "nombre_item": item_a_actualizar, "cantidad_cambio": nueva_cant, "tipo": "Actualizado IA (Foto)", "usuario": usuario_actual, "lab_id": lab_id}).execute()
+                            supabase.table("movimiento").insert({"item_id": id_ac, "nombre_item": item_a_actualizar, "cantidad_cambio": nueva_cant, "tipo": "Actualizado IA (Foto/QR)", "usuario": usuario_actual, "lab_id": lab_id}).execute()
                             msg = f"📸 **Actualizado:** {item_a_actualizar} ahora tiene {nueva_cant} en stock."
 
                         st.markdown(msg); st.session_state.messages.append({"role": "assistant", "content": msg}); st.rerun()
-                    except Exception as e: st.error("Error al procesar la imagen.")
+                    except Exception as e: st.error("Error al procesar la imagen. Intenta con más luz o acercando la cámara.")
 
     if prompt:
         st.session_state.messages.append({"role": "user", "content": prompt})
         with chat_box: st.chat_message("user").markdown(prompt)
-        with st.chat_message("assistant"):
+        with chat_message("assistant"):
             with st.spinner("Pensando..."):
                 try:
                     d_ia = df[['id', 'nombre', 'cantidad_actual', 'ubicacion']].to_json(orient='records') if not df.empty else "[]"
@@ -728,7 +782,6 @@ with col_chat:
                             
                             cont_b = f"🧪 Protocolo Vinculado (IA): {prot_match.iloc[0]['nombre']} (x{muestras} muestras)"
                             supabase.table("bitacora").insert({"lab_id": lab_id, "usuario": usuario_actual, "fecha": date.today().isoformat(), "contenido": cont_b, "resultado": resultado}).execute()
-                            
                             msg = f"✅ **Protocolo Ejecutado:** {prot_nom} ({muestras} muestras).\nInventario descontado y guardado en tu bitácora."
                         else:
                             msg = f"❌ No encontré el protocolo '{prot_nom}' en la base de datos."
